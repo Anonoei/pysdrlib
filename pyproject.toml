@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pysdrlib"
+version = "0.0.1"
+description = "wrapper for hardware SDRs"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.8"
+authors = [
+    {name = "Anonoei", email="to+dev@an0.cx"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+keywords = ["anonoei", "sdr"]
+dependencies = ["numpy"]
+
+[project.urls]
+Homepage = "https://github.com/Anonoei/pysdrlib"
+Documentation = "https://anonoei.github.io/pysdrlib/"
+Repository = "https://github.com/Anonoei/pysdrlib.git"
+Issues = "https://github.com/Anonoei/pysdrlib/issues"
+Source = "https://github.com/anonoei/pysdrlib"
+
+[project.optional-dependencies]
+dev = ["twine", "build", "bumpver", "pytest", "pdoc3"]
+
+[tool.bumpver]
+current_version = "0.0.1"
+version_pattern = "MAJOR.MINOR.PATCH"
+commit_message = "bump version {old_version} -> {new_version}"
+tag_message = "{new_version}"
+tag_scope = "default"
+pre_commit_hook = ""
+post_commit_hook = ""
+commit = true
+tag = true
+push = false
+
+[tool.bumpver.file_patterns]
+"pyproject.toml" = [
+    'current_version = "{version}"',
+    'version = "{version}"'
+]
+"src/pyspecan/__init__.py" = ["{version}"]
