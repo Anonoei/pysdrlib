@@ -12,9 +12,7 @@ def static_import():
 
 def setup_hackrf():
     from pysdrlib import hackrf
-    libhackrf = hackrf.lib_init()
-
-    libhackrf.hackrf_info()
+    hackrf.lib_init()
 
 if __name__ == "__main__":
     setup_hackrf()
