@@ -1,36 +1,24 @@
 from setuptools import setup, Extension
-from setuptools.command.build_ext import build_ext
-import subprocess
-import sys
+from Cython.Build import cythonize
 
-from src.pysdrlib.hackrf import lib_path as lib_path_hackrf
+import numpy
 
-LIB_PATHS = {}
+# python3 setup.py build_ext --inplace
 
-class Build_HackRF(build_ext):
-    def run(self):
-        print(f"Setting up hackrf on {sys.platform}")
-        LIB_PATHS["hackrf"] = lib_path_hackrf()
-        if LIB_PATHS.get("hackrf", None) is None:
-            subprocess.run(['make', 'hackrf'], cwd="/src/hackrf", shell=True)
-        else:
-            print(f"libhackrf is already installed!")
-        build_ext.run(self)
-class Filter_HackRF(Extension):
-    def __init__(self, name, sources, include_dirs):
-        super().__init__(name, sources, include_dirs)
+ext_modules = cythonize([
+    Extension(
+        name="pysdrlib.hackrf.lib.hackrf",
+        sources=["src/pysdrlib/hackrf/lib/hackrf.pyx"],
+        include_dirs=["vendor/hackrf/host/libhackrf/src/", numpy.get_include()],
+        libraries=["hackrf"],
+        depends=["src/pysdrlib/hackrf/lib/chackrf.pxd"]
+    )
+])
 
 setup(
     name="pysdrlib",
     version="0.0.1",
-    ext_modules=[
-        Filter_HackRF(
-            "filter_hackrf",
-            sources=[
-                "vendor/hackrf/host/libhackrf"
-            ],
-            include_dirs=["include", "src"]
-        )
-    ],
-    cmdclass={"build_ext": Build_HackRF}
+    include_package_data=True,
+    package_data={"": ["*.pyx", "*.pxd", "*.h", "*.c"]},
+    ext_modules=ext_modules,
 )

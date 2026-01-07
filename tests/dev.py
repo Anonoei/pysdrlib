@@ -6,8 +6,8 @@ def dynamic_import():
     print(sdr.NAME)
 
 def static_import():
-    import pysdrlib.rtl_sdr
-    sdr = pysdrlib.rtl_sdr.Device()
+    from pysdrlib import rtl_sdr
+    sdr = rtl_sdr.Device()
     print(sdr.NAME)
 
 def setup_hackrf():

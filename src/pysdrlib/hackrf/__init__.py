@@ -6,7 +6,7 @@ import ctypes.util
 from .hackrf import HackRF
 Device = HackRF
 
-from .lib import lib_load
+# from .lib import lib_load
 
 def lib_path():
     _lib_path = None
@@ -21,8 +21,8 @@ def lib_path():
     return _lib_path
 
 def lib_init():
-    lib_load(lib_path()[1])
-    # from .lib.hackrf_info import hackrf_info
+    # lib_load(lib_path()[1])
+    # from .bin.hackrf_info import hackrf_info
     # hackrf_info()
-    from .lib.hackrf_transfer import hackrf_transfer
+    from .bin.hackrf_transfer import hackrf_transfer
     hackrf_transfer()
