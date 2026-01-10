@@ -14,8 +14,8 @@ Other projects, like SoapySDR, are likely what you're looking for.
 
 # Roadmap
 - [ ] [RTL-SDR](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/rtl_sdr)
-- [X] [Hack RF]((https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/hackrf))
-- [ ] [Blade RF]((https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/bladerf))
+- [X] [Hack RF](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/hackrf)
+- [ ] [Blade RF](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/bladerf)
 - [ ] [B210 (UHD)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/UHD)
 - [ ] [RX-888 (extio)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/extio)
 
