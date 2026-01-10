@@ -10,9 +10,5 @@ def static_import():
     sdr = rtl_sdr.Device()
     print(sdr.NAME)
 
-def setup_hackrf():
-    from pysdrlib import hackrf
-    hackrf.lib_init()
-
 if __name__ == "__main__":
-    setup_hackrf()
+    static_import()

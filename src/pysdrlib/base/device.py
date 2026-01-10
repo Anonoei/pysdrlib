@@ -1,3 +1,5 @@
+import numpy as np
+
 from .. import warn
 
 class Device:
@@ -19,14 +21,15 @@ class Device:
         """Start receiving"""
     def stop_rx(self):
         """Stop receiving"""
+    def get_samples(self) -> np.ndarray:
+        """Get samples"""
+        raise NotImplementedError()
 
     def set_sample_rate(self, Fs):
         """Set sample rate"""
     def set_freq(self, freq):
         """Set center frequency"""
 
-    def read_samples(self, samples: int):
-        """Read <samples> samples"""
 
     def _check_gain(self, gain, name, gstep, gmin, gmax):
         if gain % gstep:

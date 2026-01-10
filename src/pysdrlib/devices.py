@@ -12,5 +12,8 @@ def ls():
 
 def get(name: str):
     path = pathlib.Path(__file__).parent
-    module = importlib.import_module(f".{name}", "pysdrlib")
+    try:
+        module = importlib.import_module(f".{name}", "pysdrlib")
+    except ModuleNotFoundError:
+        return None
     return module
