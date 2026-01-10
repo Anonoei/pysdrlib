@@ -5,9 +5,8 @@ from ..base.device import Device
 from .. import err, warn
 from ..base.buffer import RotatingBuffer
 
-from . import config
+from .config import ConfigHackRF as config
 from . import lib
-
 
 cb = RotatingBuffer()
 
@@ -21,15 +20,16 @@ def rx_callback(buffer, valid_length, buffer_length):
 
 class HackRF(Device):
     NAME = "HackRF"
+    CONFIG = config
     CAN_TRANSMIT = True
+    DUPLEX = False
 
     def __init__(self):
+        super().__init__()
         lib.hackrf.init()
         self.device: lib.hackrf.device = None
-        self._cf = 900_000_000
-        self._Fs = 10_000_000
 
-    def open(self, serial_number=None):
+    def _open(self, serial_number=None):
         try:
             if serial_number is None:
                 device = lib.hackrf.open()
@@ -38,54 +38,69 @@ class HackRF(Device):
         except lib.err.NOT_FOUND as exc:
                 raise err.NoDevice("No HackRF devices found!") from exc
         self.device = device
-    def close(self):
+
+    def _close(self):
         self.device.close()
 
-    def start_rx(self):
+    def _start_rx(self):
         self.device.set_rx_callback(rx_callback)
         cb.reset(int(0.5*self._Fs))
         self.device.start_rx()
-    def stop_rx(self):
+    def _stop_rx(self):
         self.device.stop_rx()
-    def get_samples(self):
+    def _get_samples(self):
         return cb.samples
 
-    def set_sample_rate(self, Fs):
-        self._Fs = Fs
+    def _set_sample_rate(self, Fs):
         self.device.set_sample_rate(Fs)
-    def set_freq(self, freq):
-        self._cf = freq
+    def _set_freq(self, freq):
         self.device.set_freq(freq)
 
-    def set_rx_gain(self, gain=None):
-        if gain is None:
-            self.set_rx_rf_gain(config.DEFAULT_GAIN_RX_RF)
-            self.set_rx_if_gain(config.DEFAULT_GAIN_RX_IF)
-            self.set_rx_bb_gain(config.DEFAULT_GAIN_RX_BB)
+    def _set_rx_gain(self, gain):
+        if gain == "default":
+            self.set_rx_rf_gain(type(self).CONFIG.DEFAULT_GAIN_RX_RF)
+            self.set_rx_if_gain(type(self).CONFIG.DEFAULT_GAIN_RX_IF)
+            self.set_rx_bb_gain(type(self).CONFIG.DEFAULT_GAIN_RX_BB)
         else:
-            raise NotImplementedError() # TODO: split gain between rf/if, then bb
-    def set_rx_rf_gain(self, gain):
-        gain = self._check_gain(gain, "Rx RF", config.GAIN_RX_RF_STEP, config.GAIN_RX_IF_MIN, config.GAIN_RX_IF_MAX)
+            print(f"Set gain: {gain}")
+            if gain > (type(self).CONFIG.GAIN_RX_IF_MAX + type(self).CONFIG.GAIN_RX_BB_MAX):
+                self.set_rx_rf_gain(type(self).CONFIG.GAIN_RX_RF_MAX) # enable amp
+                gain -= type(self).CONFIG.GAIN_RX_RF_MAX
+                print(f"Enabled amplifier")
+            hgain = gain//2
+            if hgain > type(self).CONFIG.GAIN_RX_IF_MAX:
+                if_gain = type(self).CONFIG.GAIN_RX_IF_MAX
+                bb_gain = gain - if_gain
+            else:
+                if_gain = hgain - (hgain % type(self).CONFIG.GAIN_RX_IF_STEP)
+                bb_gain = hgain - (hgain % type(self).CONFIG.GAIN_RX_BB_STEP)
+            self.set_rx_if_gain(if_gain)
+            self.set_rx_bb_gain(bb_gain)
+    def _set_rx_rf_gain(self, gain):
         gain = bool(gain)
-        self.device.set_amp_enable(gain)
-    def set_rx_if_gain(self, gain):
-        gain = self._check_gain(gain, "Rx IF", config.GAIN_RX_IF_STEP, config.GAIN_RX_IF_MIN, config.GAIN_RX_IF_MAX)
-        self.device.set_lna_gain(gain)
-    def set_rx_bb_gain(self, gain):
-        gain = self._check_gain(gain, "Rx BB", config.GAIN_RX_BB_STEP, config.GAIN_RX_BB_MIN, config.GAIN_RX_BB_MAX)
-        self.device.set_vga_gain(gain)
+        # self.device.set_amp_enable(gain)
+    def _set_rx_if_gain(self, gain):
+        pass
+        # self.device.set_lna_gain(gain)
+    def _set_rx_bb_gain(self, gain):
+        pass
+        # self.device.set_vga_gain(gain)
 
-    def get_tx_gain(self, gain=None):
-        if gain is None:
-            self.set_tx_rf_gain(config.DEFAULT_GAIN_TX_RF)
-            self.set_tx_if_gain(config.DEFAULT_GAIN_TX_IF)
-    def set_tx_rf_gain(self, gain):
-        gain = self._check_gain(gain, "Rx BB", config.GAIN_TX_RF_STEP, config.GAIN_TX_RF_MIN, config.GAIN_TX_RF_MAX)
+    def _set_tx_gain(self, gain):
+        if gain == "default":
+            self.set_tx_rf_gain(type(self).CONFIG.DEFAULT_GAIN_TX_RF)
+            self.set_tx_if_gain(type(self).CONFIG.DEFAULT_GAIN_TX_IF)
+        else:
+            if gain > type(self).CONFIG.GAIN_RX_IF_MAX:
+                self.set_tx_rf_gain(type(self).CONFIG.GAIN_TX_RF_MAX) # enable amp
+                gain -= type(self).CONFIG.GAIN_TX_RF_MAX
+            self.set_tx_if_gain(gain)
+    def _set_tx_rf_gain(self, gain):
         gain = bool(gain)
-        self.device.set_amp_enable(gain)
-    def set_tx_if_gain(self, gain):
-        gain = self._check_gain(gain, "Rx BB", config.GAIN_TX_IF_STEP, config.GAIN_TX_IF_MIN, config.GAIN_TX_IF_MAX)
-        self.device.set_txvga_gain(gain)
+        # self.device.set_amp_enable(gain)
+    def _set_tx_if_gain(self, gain):
+        pass
+        # self.device.set_txvga_gain(gain)
 
     def set_bias_t(self, bias):
         self.device.set_antenna_enable(bias) # TODO: fix

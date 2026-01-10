@@ -8,12 +8,12 @@
 
 ## Specs
 - Frequency (1Mhz - 6 GHz)
-- Sample rate (~8 MHz - 20 Mhz)
+- Sample rate (2 MHz - 20 Mhz)
 - Samples (complex int 8)
 - Amplifiers
   - Receive
     - RF [amp] (0 or 11, default=0)
-    - IF [lna] (0-40:8, default=30) <--
+    - IF [lna] (0-40:8, default=30)
     - baseband [vga] (0-62:2, default=50)
   - Transmit
     - RF (0 or 11, default=11)

@@ -7,3 +7,6 @@ class InvalidValue(_Error):
 
 class NoDevice(_Error):
     """Error thrown when unable to connect to device"""
+
+class NotOpen(_Error):
+    """Error thrown when attempting to control device without it open"""

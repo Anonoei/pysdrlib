@@ -1,8 +1,11 @@
 import time
+import json
+
 import numpy as np
 import matplotlib.pyplot as plt
 
 import pysdrlib
+from pysdrlib import hackrf
 
 cf = 100_000_000
 Fs = 10_000_000
@@ -18,7 +21,6 @@ def _psd(samples):
     return psd
 
 def oneshot():
-    from pysdrlib import hackrf
     with hackrf.Device() as sdr:
         sdr.set_freq(cf)
         sdr.set_sample_rate(Fs)
@@ -38,7 +40,7 @@ def oneshot():
     plt.show()
 
 def live():
-    from pysdrlib import hackrf
+
     psd = np.empty(nfft, dtype=np.float32)
     psd_min = np.repeat(np.inf, nfft)
     psd_max = np.repeat(-np.inf, nfft)
@@ -77,6 +79,13 @@ def live():
     # plt.close(fig)
     # plt.ioff()
 
+def gain():
+    sdr = hackrf.Device()
+    print(json.dumps(sdr.CONFIG.json(), indent=4))
+    sdr.is_open = True
+    sdr.set_rx_gain(80)
+
 if __name__ == "__main__":
     # oneshot()
-    live()
+    # live()
+    gain()

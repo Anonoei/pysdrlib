@@ -1,10 +1,10 @@
 from ..base.device import Device
 from .. import err, warn
 
-from .config import ConfigRTL_SDR as config
+from .config import ConfigRX888 as config
 
-class RTLSDR(Device):
-    NAME = "RTL-SDR"
+class RX888(Device):
+    NAME = "RX-888"
     CONFIG = config
     CAN_TRANSMIT = False
     DUPLEX = False
