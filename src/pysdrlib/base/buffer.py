@@ -17,6 +17,7 @@ class RotatingBuffer:
 
     def update(self, samples):
         N = len(samples)
+        # print(f"buffer.update({N})")
         with self._lock:
             if self._idx+N < self._N:
                 self._samples[self._idx:self._idx+N] = samples
@@ -34,6 +35,7 @@ class RotatingBuffer:
     def samples(self):
         N = self._idx
         self._idx = 0
+        # print(f"buffer.samples returning self._samples[:{N}]")
         samples = self._samples[:N]
         with self._lock:
             self._samples = np.roll(self._samples, -N)

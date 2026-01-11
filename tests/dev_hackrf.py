@@ -40,7 +40,6 @@ def oneshot():
     plt.show()
 
 def live():
-
     psd = np.empty(nfft, dtype=np.float32)
     psd_min = np.repeat(np.inf, nfft)
     psd_max = np.repeat(-np.inf, nfft)
@@ -76,16 +75,16 @@ def live():
         except KeyboardInterrupt:
             pass
         sdr.stop_rx()
-    # plt.close(fig)
-    # plt.ioff()
+    plt.close(fig)
+    plt.ioff()
 
 def gain():
     sdr = hackrf.Device()
     print(json.dumps(sdr.CONFIG.json(), indent=4))
-    sdr.is_open = True
+    sdr.state["open"] = True # pretending we have a device to test gain logic
     sdr.set_rx_gain(80)
 
 if __name__ == "__main__":
     # oneshot()
-    # live()
-    gain()
+    live()
+    # gain()
