@@ -42,10 +42,13 @@ class HackRF(Device):
     def _close(self):
         self.device.close()
 
-    def _start_rx(self):
-        self.device.set_rx_callback(rx_callback)
+    def resize_buff(self):
         buff_size = int(0.5*self._Fs)
         cb.reset(buff_size)
+
+    def _start_rx(self):
+        self.device.set_rx_callback(rx_callback)
+        self.resize_buff()
         self.device.start_rx()
     def _stop_rx(self):
         self.device.stop_rx()
@@ -53,9 +56,10 @@ class HackRF(Device):
         return cb.samples # TODO, check performance penalty of checking state["rx"]
 
     def _set_sample_rate(self, Fs):
-        self.device.set_sample_rate(Fs)
+        self.device.set_sample_rate(int(Fs))
+        self.resize_buff()
     def _set_freq(self, freq):
-        self.device.set_freq(freq)
+        self.device.set_freq(int(freq))
 
     def _set_rx_gain(self, gain):
         rtr = {"rf": None, "if": None, "bb": None}
@@ -82,9 +86,9 @@ class HackRF(Device):
         gain = bool(gain)
         self.device.set_amp_enable(gain)
     def _set_rx_if_gain(self, gain):
-        self.device.set_lna_gain(gain)
+        self.device.set_lna_gain(int(gain))
     def _set_rx_bb_gain(self, gain):
-        self.device.set_vga_gain(gain)
+        self.device.set_vga_gain(int(gain))
 
     def _set_tx_gain(self, gain):
         rtr = {"rf": None, "if": None}
@@ -101,7 +105,7 @@ class HackRF(Device):
         gain = bool(gain)
         self.device.set_amp_enable(gain)
     def _set_tx_if_gain(self, gain):
-        self.device.set_txvga_gain(gain)
+        self.device.set_txvga_gain(int(gain))
 
     def set_bias_t(self, bias):
         self.device.set_antenna_enable(bias) # TODO: fix

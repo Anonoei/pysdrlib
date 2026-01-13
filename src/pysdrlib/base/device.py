@@ -35,7 +35,7 @@ class Device:
         if self.state["open"]:
             self.log.warning("Device is already open!")
             return
-        self.log.trace("open(args:%s, kwargs:%s)", *args, **kwargs)
+        self.log.trace("open(args:%s, kwargs:%s)", args, kwargs)
         self.device = self._open(*args, **kwargs)
         self.state["open"] = True
     def initialize(self, cf=None, Fs=None, rx_gain=None, tx_gain=None):
@@ -81,7 +81,7 @@ class Device:
         self.state["rx"] = False
     def get_samples(self) -> np.ndarray:
         """Get samples from buffer"""
-        self.log.trace("get_samples()")
+        # self.log.trace("get_samples()")
         self._ensure_open("get_samples")
         return self._get_samples()
 
