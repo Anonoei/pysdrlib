@@ -1,5 +1,6 @@
 from setuptools import setup, Extension
 from Cython.Build import cythonize
+from pathlib import Path
 
 import numpy
 
@@ -9,7 +10,7 @@ ext_modules = cythonize([
     Extension(
         name="pysdrlib.hackrf.lib.hackrf",
         sources=["src/pysdrlib/hackrf/lib/hackrf.pyx"],
-        include_dirs=["vendor/hackrf/host/libhackrf/src/", numpy.get_include()],
+        include_dirs=[str(Path(__file__).parent / "vendor/hackrf/host/libhackrf/src/"), numpy.get_include()],
         libraries=["hackrf"],
         depends=["src/pysdrlib/hackrf/lib/chackrf.pxd"]
     )
