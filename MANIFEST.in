@@ -3,4 +3,4 @@ graft tests
 
 prune src/*.egg-info
 prune tests/dev
-global-exclude *~ *.py[cod] *.so *.html
+global-exclude *~ *.py[cod] *.html

@@ -3,7 +3,7 @@ from enum import Enum
 
 import numpy as np
 
-from ..lib import hackrf
+from .. import lib
 
 callback_samples = np.zeros([], dtype=np.complex64)
 callback_last_idx = 0
@@ -53,15 +53,15 @@ def hackrf_transfer(serial_number=None):
     CF = 900_000_000
     Fs =  10_000_000
 
-    hackrf.init()
+    lib.hackrf.init() # pyright: ignore[reportAttributeAccessIssue]
     if serial_number is None:
         try:
-            dev = hackrf.open()
-        except hackrf.err.NOT_FOUND:
+            dev = lib.hackrf.open() # pyright: ignore[reportAttributeAccessIssue]
+        except lib.hackrf.err.NOT_FOUND:
             print("No HackRF devices found!")
             return
     else:
-        dev = hackrf.open_by_serial(serial_number)
+        dev = lib.hackrf.open_by_serial(serial_number) # pyright: ignore[reportAttributeAccessIssue]
 
     dev.set_sample_rate(Fs)
     dev.set_hw_sync_mode(hw_sync)
@@ -92,4 +92,4 @@ def hackrf_transfer(serial_number=None):
         dev.stop_rx()
 
     dev.close()
-    hackrf.exit()
+    lib.hackrf.exit() # pyright: ignore[reportAttributeAccessIssue]

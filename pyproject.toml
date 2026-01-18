@@ -42,7 +42,6 @@ Issues = "https://github.com/Anonoei/pysdrlib/issues"
 Source = "https://github.com/anonoei/pysdrlib"
 
 
-
 [tool.bumpver]
 current_version = "0.1.2"
 version_pattern = "MAJOR.MINOR.PATCH"

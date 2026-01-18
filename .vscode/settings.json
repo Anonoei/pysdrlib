@@ -5,6 +5,7 @@
         "--extension-pkg-whitelist=pysdrlib.hackrf.lib.hackrf"
     ],
     "cSpell.words": [
-        "pysdrlib"
+        "pysdrlib",
+        "hackrf",
     ],
 }

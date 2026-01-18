@@ -2,6 +2,7 @@ import numpy as np
 
 from ..base.device import Device
 from ..base.buffer import RotatingBuffer
+from .. import err
 
 from .config import ConfigHackRF as config
 from . import lib
@@ -24,15 +25,15 @@ class HackRF(Device):
 
     def __init__(self):
         super().__init__()
-        lib.hackrf.init()
-        self.device: lib.hackrf.device = None
+        lib.hackrf.init() # pyright: ignore[reportAttributeAccessIssue]
+        self.device: lib.hackrf.device = None # pyright: ignore[reportAttributeAccessIssue]
 
     def _open(self, serial_number=None):
         try:
             if serial_number is None:
-                device = lib.hackrf.open()
+                device = lib.hackrf.open() # pyright: ignore[reportAttributeAccessIssue]
             else:
-                device = lib.hackrf.open_by_serial(serial_number)
+                device = lib.hackrf.open_by_serial(serial_number) # pyright: ignore[reportAttributeAccessIssue]
         except lib.err.NOT_FOUND as exc:
                 raise err.NoDevice("No HackRF devices found!") from exc
         return device

@@ -2,7 +2,8 @@ import pysdrlib
 
 def dynamic_import():
     print(pysdrlib.devices.ls())
-    sdr = pysdrlib.devices.get("rtl_sdr").Device()
+    sdr = pysdrlib.device("rtl_sdr")
+    # sdr = pysdrlib.devices.get("rtl_sdr").Device()
     print(sdr.NAME)
 
 def static_import():

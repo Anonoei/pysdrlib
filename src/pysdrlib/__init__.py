@@ -17,3 +17,5 @@ from .base.formats import Formats
 from .base.device import Device
 from . import devices
 from .file import File
+
+from .devices import device

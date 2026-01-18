@@ -4,7 +4,6 @@ import json
 import numpy as np
 import matplotlib.pyplot as plt
 
-import pysdrlib
 from pysdrlib import hackrf
 
 cf = 100_000_000
@@ -60,7 +59,7 @@ def live():
         sdr.set_rx_gain()
         sdr.start_rx()
         try:
-            time.sleep(0.5)
+            time.sleep(0.2)
             while True:
                 samples = sdr.get_samples()
                 psd = _psd(samples[:nfft])
@@ -71,7 +70,7 @@ def live():
                 line_min.set_data(freqs, psd_min)
                 line_max.set_data(freqs, psd_max)
                 fig.canvas.draw()
-                plt.pause(0.5)
+                plt.pause(0.2)
         except KeyboardInterrupt:
             pass
         sdr.stop_rx()

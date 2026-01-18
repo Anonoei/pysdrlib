@@ -1,2 +1,2 @@
 from . import err
-from . import hackrf
+from . import hackrf # pyright: ignore[reportAttributeAccessIssue]

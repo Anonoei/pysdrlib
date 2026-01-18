@@ -1,9 +1,9 @@
-from ..lib import hackrf
+from .. import lib
 
 def hackrf_info():
-    hackrf.init()
-    print(f"libhackrf version: {hackrf.library_release()} ({hackrf.library_version()})")
-    devs = hackrf.device_list()
+    lib.hackrf.init() # pyright: ignore[reportAttributeAccessIssue]
+    print(f"libhackrf version: {lib.hackrf.library_release()} ({lib.hackrf.library_version()})") # pyright: ignore[reportAttributeAccessIssue]
+    devs = lib.hackrf.device_list() # pyright: ignore[reportAttributeAccessIssue]
 
     if devs.device_count < 1:
         print("No HackRF boards found")
@@ -15,18 +15,18 @@ def hackrf_info():
         if devs.serial_numbers[i]:
             print(f"Serial number: {devs.serial_numbers[i]}")
 
-        device = hackrf.device_list_open(devs, i)
-        board_id = hackrf.board_id_read(device)
+        device = lib.hackrf.device_list_open(devs, i) # pyright: ignore[reportAttributeAccessIssue]
+        board_id = lib.hackrf.board_id_read(device) # pyright: ignore[reportAttributeAccessIssue]
         print(f"Board ID number: {board_id}")
 
-        version = hackrf.version_string_read(device)
-        usb_version = hackrf.usb_api_version_read(device)
+        version = lib.hackrf.version_string_read(device) # pyright: ignore[reportAttributeAccessIssue]
+        usb_version = lib.hackrf.usb_api_version_read(device) # pyright: ignore[reportAttributeAccessIssue]
 
         print(f"Firmware version: {version} (API:{usb_version})")
 
-        part_id, serial_no = hackrf.board_partid_serialno_read(device)
+        part_id, serial_no = lib.hackrf.board_partid_serialno_read(device) # pyright: ignore[reportAttributeAccessIssue]
         print(f"Part ID Number: 0x{part_id}")
 
         device.close()
     devs.close()
-    hackrf.exit()
+    lib.hackrf.exit() # pyright: ignore[reportAttributeAccessIssue]
