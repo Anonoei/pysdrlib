@@ -1,8 +1,6 @@
-from threading import Lock
 import numpy as np
 
 from ..base.device import Device
-from .. import err, warn
 from ..base.buffer import RotatingBuffer
 
 from .config import ConfigHackRF as config

@@ -1,0 +1,6 @@
+graft src
+graft tests
+
+prune src/*.egg-info
+prune tests/dev
+global-exclude *~ *.py[cod] *.so *.html
