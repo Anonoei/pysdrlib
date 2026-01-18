@@ -1,9 +1,13 @@
 name: Deploy docs
+
 on:
   push:
     branches:
       - main  # Set a branch name to trigger deployment
   pull_request:
+
+permissions:
+  contents: read # access to check out code and install dependencies
 
 jobs:
   deploy:
@@ -17,6 +21,8 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v6
+        with:
+          submodules: 'recursive'
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
