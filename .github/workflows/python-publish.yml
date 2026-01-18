@@ -1,11 +1,8 @@
 name: Build and upload PyPI package
 
 on:
+  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
-  pull_request:
-  push:
-    branches:
-      - main
   release:
     types:
       - published
@@ -90,3 +87,5 @@ jobs:
 
       - name: Publish release distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
