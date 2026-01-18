@@ -16,24 +16,10 @@ permissions:
 jobs:
   build_wheels:
     name: Build wheels on ${{ matrix.os }}
-    runs-on: ${{ matrix.runs-on }}
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        include:
-          - os: linux-intel
-            runs-on: ubuntu-latest
-          - os: linux-arm
-            runs-on: ubuntu-24.04-arm
-          - os: windows-intel
-            runs-on: windows-latest
-          - os: windows-arm
-            runs-on: windows-11-arm
-          - os: macos-intel
-            # macos-15-intel is the last x86_64 runner
-            runs-on: macos-15-intel
-          - os: macos-arm
-            # macos-14+ (including latest) are ARM64 runners
-            runs-on: macos-latest
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-15-intel, macos-latest]
 
     steps:
       - name: Checkout repo
@@ -41,13 +27,13 @@ jobs:
         with:
           submodules: 'recursive'
 
+      - uses: actions/setup-python@v5
+
+      - name: Install cibuildwheel
+        run: python -m pip install cibuildwheel==3.3.1
+
       - name: Build wheels
-        uses: pypa/cibuildwheel@v3.3.1
-        env:
-          CIBW_PLATFORM: ${{ matrix.platform || 'auto' }}
-          CIBW_ARCHS: ${{ matrix.archs || 'auto' }}
-        with:
-          output-dir: ./wheelhouse
+        run: python -m cibuildwheel --output-dir wheelhouse
 
       - uses: actions/upload-artifact@v4
         with:
@@ -71,7 +57,7 @@ jobs:
           name: cibw-sdist
           path: dist/*.tar.gz
 
-  upload_pypi:
+  pypi-publish:
     needs: [build_wheels, build_sdist]
     runs-on: ubuntu-latest
     environment:
@@ -79,12 +65,12 @@ jobs:
       url: https://pypi.org/project/pysdrlib/${{ github.event.release.name }}
     permissions:
       id-token: write # IMPORTANT: this permission is mandatory for trusted publishing
+    if: github.event_name == 'release' && github.event.action == 'published'
 
     steps:
       - name: Retrieve release distributions
         uses: actions/download-artifact@v6
         with:
-          # unpacks all CIBW artifacts into dist/
           pattern: cibw-*
           path: dist
           merge-multiple: true
