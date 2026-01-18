@@ -24,8 +24,8 @@ def mk_lib():
 
 def get():
     library_dirs = None
-    # if not utils.is_installed("hackrf"):
-    #     library_dirs = [str(mk_lib())]
+    if not utils.is_installed("hackrf"):
+        library_dirs = [str(mk_lib())]
 
     return Extension(
         name="pysdrlib.hackrf.lib.hackrf",
@@ -36,8 +36,8 @@ def get():
             "src/pysdrlib/hackrf/data/libhackrf/src/hackrf.h",
             "src/pysdrlib/hackrf/data/libhackrf/src/hackrf.c",
         ],
-        # library_dirs=library_dirs,
-        # runtime_library_dirs=library_dirs,
+        library_dirs=library_dirs,
+        runtime_library_dirs=library_dirs,
         libraries=["hackrf"],
         optional=True
     )
