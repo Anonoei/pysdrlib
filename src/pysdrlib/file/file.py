@@ -103,6 +103,8 @@ class File:
 
     def percent(self):
         """Return percent of file read"""
+        if self.max_samp == 0:
+            return 0.0
         return float(self.cur_samp/self.max_samp)*100
 
     def __call__(self, count):
