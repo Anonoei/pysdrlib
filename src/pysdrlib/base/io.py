@@ -120,7 +120,6 @@ class i4_o(Format):
 
         out = (buff + (buff >> 7))
         return out.astype(np.int8)
-        # return o2t(buff, cls.SIZE, np.int8)
 
 class i8_o(Format):
     """One's compliment int8"""

@@ -5,14 +5,14 @@ from . import io as IO
 class Formats(Enum):
     """IO Format wrapper"""
     # Integer
-    i4 = IO.i4_t
-    i8 = IO.i8_t
-    i16 = IO.i16_t
-    i32 = IO.i32_t
-
     ui8 = IO.ui8_t
     ui16 = IO.ui16_t
     ui32 = IO.ui32_t
+
+    i4t = IO.i4_t
+    i8t = IO.i8_t
+    i16t = IO.i16_t
+    i32t = IO.i32_t
 
     i8o = IO.i8_o
     i16o = IO.i16_o
@@ -22,9 +22,9 @@ class Formats(Enum):
     f32 = IO.f32
     f64 = IO.f64
     # Complex
-    ci8 = ci8_t = IO.ci8_t
-    ci16 = IO.ci16_t
-    ci32 = IO.ci32_t
+    ci8t = IO.ci8_t
+    ci16t = IO.ci16_t
+    ci32t = IO.ci32_t
 
     cf32 = IO.cf32
     cf64 = IO.cf64
