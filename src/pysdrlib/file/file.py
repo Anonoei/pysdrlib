@@ -44,6 +44,7 @@ class File:
     def set_sample_count(self, count: int):
         self.log.trace("set_sample_count(%s)", count)
         self.count = count
+
     def set_fmt(self, fmt: str):
         self.log.trace("set_fmt(%s)", fmt)
         self.fmt = Formats[fmt]
@@ -51,16 +52,17 @@ class File:
             self.max_samp = self._fsize // self.fmt.bytes
     def get_fmt(self):
         return self.fmt
+
     def set_path(self, path):
         self.log.trace("set_path(%s)", path)
         if not isinstance(path, Path):
             path = Path(path)
         self.path = path
         self._fsize = path.stat().st_size
-        self.max_samp = self._fsize // self.fmt.bytes
+        if self.fmt is not None:
+            self.max_samp = self._fsize // self.fmt.bytes
     def get_path(self):
         return self.path
-
 
     def reset(self):
         self.log.trace("reset()")
@@ -83,6 +85,7 @@ class File:
         self.cur_samp -= count
         samps = self._read(count)
         return samps
+
     def _read(self, count: int):
         samps = self.fmt.read(self.f, count)
         self.cur_samp += count

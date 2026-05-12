@@ -1,11 +1,11 @@
 {
     "python-envs.defaultEnvManager": "ms-python.python:pyenv",
-    "python-envs.pythonProjects": [],
     "pylint.args": [
         "--extension-pkg-whitelist=pysdrlib.hackrf.lib.hackrf"
     ],
     "cSpell.words": [
-        "pysdrlib",
+        "frombuffer",
         "hackrf",
+        "pysdrlib"
     ],
 }

@@ -31,7 +31,7 @@ keywords = ["anonoei", "sdr"]
 dependencies = ["numpy"]
 
 [project.optional-dependencies]
-dev = ["twine", "build", "bumpver", "pytest", "pdoc3"]
+dev = ["setuptools", "twine", "build", "cython", "bumpver", "pytest", "pdoc3", "matplotlib"]
 
 [project.urls]
 Homepage = "https://github.com/Anonoei/pysdrlib"
@@ -59,3 +59,7 @@ push = false
     'version = "{version}"'
 ]
 "src/pysdrlib/__init__.py" = ["{version}"]
+
+
+[tool.pytest]
+testpaths = ["tests"]

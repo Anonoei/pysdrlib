@@ -5,21 +5,27 @@ from . import io as IO
 class Formats(Enum):
     """IO Format wrapper"""
     # Integer
-    i8 = IO.i8
-    i16 = IO.i16
-    i32 = IO.i32
-    ui8 = IO.ui8
-    ui16 = IO.ui16
-    ui32 = IO.ui32
-    i4 = IO.i4
+    i4 = IO.i4_t
+    i8 = IO.i8_t
+    i16 = IO.i16_t
+    i32 = IO.i32_t
+
+    ui8 = IO.ui8_t
+    ui16 = IO.ui16_t
+    ui32 = IO.ui32_t
+
+    i8o = IO.i8_o
+    i16o = IO.i16_o
+
     # Float
     f16 = IO.f16
     f32 = IO.f32
     f64 = IO.f64
     # Complex
-    ci8 = IO.ci8
-    ci16 = IO.ci16
-    ci32 = IO.ci32
+    ci8 = ci8_t = IO.ci8_t
+    ci16 = IO.ci16_t
+    ci32 = IO.ci32_t
+
     cf32 = IO.cf32
     cf64 = IO.cf64
     cf128 = IO.cf128
