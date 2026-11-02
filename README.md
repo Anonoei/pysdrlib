@@ -33,6 +33,21 @@ import pysdrlib.rtl_sdr
 sdr = pysdrlib.rtl_sdr.Device() # Initialize sdr
 ```
 
+### Remote devices
+Host SDRs on one machine and use them from another (`pip install pysdrlib[remote]`, uses ZeroMQ).
+
+```
+pysdrlib server --bind tcp://0.0.0.0:5555 --port-range 6000-6100
+pysdrlib client tcp://host:5555 list
+pysdrlib client tcp://host:5555 rx hackrf --freq 100e6 --rate 10e6 -t 5 -o out.cfile
+```
+```python
+sdr = pysdrlib.device("remote", "tcp://host:5555", "hackrf")  # same API as a local device
+sdr.open(); sdr.initialize(cf=100e6, Fs=10e6); sdr.start_rx()
+samples = sdr.get_samples()
+```
+One client controls a device; any number can attach as viewers (`pysdrlib.device("remote", addr, id="hackrf-0")`) to receive samples.
+
 # Contributing
 1. `git clone https://github.com/Anonoei/pysdrlib`
 2. `cd pysdrlib`

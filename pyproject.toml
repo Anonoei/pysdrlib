@@ -32,7 +32,11 @@ keywords = ["anonoei", "sdr"]
 dependencies = ["numpy"]
 
 [project.optional-dependencies]
-dev = ["setuptools", "twine", "build", "cython", "pybind11", "bumpver", "pytest", "pdoc3", "matplotlib"]
+remote = ["pyzmq"]
+dev = ["setuptools", "pyzmq", "twine", "build", "cython", "pybind11", "bumpver", "pytest", "pdoc3", "matplotlib"]
+
+[project.scripts]
+pysdrlib = "pysdrlib.remote.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/Anonoei/pysdrlib"
