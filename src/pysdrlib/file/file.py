@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from .. import logger
+from .. import err as pysdr_err
 from ..base import Formats
 from . import err
 
@@ -23,19 +24,27 @@ class File:
     def __str__(self):
         return f"File ({self.cur_samp}/{self.max_samp},{self.fmt.name}): {self.path}"
 
+    # Invariant while open: the file position is cur_samp * fmt.bytes
     def open(self):
         self.log.trace("open()")
         if self.f is not None:
             self.log.warning("File is already open!")
         else:
             self.f = open(self.path, "rb")
-            self.f.seek(self.cur_samp // self.fmt.bytes)
+            self._seek(self.cur_samp)
     def close(self):
         self.log.trace("close()")
         if self.f is None:
             self.log.warning("File is already closed!")
         else:
             self.f.close()
+            self.f = None
+
+    def __enter__(self):
+        self.open()
+        return self
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
     def get_samples(self):
         return self.next(self.count)
@@ -68,9 +77,19 @@ class File:
         self.log.trace("reset()")
         self.cur_samp = 0
         if self.f is not None:
-            self.f.seek(0)
+            self._seek(0)
+    def seek(self, samp: int):
+        """Move to sample index `samp`"""
+        self.log.trace("seek(%s)", samp)
+        if samp < 0 or samp > self.max_samp:
+            raise err.Overflow(f"seek({samp}) outside 0..{self.max_samp}")
+        self.cur_samp = samp
+        if self.f is not None:
+            self._seek(samp)
     def next(self, count: int):
+        """Return the next <count> samples and move forward"""
         self.log.trace("next()")
+        self._ensure_open("next")
         if self.cur_samp + count > self.max_samp:
             raise err.Overflow(f"{self.cur_samp}+{count} > {self.max_samp}")
         samps = self._read(count)
@@ -79,17 +98,29 @@ class File:
         self.cur_samp += count
         return samps
     def prev(self, count: int):
+        """Move back <count> samples and return them (the samples just before the old position)"""
         self.log.trace("prev()")
+        self._ensure_open("prev")
         if self.cur_samp - count < 0:
             raise err.Overflow(f"{self.cur_samp}-{count} < 0")
         self.cur_samp -= count
+        self._seek(self.cur_samp)
         samps = self._read(count)
+        self._seek(self.cur_samp)  # reading advanced the file; stay at cur_samp
+        if len(samps) < count:
+            raise err.Underflow(f"self._read({count}) at idx {self.cur_samp}, got {len(samps)}")
         return samps
 
+    def _seek(self, samp: int):
+        self.f.seek(samp * self.fmt.bytes) # type: ignore
+
+    def _ensure_open(self, name):
+        if self.f is None:
+            raise pysdr_err.NotOpen(f"Cannot call `{name}` when file isn't open")
+
     def _read(self, count: int):
-        samps = self.fmt.read(self.f, count)
-        self.cur_samp += count
-        return samps
+        """Read <count> samples at the current position (does not touch cur_samp)"""
+        return self.fmt.read(self.f, count)
 
     def forward(self, count: int):
         """Return <count> samples until EOF"""

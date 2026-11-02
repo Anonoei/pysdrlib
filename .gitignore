@@ -1,5 +1,4 @@
-logs/
-*.log
+data/
 
 src/pysdrlib/_ext/cache
 
@@ -20,6 +19,7 @@ src/*.egg-info/
 
 # Misc
 logs/
+*.log
 .python-version
 .pytest_cache/
 
@@ -31,3 +31,6 @@ logs/
 !.vscode/extensions.json
 !.vscode/*.code-snippets
 !*.code-workspace
+
+# Benchmark baselines/runs are per machine
+.benchmarks/
