@@ -8,7 +8,7 @@ Github: https://github.com/Anonoei/pysdrlib
 PyPI: https://pypi.org/project/pysdrlib/
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 __author__ = "Anonoei <to+dev@an0.cx>"
 
 from . import err
