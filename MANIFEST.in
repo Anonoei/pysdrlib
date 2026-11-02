@@ -3,4 +3,8 @@ graft tests
 
 prune src/*.egg-info
 prune tests/dev
+prune tests/build
+prune src/pysdrlib/_ext/cache
 global-exclude *~ *.py[cod] *.html
+# build products must never ship in an sdist; they are rebuilt on install
+global-exclude *.so *.so.* *.a *.o *.dylib *.dll *.pyd

@@ -14,6 +14,7 @@ class Formats(Enum):
     i16t = IO.i16_t
     i32t = IO.i32_t
 
+    i4o = IO.i4_o
     i8o = IO.i8_o
     i16o = IO.i16_o
 
@@ -45,8 +46,8 @@ class Formats(Enum):
 
     @property
     def bytes(self):
-        """Return size of format in bytes"""
-        return self.value.SIZE // 8
+        """Return size of format in bytes (at least 1: 4-bit formats are I/Q, one pair per byte)"""
+        return self.value.bytes()
     @property
     def is_complex(self):
         if issubclass(self.value, IO.ComplexFormat):

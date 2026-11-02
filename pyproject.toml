@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "cython", "numpy"]
+requires = ["setuptools>=61.0", "cython", "numpy", "pybind11>=2.13"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -22,6 +22,7 @@ classifiers = [
 
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: C++",
     "Programming Language :: Cython",
     "Programming Language :: C",
 
@@ -31,7 +32,7 @@ keywords = ["anonoei", "sdr"]
 dependencies = ["numpy"]
 
 [project.optional-dependencies]
-dev = ["setuptools", "twine", "build", "cython", "bumpver", "pytest", "pdoc3", "matplotlib"]
+dev = ["setuptools", "twine", "build", "cython", "pybind11", "bumpver", "pytest", "pdoc3", "matplotlib"]
 
 [project.urls]
 Homepage = "https://github.com/Anonoei/pysdrlib"
@@ -61,5 +62,22 @@ push = false
 "src/pysdrlib/__init__.py" = ["{version}"]
 
 
-[tool.pytest]
+[tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "hardware: needs a physical device (set PYSDRLIB_HW=1)",
+    "benchmark: performance checks, slow and timing sensitive (run with `pytest -m benchmark`)",
+]
+addopts = "-m 'not benchmark'"
+
+# libhackrf is built during setup (when the host lacks it) into _ext/cache, after the
+# sdist file list is fixed, so ship it explicitly. Static libs / build dirs stay out.
+[tool.setuptools.package-data]
+pysdrlib = [
+    "_ext/*.hpp",
+    "_ext/cache/hackrf/libhackrf.so*",
+    "_ext/cache/hackrf/libhackrf*.dylib",
+    "_ext/cache/hackrf/hackrf*.dll",
+    "hackrf/lib/*.cpp",
+    "hackrf/lib/*.hpp",
+]

@@ -10,6 +10,7 @@ class Device:
     CONFIG: ConfigDevice = None # type: ignore
     CAN_TRANSMIT = False
     DUPLEX = False
+    SAMPLE_FORMAT = None # convert.SampleFormat of the raw stream the driver delivers (None: driver converts itself)
 
     __slots__ = (
         "log",
@@ -45,7 +46,7 @@ class Device:
         cf = self.set_freq(cf)
         Fs = self.set_sample_rate(Fs)
         rx_gain = self.set_rx_gain(rx_gain)
-        tx_gain = self.set_tx_gain(tx_gain)
+        tx_gain = self.set_tx_gain(tx_gain) if type(self).CAN_TRANSMIT else None
         self._initialize(cf, Fs, rx_gain, tx_gain)
 
     def close(self):
@@ -138,22 +139,6 @@ class Device:
         return self._cf
     def get_freq(self):
         return self._cf
-    def set_freq_cf(self, freq):
-        """Explicitly set center frequency"""
-        self.log.trace("set_freq_cf(%s)", freq)
-        self._ensure_open("set_freq_cf")
-        self._set_freq_cf(freq)
-    def set_freq_if(self, freq):
-        """Explicitly set IF frequency"""
-        self.log.trace("set_freq_if(%s)", freq)
-        self._ensure_open("set_freq_if")
-        self._set_freq_if(freq)
-    def set_freq_lo(self, freq):
-        """Explicitly set LO frequency"""
-        self.log.trace("set_freq_lo(%s)", freq)
-        self._ensure_open("set_freq_lo")
-        self._set_freq_lo(freq)
-
     def set_rx_gain(self, gain=None):
         """Set abstract receive gain"""
         self.log.trace("set_rx_gain(%s)", gain)
@@ -163,83 +148,15 @@ class Device:
         else:
             gain = self._check_gain(gain, "RX")
         return self._set_rx_gain(gain)
-    def set_rx_rf_gain(self, gain=None):
-        """Set RF receive gain"""
-        self.log.trace("set_rx_rf_gain(%s)", gain)
-        self._ensure_open("set_rx_rf_gain")
-        if not type(self).CONFIG.GAIN_RX_RF:
-            raise NotImplementedError()
-        if gain is None:
-            gain = type(self).CONFIG.DEFAULT_GAIN_RX_RF
-        gain = self._check_gain(gain, "Rx RF")
-        self._set_rx_rf_gain(gain)
-        return gain
-    def set_rx_if_gain(self, gain=None):
-        """Set IF receive gain"""
-        self.log.trace("set_rx_if_gain(%s)", gain)
-        self._ensure_open("rx_rx_if_gain")
-        if not type(self).CONFIG.GAIN_RX_IF:
-            raise NotImplementedError()
-        if gain is None:
-            gain = type(self).CONFIG.DEFAULT_GAIN_RX_IF
-        gain = self._check_gain(gain, "Rx IF")
-        self._set_rx_rf_gain(gain)
-        return gain
-    def set_rx_bb_gain(self, gain=None):
-        """Set baseband receive gain"""
-        self.log.trace("set_rx_bb_gain(%s)", gain)
-        self._ensure_open("set_rx_bb_gain")
-        if not type(self).CONFIG.GAIN_RX_BB:
-            raise NotImplementedError()
-        if gain is None:
-            gain = type(self).CONFIG.DEFAULT_GAIN_RX_BB
-        gain = self._check_gain(gain, "Rx BB")
-        self._set_rx_rf_gain(gain)
-        return gain
-
     def set_tx_gain(self, gain=None):
         """Set abstract transmit gain"""
         self.log.trace("set_tx_gain(%s)", gain)
-        self._ensure_open("set_rx_gain")
+        self._ensure_open("set_tx_gain")
         if gain is None:
             gain = "default"
         else:
             gain = self._check_gain(gain, "TX")
         return self._set_tx_gain(gain)
-    def set_tx_rf_gain(self, gain=None):
-        """Set RF transmit gain"""
-        self.log.trace("set_tx_rf_gain(%s)", gain)
-        self._ensure_open("set_rx_rf_gain")
-        if not type(self).CONFIG.GAIN_TX_RF:
-            raise NotImplementedError()
-        if gain is None:
-            gain = type(self).CONFIG.DEFAULT_GAIN_TX_RF
-        gain = self._check_gain(gain, "Tx RF")
-        self._set_rx_rf_gain(gain)
-        return gain
-    def set_tx_if_gain(self, gain=None):
-        """Set IF transmit gain"""
-        self.log.trace("set_tx_if_gain(%s)", gain)
-        self._ensure_open("set_tx_if_gain")
-        if not type(self).CONFIG.GAIN_TX_IF:
-            raise NotImplementedError()
-        if gain is None:
-            gain = type(self).CONFIG.DEFAULT_GAIN_TX_IF
-        gain = self._check_gain(gain, "Tx RF")
-        self._set_rx_rf_gain(gain)
-        return gain
-    def set_tx_bb_gain(self, gain=None):
-        """Set baseband transmit BB gain"""
-        self.log.trace("set_tx_bb_gain(%s)", gain)
-        self._ensure_open("set_tx_bb_gain")
-        if not type(self).CONFIG.GAIN_TX_BB:
-            raise NotImplementedError()
-        if gain is None:
-            gain = type(self).CONFIG.DEFAULT_GAIN_TX_BB
-        gain = self._check_gain(gain, "Tx RF")
-        self._set_rx_rf_gain(gain)
-        return gain
-
     def set_bias_t(self, bias):
         """Set bias-t"""
         self.log.trace("set_bias_t(%s)", bias)
@@ -265,21 +182,47 @@ class Device:
         self.set_freq(cf)
 
     # --- Helpers/Utils --- #
-    def _check_gain(self, gain, name):
-        cname = name.upper().replace(" ", "_")
-        gstep = getattr(type(self).CONFIG, f"GAIN_{cname}_STEP", None)
-        gmin = getattr(type(self).CONFIG, f"GAIN_{cname}_MIN")
-        gmax = getattr(type(self).CONFIG, f"GAIN_{cname}_MAX")
-        if gstep is not None:
-            if gain % gstep:
-                warn.InvalidValue(f"{name} gain must be a multiple of {gstep}")
-                gain -= gain % gstep # default to lowering gain to next valid value
-        if gain < gmin:
-            warn.InvalidValue(f"{name} gain must greater than {gmin}")
-            gain = gmin
-        elif gain > gmax:
-            warn.InvalidValue(f"{name} gain must be less than {gmax}")
-            gain = gmax
+    def _clamp_gain(self, gain, label, step, lo, hi):
+        """Round `gain` down to a multiple of `step` and clamp it to [lo, hi], warning if changed"""
+        if step:
+            if gain % step:
+                warn.InvalidValue(f"{label} gain must be a multiple of {step}")
+                gain -= gain % step # default to lowering gain to next valid value
+        if gain < lo:
+            warn.InvalidValue(f"{label} gain must greater than {lo}")
+            gain = lo
+        elif gain > hi:
+            warn.InvalidValue(f"{label} gain must be less than {hi}")
+            gain = hi
+        return gain
+
+    def _check_gain(self, gain, direction):
+        """Validate a total ("RX"/"TX") gain against the device's overall limits"""
+        config = type(self).CONFIG
+        return self._clamp_gain(gain, direction, None,
+                                getattr(config, f"GAIN_{direction}_MIN"), getattr(config, f"GAIN_{direction}_MAX"))
+
+    def _set_gain_stage(self, direction, stage, gain, setter):
+        """For devices to build their own per-stage gain setters on.
+
+        A device exposes whatever stages its hardware has, under its own names, e.g.
+
+            def set_rx_mixer_gain(self, gain=None):
+                return self._set_gain_stage("RX", "MIXER", gain, self._set_rx_mixer_gain)
+
+        Handles the open check, the device's default, validation against the stage's limits declared
+        in its config, and then calls `setter(validated_gain)`. Returns the gain that was set.
+        """
+        label = f"{direction} {stage}".replace("_", " ")
+        self.log.trace("set_%s_%s_gain(%s)", direction.lower(), stage.lower(), gain)
+        self._ensure_open(f"set_{direction.lower()}_{stage.lower()}_gain")
+        spec = type(self).CONFIG.stage(direction, stage)
+        if spec is None:
+            raise NotImplementedError(f"{type(self).NAME} has no {label} gain stage")
+        if gain is None:
+            gain = spec.default
+        gain = self._clamp_gain(gain, label, spec.step, spec.min, spec.max)
+        setter(gain)
         return gain
 
     def _ensure_open(self, name):
@@ -310,29 +253,11 @@ class Device:
         ...
     def _set_freq(self, freq):
         ...
-    def _set_freq_cf(self, freq):
-        raise NotImplementedError()
-    def _set_freq_if(self, freq):
-        raise NotImplementedError()
-    def _set_freq_lo(self, freq):
-        raise NotImplementedError()
 
     def _set_rx_gain(self, gain):
         raise NotImplementedError()
-    def _set_rx_rf_gain(self, gain):
-        raise NotImplementedError()
-    def _set_rx_if_gain(self, gain):
-        raise NotImplementedError()
-    def _set_rx_bb_gain(self, gain):
-        raise NotImplementedError()
 
     def _set_tx_gain(self, gain):
-        raise NotImplementedError()
-    def _set_tx_rf_gain(self, gain):
-        raise NotImplementedError()
-    def _set_tx_if_gain(self, gain):
-        raise NotImplementedError()
-    def _set_tx_bb_gain(self, gain):
         raise NotImplementedError()
 
     def _set_bias_t(self, bias):
