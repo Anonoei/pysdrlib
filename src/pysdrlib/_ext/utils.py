@@ -3,7 +3,6 @@ import ctypes.util
 
 PATH_MOD = Path(__file__).parent.parent
 PATH_LIB = PATH_MOD / "_ext" / "cache"
-PATH_LIB.mkdir(exist_ok=True)
 
 def rmdir(path: Path):
     for file in path.iterdir():

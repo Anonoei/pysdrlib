@@ -1,25 +1,26 @@
+def _is_missing_library(exc):
+    """True if an ImportError means the extension loaded but libhackrf's symbols aren't available"""
+    msg = str(exc).lower()
+    return any(s in msg for s in ("undefined symbol", "symbol not found", "libhackrf", "hackrf_", "dll load failed"))
+
 def _import_hackrf():
     try:
         from .hackrf import HackRF
         return HackRF
     except ImportError as first:
-        # Missing shared library (libhackrf not on the host): build the vendored copy
-        # (offline, cached), load it by path, and retry. If the compiled extension itself
-        # is missing there is nothing to rebuild at runtime.
-        if "_hackrf" in str(getattr(first, "name", "") or "") and "libhackrf" not in str(first):
-            raise ImportError(
-                "pysdrlib.hackrf's compiled extension is missing; "
-                "install pysdrlib with `pip install .` (or `python setup.py build_ext --inplace`)."
-            ) from first
-        import ctypes
         from .._ext import hackrf as ext_hackrf
+        if not _is_missing_library(first):
+            raise ImportError(
+                "pysdrlib.hackrf's compiled extension is not available for this installation "
+                "(e.g. an unsupported platform, or a source checkout that was never built). "
+                "Install a wheel for your platform, or build it with `pip install .`."
+            ) from first
+        # The extension is there but libhackrf isn't loaded: find it, or build the bundled copy on
+        # this machine (offline, cached), then retry.
         try:
-            path = ext_hackrf.mk_lib()
-            for lib in sorted(path.glob("libhackrf.so*")) + sorted(path.glob("libhackrf*.dylib")):
-                ctypes.CDLL(str(lib), mode=ctypes.RTLD_GLOBAL)
-                break
-        except (RuntimeError, OSError) as exc:
-            raise ImportError(f"libhackrf is not installed and could not be built: {exc}") from first
+            ext_hackrf.load_library()
+        except RuntimeError as exc:
+            raise ImportError(str(exc)) from first
         from .hackrf import HackRF
         return HackRF
 

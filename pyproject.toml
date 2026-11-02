@@ -69,15 +69,3 @@ markers = [
     "benchmark: performance checks, slow and timing sensitive (run with `pytest -m benchmark`)",
 ]
 addopts = "-m 'not benchmark'"
-
-# libhackrf is built during setup (when the host lacks it) into _ext/cache, after the
-# sdist file list is fixed, so ship it explicitly. Static libs / build dirs stay out.
-[tool.setuptools.package-data]
-pysdrlib = [
-    "_ext/*.hpp",
-    "_ext/cache/hackrf/libhackrf.so*",
-    "_ext/cache/hackrf/libhackrf*.dylib",
-    "_ext/cache/hackrf/hackrf*.dll",
-    "hackrf/lib/*.cpp",
-    "hackrf/lib/*.hpp",
-]
