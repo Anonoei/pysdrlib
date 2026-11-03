@@ -236,6 +236,36 @@ class TestServer:
         with pytest.raises(ValueError):
             Server("http://nope")
 
+    def test_a_stalled_device_is_logged_once_and_the_stream_resumes(self):
+        """The pump loop must neither die nor flood the log when the device raises StreamStalled"""
+        import logging
+        records = []
+        class Collect(logging.Handler):
+            def emit(self, record):
+                records.append(record.getMessage())
+        with Server("tcp://127.0.0.1:0", devices=["sim"]) as s:
+            worker, _ = s.open_device("sim")
+            worker.log.addHandler(Collect())
+            sim, stalled, real = worker.device, [True], worker.device._get_samples
+            def get_samples():
+                if stalled[0]:
+                    raise err.StreamStalled("sim stopped delivering")
+                return real()
+            sim._get_samples = get_samples
+            with RemoteDevice(s.endpoint, id=worker.id) as d:
+                d.claim()
+                d.initialize(cf=100e6, Fs=1e6)
+                d.start_rx()
+                time.sleep(0.5)
+                assert sum("stopped delivering" in m for m in records) == 1
+                stalled[0] = False   # data resumes
+                deadline = time.time() + 5
+                samples = d.get_samples(timeout=0.2)
+                while len(samples) == 0 and time.time() < deadline:
+                    samples = d.get_samples(timeout=0.2)
+                d.stop_rx()
+                assert len(samples) > 0, "the stream did not resume after the stall"
+
 
 def test_lease_expiry_releases_controller():
     with Server("tcp://127.0.0.1:0", devices=["sim"], lease=0.5) as s:

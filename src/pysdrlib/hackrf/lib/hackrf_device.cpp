@@ -36,9 +36,8 @@ HackRFDevice::~HackRFDevice() {
     try { close(); } catch (...) {}
 }
 
-hackrf_device* HackRFDevice::require() const {
-    if (!handle_) throw HardwareError(HACKRF_ERROR_INVALID_PARAM, "HackRF device is not open");
-    return handle_;
+HardwareError HackRFDevice::not_open_error() const {
+    return HardwareError(HACKRF_ERROR_INVALID_PARAM, "HackRF device is not open");
 }
 
 void HackRFDevice::open() {
@@ -67,25 +66,11 @@ void HackRFDevice::close() {
     hackrf_check(result, "hackrf_close");
 }
 
-void HackRFDevice::set_rx_callback(RxCallbackFn callback) {
-    rx_callback_ = std::move(callback);
-}
-
 int HackRFDevice::rx_trampoline(hackrf_transfer* transfer) {
     auto* self = static_cast<HackRFDevice*>(transfer->rx_ctx);
-    if (!self || !self->rx_callback_) return -1;
-    return self->rx_callback_(transfer->buffer, static_cast<size_t>(transfer->valid_length),
-                              static_cast<size_t>(transfer->buffer_length));
-}
-
-int HackRFDevice::simulate_rx(const uint8_t* data, int valid_length, int buffer_length) {
-    hackrf_transfer t{};
-    t.device = handle_;
-    t.buffer = const_cast<uint8_t*>(data);
-    t.buffer_length = buffer_length;
-    t.valid_length = valid_length;
-    t.rx_ctx = this;
-    return rx_trampoline(&t);
+    if (!self) return -1;
+    return self->dispatch_rx(transfer->buffer, static_cast<size_t>(transfer->valid_length),
+                             static_cast<size_t>(transfer->buffer_length));
 }
 
 void HackRFDevice::start_rx() {
@@ -97,7 +82,8 @@ void HackRFDevice::stop_rx() {
 }
 
 bool HackRFDevice::is_streaming() const {
-    int r = hackrf_is_streaming(require());
+    if (!handle_) return false;
+    int r = hackrf_is_streaming(handle_);
     if (r == HACKRF_TRUE) return true;
     // A stream that ended (stop_rx, or the callback returned non-zero) is "not streaming", not a failure.
     if (r == HACKRF_ERROR_STREAMING_STOPPED || r == HACKRF_ERROR_STREAMING_EXIT_CALLED) return false;

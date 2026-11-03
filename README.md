@@ -17,7 +17,7 @@ Other projects, like SoapySDR, are likely what you're looking for.
 - [X] [Hack RF](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/hackrf)
 - [ ] [Blade RF](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/bladerf)
 - [ ] [B210 (UHD)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/UHD)
-- [ ] [RX-888 (extio)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/extio)
+- [X] [RX-888 (extio)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/extio)
 
 ## Usage
 Dynamic imports
@@ -47,6 +47,17 @@ sdr.open(); sdr.initialize(cf=100e6, Fs=10e6); sdr.start_rx()
 samples = sdr.get_samples()
 ```
 One client controls a device; any number can attach as viewers (`pysdrlib.device("remote", addr, id="hackrf-0")`) to receive samples.
+
+### Stalls and dropped samples
+Hardware devices watch their own stream each time you call `get_samples()`:
+```python
+try:
+    samples = sdr.get_samples()
+except pysdrlib.err.StreamStalled:   # no samples for sdr.stall_timeout seconds (default 1, None disables)
+    sdr.stop_rx(); sdr.start_rx()    # or close and reopen the device
+print(sdr.stats)  # samples delivered, dropped, missing, stalls, and seconds since the last samples
+```
+Samples lost because `get_samples()` wasn't called often enough, or because the device delivered fewer than its sample rate requires, raise a `pysdrlib.warn.Dropped` warning. Anything still buffered when a stall is detected is returned first.
 
 # Contributing
 1. `git clone https://github.com/Anonoei/pysdrlib`

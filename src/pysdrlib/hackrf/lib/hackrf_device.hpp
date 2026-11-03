@@ -32,10 +32,9 @@ public:
     SampleFormat rx_sample_format() const override { return {SampleKind::Int, 8, 8, false}; }
 
     // Streaming
-    void set_rx_callback(RxCallbackFn callback);
-    void start_rx();
-    void stop_rx();
-    bool is_streaming() const;
+    void start_rx() override;
+    void stop_rx() override;
+    bool is_streaming() const override;
 
     // Tuning
     void set_freq(uint64_t freq_hz);
@@ -57,21 +56,17 @@ public:
     void set_txvga_gain(uint32_t gain) { set_tx_if_gain(gain); }
     void set_antenna_enable(bool enable);   // bias-tee
 
-    // Run `data` through the same path libhackrf's streaming thread uses
-    // (trampoline -> callback). For tests; needs no hardware.
-    int simulate_rx(const uint8_t* data, int valid_length, int buffer_length);
-
     // Queries
     uint8_t board_id_read() const;
     std::string version_string_read() const;
     std::string usb_api_version_read() const;
     std::pair<std::string, std::string> board_partid_serialno_read() const;
 
-private:
-    hackrf_device* require() const;
-    static int rx_trampoline(hackrf_transfer* transfer);
+protected:
+    HardwareError not_open_error() const override;
 
-    RxCallbackFn rx_callback_;
+private:
+    static int rx_trampoline(hackrf_transfer* transfer);
 };
 
 // Snapshot of attached devices.

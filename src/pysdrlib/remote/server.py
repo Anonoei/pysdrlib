@@ -183,11 +183,19 @@ class DeviceWorker:
 
     # --- RX stream --- #
     def _pump_loop(self):
+        stalled = False   # log a stall once, not on every poll
         while not self._stop.is_set():
             if not self.streaming.wait(POLL_MS / 1000):
                 continue
             try:
                 samples = self.device.get_samples()
+                stalled = False
+            except err.StreamStalled as exc:
+                if not stalled:
+                    self.log.warning("%s", exc)
+                    stalled = True
+                time.sleep(IDLE_SLEEP)
+                continue
             except Exception:
                 if not self._stop.is_set() and self.streaming.is_set():
                     self.log.exception("get_samples failed")

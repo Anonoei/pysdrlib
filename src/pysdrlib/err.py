@@ -11,6 +11,9 @@ class NoDevice(_Error):
 class NotOpen(_Error):
     """Error thrown when attempting to control device without it open"""
 
+class StreamStalled(_Error):
+    """Error thrown by `get_samples` when the device has stopped delivering samples"""
+
 class RemoteError(_Error):
     """Error raised by a remote pysdrlib server that has no more specific type"""
 

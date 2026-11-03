@@ -1,26 +1,16 @@
-import numpy as np
-
-from ..base.device import Device
-from ..base.buffer import RotatingBuffer
+from ..base.native import NativeDevice
 from ..base import convert
 from .. import err
 
 from .config import ConfigHackRF as config
 from . import lib
 
-FORMAT = convert.INT8 # libhackrf delivers interleaved signed 8-bit I/Q
-cb = RotatingBuffer()
-
-def rx_callback(buffer, valid_length, buffer_length):
-    cb.update(FORMAT.to_complex64(buffer, valid_length)) # raw I,Q -> complex64, -1 to +1
-    return 0
-
-class HackRF(Device):
+class HackRF(NativeDevice):
     NAME = "HackRF"
     CONFIG = config
     CAN_TRANSMIT = True
     DUPLEX = False
-    SAMPLE_FORMAT = FORMAT
+    SAMPLE_FORMAT = convert.INT8 # libhackrf delivers interleaved signed 8-bit I/Q
 
     def __init__(self):
         super().__init__()
@@ -37,25 +27,9 @@ class HackRF(Device):
                 raise err.NoDevice("No HackRF devices found!") from exc
         return device
 
-    def _close(self):
-        self.device.close()
-
-    def resize_buff(self):
-        buff_size = int(0.5*self._Fs)
-        cb.reset(buff_size)
-
-    def _start_rx(self):
-        self.device.set_rx_callback(rx_callback)
-        self.resize_buff()
-        self.device.start_rx()
-    def _stop_rx(self):
-        self.device.stop_rx()
-    def _get_samples(self):
-        return cb.samples # TODO, check performance penalty of checking state["rx"]
-
     def _set_sample_rate(self, Fs):
         self.device.set_sample_rate(int(Fs))
-        self.resize_buff()
+        self._rate_changed()
     def _set_freq(self, freq):
         self.device.set_freq(int(freq))
 
@@ -84,7 +58,6 @@ class HackRF(Device):
             rtr["if"] = self.set_rx_if_gain(type(self).CONFIG.DEFAULT_GAIN_RX_IF)
             rtr["bb"] = self.set_rx_bb_gain(type(self).CONFIG.DEFAULT_GAIN_RX_BB)
         else:
-            print(f"Set gain: {gain}")
             if gain > (type(self).CONFIG.GAIN_RX_IF_MAX + type(self).CONFIG.GAIN_RX_BB_MAX):
                 rtr["rf"] = self.set_rx_rf_gain(type(self).CONFIG.GAIN_RX_RF_MAX) # enable amp
                 gain -= type(self).CONFIG.GAIN_RX_RF_MAX
@@ -123,5 +96,5 @@ class HackRF(Device):
     def _set_tx_if_gain(self, gain):
         self.device.set_txvga_gain(int(gain))
 
-    def set_bias_t(self, bias):
-        self.device.set_antenna_enable(bias) # TODO: fix
+    def _set_bias_t(self, bias):
+        self.device.set_antenna_enable(bool(bias))

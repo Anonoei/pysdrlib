@@ -34,8 +34,9 @@ struct SampleFormat {
     }
 };
 
-// Owns a native device handle. Child classes implement open/close and the
-// device-specific controls; they report failures by throwing HardwareError.
+// Owns a native device handle. Child classes implement open/close, streaming and the device-specific
+// controls; they report failures by throwing HardwareError. Everything the Python bindings need to
+// treat devices alike (see hardware_pybind.hpp) is in this interface.
 template <typename HandleT>
 class HardwareDevice {
 public:
@@ -54,6 +55,27 @@ public:
     // Layout of the raw receive stream (what the RxCallbackFn data contains)
     virtual SampleFormat rx_sample_format() const = 0;
 
+    // Set the callback before start_rx(). It is dropped by close().
+    void set_rx_callback(RxCallbackFn callback) { rx_callback_ = std::move(callback); }
+    virtual void start_rx() = 0;
+    virtual void stop_rx() = 0;
+    virtual bool is_streaming() const = 0;
+
+    // What a driver's streaming thread calls with each buffer: hands it to the callback, or returns -1
+    // (stop streaming) if there is none. Public so tests can drive the real path without hardware.
+    int dispatch_rx(const void* data, size_t valid_bytes, size_t buffer_bytes) const {
+        return rx_callback_ ? rx_callback_(data, valid_bytes, buffer_bytes) : -1;
+    }
+
 protected:
+    // The handle, or a HardwareError (see not_open_error) if the device isn't open
+    HandleT require() const {
+        if (!handle_) throw not_open_error();
+        return handle_;
+    }
+    virtual HardwareError not_open_error() const = 0;
+
     HandleT handle_ = nullptr;
+    // Only safe to drop once no streaming thread can call it, i.e. after the driver has stopped
+    RxCallbackFn rx_callback_;
 };

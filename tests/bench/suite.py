@@ -275,9 +275,10 @@ def _(quick):
     except ImportError as exc:
         raise _Skip(f"hackrf unavailable: {exc}")
     raw = _raw_int8()
-    hm.cb.reset(4 * N)
-    fmt = hm.FORMAT
-    return Case(lambda: hm.rx_callback(raw, len(raw), len(raw)), lambda: fmt.to_complex64(raw), items=N)
+    sdr = hm.HackRF()
+    sdr._buffer.reset(4 * N)
+    fmt = hm.HackRF.SAMPLE_FORMAT
+    return Case(lambda: sdr._rx_callback(raw, len(raw), len(raw)), lambda: fmt.to_complex64(raw), items=N)
 
 
 # ------------------------------------------------------------------ benchmarks: generic device layer
@@ -416,31 +417,27 @@ def _(quick):
 def _hackrf_stream(Fs, seconds):
     """Stream from a real HackRF; measure the Python-side callback cost."""
     from pysdrlib import hackrf
-    from pysdrlib.hackrf import hackrf as hm
     spent, calls = [0.0], [0]
-    orig = hm.rx_callback
-    def timed(buffer, valid, buflen):
-        t = time.perf_counter()
-        rtr = orig(buffer, valid, buflen)
-        spent[0] += time.perf_counter() - t
-        calls[0] += 1
-        return rtr
-    hm.rx_callback = timed
-    try:
-        with hackrf.Device() as sdr:
-            sdr.initialize(cf=100e6, Fs=Fs)
-            hm.cb.clear_dropped()
-            got, t0 = 0, time.perf_counter()
-            sdr.start_rx()
-            while time.perf_counter() - t0 < seconds:
-                got += len(sdr.get_samples())
-                time.sleep(0.005)
-            sdr.stop_rx()
-            elapsed = time.perf_counter() - t0
+    with hackrf.Device() as sdr:
+        orig = sdr._rx_callback
+        def timed(buffer, valid, buflen):
+            t = time.perf_counter()
+            rtr = orig(buffer, valid, buflen)
+            spent[0] += time.perf_counter() - t
+            calls[0] += 1
+            return rtr
+        sdr._rx_callback = timed   # picked up by start_rx
+        sdr.initialize(cf=100e6, Fs=Fs)
+        sdr._buffer.clear_dropped()
+        got, t0 = 0, time.perf_counter()
+        sdr.start_rx()
+        while time.perf_counter() - t0 < seconds:
             got += len(sdr.get_samples())
-            dropped = hm.cb.dropped
-    finally:
-        hm.rx_callback = orig
+            time.sleep(0.005)
+        sdr.stop_rx()
+        elapsed = time.perf_counter() - t0
+        got += len(sdr.get_samples())
+        dropped = sdr._buffer.dropped
     return {
         "dropped": Gauge(dropped, "samples", abs_tol=0),
         "rate": Gauge(got / elapsed / 1e6, "MS/s", lower_is_better=False, abs_tol=0.5),
