@@ -4,12 +4,15 @@ Adding a device: add a `Spec` to SPECS. Every `test_*_contract.py` then runs aga
 """
 import importlib
 import os
+import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Callable
 
 import numpy as np
 import pytest
+
+from pysdrlib.base.buffer import RotatingBuffer
 
 HW = os.environ.get("PYSDRLIB_HW") == "1"
 
@@ -28,6 +31,7 @@ class Spec:
     closed_calls: tuple = ()        # (name, args) driver calls that must raise on a closed device
     present: Callable = None        # native module -> number of attached devices
     configure: Callable = None      # native device -> None: tune it so it streams
+    atol: float = 0                 # how far converted SAMPLES may be from the originals (quantization)
 
     def _import(self, name):
         try:
@@ -74,11 +78,25 @@ class Spec:
 
 
 class FakeDevice:
-    """Stands in for the extension's device: records every call, returns what the spec says"""
-    def __init__(self, returns):
+    """Stands in for the extension's device: records every call, returns what the spec says.
+
+    Receiving works like the extension's buffered path (`set_rx_buffer`, `read_rx`, `rx_stats`), with the
+    driver's part played by `deliver`: the test hands it raw bytes as a USB transfer would. The conversion
+    and ring are pysdrlib's Python ones here; the real C++ ones are tested in test_native_contract.py.
+    """
+    def __init__(self, returns, fmt=None):
         self.calls = []
         self.rx_callback = None
         self._returns = returns
+        self.format = fmt
+        self.clock = time.monotonic        # a test may replace it, with the watchdog's
+        self._ring = RotatingBuffer()
+        self._reset_counts()
+
+    def _reset_counts(self):
+        self._ring._dropped = 0
+        self._samples = self._max_chunk = self._calls = 0
+        self._last = None
 
     def __getattr__(self, name):
         if name.startswith("__"):
@@ -93,6 +111,32 @@ class FakeDevice:
         self.rx_callback = fn
         self.calls.append(("set_rx_callback",))
 
+    # --- the buffered receive path --- #
+    def set_rx_buffer(self, samples):
+        self.calls.append(("set_rx_buffer", samples))
+        self._ring.reset(samples)
+
+    def reset_rx_stats(self):
+        self.calls.append(("reset_rx_stats",))
+        self._reset_counts()
+
+    def read_rx(self, count=None):
+        return self._ring.read(count)
+
+    def rx_stats(self):
+        return {"samples": self._samples, "dropped": self._ring.dropped, "pending": self._ring.available,
+                "max_chunk": self._max_chunk, "calls": self._calls, "busy": 0.0,
+                "age": None if self._last is None else self.clock() - self._last}
+
+    def deliver(self, raw, valid=None):
+        """The driver delivering one transfer of raw bytes (`valid` of them are good)"""
+        samples = self.format.to_complex64(raw, valid)
+        self._ring.update(samples)
+        self._samples += len(samples)
+        self._max_chunk = max(self._max_chunk, len(samples))
+        self._calls += 1
+        self._last = self.clock()
+
     def names(self):
         return [c[0] for c in self.calls]
 
@@ -106,7 +150,7 @@ def fake_lib(spec, open_error=None):
     def open_(*args):
         if open_error:
             raise open_error
-        return FakeDevice(spec.fake_returns)
+        return FakeDevice(spec.fake_returns, spec.device_class.SAMPLE_FORMAT)
     native = SimpleNamespace(open=open_, open_by_serial=open_, init=lambda: None)
     return SimpleNamespace(**{spec.name: native, "err": spec.lib.err})
 
@@ -116,6 +160,10 @@ def _hackrf_present(native):
 
 def _hackrf_configure(device):
     device.set_sample_rate(10_000_000)
+    device.set_freq(100_000_000)
+
+def _rtl_sdr_configure(device):
+    device.set_sample_rate(2_400_000)
     device.set_freq(100_000_000)
 
 def _extio_configure(device):
@@ -138,6 +186,13 @@ SPECS = [
          closed_calls=(("start_rx",), ("stop_rx",), ("set_freq", 7_100_000),
                        ("set_sample_rate", 8e6), ("set_rx_rf_gain", 0.0), ("set_bias_t", False)),
          present=lambda native: native.device_count(), configure=_extio_configure),
+    Spec("rtl_sdr", "RTLSDR", "rtlsdr",
+         encode=lambda iq: np.rint(iq.view(np.float32) * 127.5 + 127.5).astype(np.uint8),   # offset binary
+         rate=2.4e6, atol=1 / 127.5,
+         fake_returns={"set_sample_rate": lambda v: v},
+         closed_calls=(("start_rx",), ("stop_rx",), ("set_freq", 100_000_000), ("set_sample_rate", 2_400_000),
+                       ("set_rx_rf_gain", 30.0), ("set_agc", True), ("set_bias_t", False), ("gains",)),
+         present=lambda native: native.device_count(), configure=_rtl_sdr_configure),
 ]
 
 BY_NAME = {spec.name: spec for spec in SPECS}

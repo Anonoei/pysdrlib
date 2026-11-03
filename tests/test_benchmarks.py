@@ -38,7 +38,7 @@ def test_everything_ran(results):
     ("convert.int8", 4),           # one pass int8 -> complex64
     ("convert.int16", 4),
     ("convert.int12", 4),
-    ("hackrf.rx_callback", 5),     # convert + buffer
+    ("hackrf.rx_callback", 5),     # native convert + queue, vs numpy converting alone
     ("sim.pump_16_blocks", 6),     # whole generic device path vs conversion alone
     ("file.next_8192", 8),         # File.next vs reading the chunk directly
 ])

@@ -28,10 +28,9 @@ class TestRotatingBuffer:
     def test_initial_state(self):
         """Test initial buffer state."""
         rot_buf = buffer.RotatingBuffer()
-        assert rot_buf._N == 0
+        assert rot_buf.capacity == 0
         assert len(rot_buf.samples) == 0
-        assert rot_buf._idx == 0
-        assert rot_buf._last_idx == 0
+        assert rot_buf.available == 0
         assert rot_buf.dropped == 0
 
     def test_reset(self):
@@ -39,9 +38,8 @@ class TestRotatingBuffer:
         rot_buf = buffer.RotatingBuffer()
         rot_buf.reset(100)
 
-        assert rot_buf._N == 100
-        assert rot_buf._idx == 0
-        assert rot_buf._last_idx == 0
+        assert rot_buf.capacity == 100
+        assert rot_buf.available == 0
         assert len(rot_buf.samples) == 0
         assert rot_buf.samples.dtype == 'complex64'
 

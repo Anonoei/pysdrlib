@@ -8,7 +8,7 @@ from . import utils
 
 LIB = utils.VendorLibrary(
     name="sddc_core",
-    source=utils.PATH_MOD / "extio" / "_build",   # CMake project wrapping the vendored ExtIO_sddc/Core
+    source=utils.PATH_MOD / "extio" / "vendor",   # CMake project wrapping the vendored ExtIO_sddc/Core
     files=("libsddc_core.so", "libsddc_core.dylib"),
     missing_hints=("sddc",),
     help=("Install cmake, a C++17 compiler and the libusb-1.0 and fftw3f development files (e.g. "
@@ -19,4 +19,4 @@ mk_lib = LIB.build
 load_library = LIB.load
 
 def get():
-    return utils.pybind_extension("extio", "src/pysdrlib/extio/_build/ExtIO_sddc/Core", "RadioHandler.h")
+    return utils.pybind_extension("extio", "src/pysdrlib/extio/vendor/ExtIO_sddc/Core", "RadioHandler.h")

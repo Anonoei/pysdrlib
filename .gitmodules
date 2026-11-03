@@ -1,3 +1,9 @@
 [submodule "vendor/hackrf"]
 	path = vendor/hackrf
 	url = https://github.com/greatscottgadgets/hackrf
+[submodule "vendor/ExtIO_sddc"]
+	path = vendor/ExtIO_sddc
+	url = https://github.com/ik1xpv/ExtIO_sddc
+[submodule "vendor/rtl-sdr"]
+	path = vendor/rtl-sdr
+	url = https://github.com/osmocom/rtl-sdr

@@ -22,7 +22,7 @@ class TestSampleRate:
         with pytest.warns(Warning):
             assert sdr.set_sample_rate(5e6) == 4e6
         assert sdr.Fs == 4e6
-        assert sdr._buffer._N == int(type(sdr).BUFFER_SECONDS * 4e6)   # sized for the rate it got
+        assert sdr.device.of("set_rx_buffer")[-1] == (int(type(sdr).BUFFER_SECONDS * 4e6),)   # sized for the rate it got
 
 
 class TestGain:

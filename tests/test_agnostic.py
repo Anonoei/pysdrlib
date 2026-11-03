@@ -15,7 +15,7 @@ from pysdrlib.base.device import Device
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "pysdrlib"
 GENERIC = [*(SRC / "base").glob("*.py"), *(SRC / "file").glob("*.py"),
-           *SRC.glob("*.py"), *(SRC / "_ext").glob("hardware_*.hpp")]
+           *SRC.glob("*.py"), *(SRC / "_native" / "include").glob("hardware_*.hpp")]
 
 # Names that only make sense for particular hardware
 VENDOR_NAMES = [
@@ -42,7 +42,7 @@ def test_no_sample_width_assumptions_in_generic_code():
     """Generic code must not hard-code 8-bit samples (the HackRF's); formats come from a SampleFormat."""
     hits = []
     for path in GENERIC:
-        if path.name in ("io.py", "hardware_numpy.hpp"):   # these define the per-width layouts
+        if path.name in ("io.py", "hardware_numpy.hpp", "hardware_convert.hpp"):   # these define the per-width layouts
             continue
         for n, line in enumerate(path.read_text().splitlines(), 1):
             if re.search(r"\b(u?int8(_t)?|/ ?= ?128|/ 128)\b", line) and "SampleFormat" not in line:

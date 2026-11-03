@@ -8,7 +8,7 @@ from . import utils
 
 LIB = utils.VendorLibrary(
     name="hackrf",
-    source=utils.PATH_MOD / "hackrf" / "_build" / "libhackrf",   # vendored libhackrf (CMake project)
+    source=utils.PATH_MOD / "hackrf" / "vendor" / "libhackrf",   # vendored libhackrf (CMake project)
     files=("libhackrf.so.0", "libhackrf.so", "libhackrf.0.dylib", "libhackrf.dylib", "hackrf.dll"),
     build_globs=("libhackrf.so*", "libhackrf*.dylib", "hackrf.dll"),
     missing_hints=("libhackrf", "hackrf_"),
@@ -21,4 +21,4 @@ mk_lib = LIB.build
 load_library = LIB.load
 
 def get():
-    return utils.pybind_extension("hackrf", "src/pysdrlib/hackrf/_build/libhackrf/src", "hackrf.h")
+    return utils.pybind_extension("hackrf", "src/pysdrlib/hackrf/vendor/libhackrf/src", "hackrf.h")

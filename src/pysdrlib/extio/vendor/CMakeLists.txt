@@ -21,8 +21,8 @@ pkg_check_modules(LIBFFTW REQUIRED fftw3f)
 
 add_subdirectory(ExtIO_sddc/Core)   # -> SDDC_CORE (static)
 
-add_library(sddc_core SHARED usb_guard.cpp)   # everything else is in SDDC_CORE
-target_include_directories(sddc_core PRIVATE .)
+add_library(sddc_core SHARED ${CMAKE_CURRENT_SOURCE_DIR}/../../_native/extio/usb_guard.cpp)   # everything else is in SDDC_CORE
+target_include_directories(sddc_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})   # usb_guard.cpp includes ExtIO_sddc/... via the link here
 target_link_libraries(sddc_core PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,SDDC_CORE>")
 
 # See usb_guard.cpp. Apple's linker has no --wrap: there a failed open still crashes.

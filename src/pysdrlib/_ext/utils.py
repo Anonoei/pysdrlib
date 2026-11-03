@@ -160,23 +160,49 @@ def import_device(package: str, module: str, attr: str, library: VendorLibrary):
 
 
 # ------------------------------------------------------------------ the extensions (for setup.py)
+# All C++ lives under here: include/ is shared, and each device (and samples) has a folder of its own
+NATIVE = "src/pysdrlib/_native"
+
+# No fused multiply-add: the conversion must round exactly as the numpy reference does, on every CPU. And no
+# FP traps, which nothing uses and which stop the encoder's clamps from being vectorised.
+FP_FLAGS = [] if sys.platform == "win32" else ["-ffp-contract=off", "-fno-trapping-math"]
+
 def pybind_extension(device: str, header_dir: str, header: str):
     """The pybind11 Extension for `pysdrlib.<device>.lib._<device>` (setup.py). Does no building and
     does not link the vendor library: its symbols stay undefined and are resolved when the library is
     loaded at import time. Sources are `<device>_pybind.cpp` and `<device>_device.{cpp,hpp}` in
-    `src/pysdrlib/<device>/lib`, compiled against the vendor's `header` in `header_dir` (repo-relative)."""
+    `src/pysdrlib/_native/<device>`, compiled against the vendor's `header` in `header_dir` (repo-relative)."""
     from pybind11.setup_helpers import Pybind11Extension
 
-    src, shared = f"src/pysdrlib/{device}/lib", "src/pysdrlib/_ext"
+    src, shared = f"{NATIVE}/{device}", f"{NATIVE}/include"
     return Pybind11Extension(
         name=f"pysdrlib.{device}.lib._{device}",
         sources=[f"{src}/{device}_pybind.cpp", f"{src}/{device}_device.cpp"],
         include_dirs=[header_dir, shared, src],
         depends=[f"{src}/{device}_device.hpp", f"{header_dir}/{header}",
-                 f"{shared}/hardware_wrapper.hpp", f"{shared}/hardware_numpy.hpp", f"{shared}/hardware_pybind.hpp"],
+                 f"{shared}/hardware_wrapper.hpp", f"{shared}/hardware_numpy.hpp", f"{shared}/hardware_pybind.hpp",
+                 f"{shared}/hardware_format.hpp", f"{shared}/hardware_convert.hpp", f"{shared}/hardware_rx.hpp"],
         # macOS leaves them undefined with a flag; Windows can't at all: skip the extension there rather
         # than fail the whole build (importing the device then explains it). Elsewhere errors are fatal.
         extra_link_args=["-undefined", "dynamic_lookup"] if sys.platform == "darwin" else [],
+        extra_compile_args=FP_FLAGS,
         cxx_std=17,
         optional=sys.platform == "win32",
+    )
+
+
+def samples_extension():
+    """The pybind11 Extension for `pysdrlib.base.lib._samples` (setup.py): the sample conversion and ring
+    that pysdrlib.base.convert and pysdrlib.base.buffer call. It depends on no vendor library, so unlike the
+    devices' it is always built and always works."""
+    from pybind11.setup_helpers import Pybind11Extension
+
+    src, shared = f"{NATIVE}/samples", f"{NATIVE}/include"
+    return Pybind11Extension(
+        name="pysdrlib.base.lib._samples",
+        sources=[f"{src}/samples_pybind.cpp"],
+        include_dirs=[shared],
+        depends=[f"{shared}/hardware_format.hpp", f"{shared}/hardware_convert.hpp", f"{shared}/hardware_ring.hpp"],
+        extra_compile_args=FP_FLAGS,
+        cxx_std=17,
     )

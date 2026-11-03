@@ -7,11 +7,22 @@ describes that layout and converts it to complex64 scaled to [-1, 1]; `from_comp
     samples = fmt.to_complex64(raw, valid_bytes)
 
 Nothing in here is specific to a device. `valid` lengths are in bytes, as drivers report them.
+
+The conversion itself is C++ (`_native/include/hardware_convert.hpp`), the same code a device's streaming thread runs.
+This module describes the layouts and checks them.
 """
 from dataclasses import dataclass
-from functools import lru_cache
 
 import numpy as np
+
+try:
+    from .lib import samples as _samples
+except ImportError as exc:
+    raise ImportError(
+        "pysdrlib's compiled sample converter is not available (e.g. a source checkout that was never built, "
+        "or an unsupported platform). Install a wheel for your platform, or build it with `pip install -e .` "
+        "(or `python setup.py build_ext --inplace`)."
+    ) from exc
 
 @dataclass(frozen=True)
 class SampleFormat:
@@ -70,11 +81,14 @@ class SampleFormat:
     def to_complex64(self, raw, valid=None):
         """Raw interleaved I/Q (ndarray or bytes-like) -> complex64 in [-1, 1].
         `valid` is the number of valid *bytes* in `raw` (default: all). Returns a new array."""
-        return _converter(self)(raw, valid)
+        if isinstance(raw, np.ndarray) and not raw.flags.c_contiguous:
+            raw = np.ascontiguousarray(raw)   # the extension reads memory as it is laid out
+        return _samples.decode(raw, self.kind, self.bits, self.storage, self.packed, self.byteorder == ">", valid)
 
     def from_complex64(self, iq):
         """complex64 in [-1, 1] -> raw data in this layout (typed array, or uint8 bytes if packed)"""
-        return _encoder(self)(np.asarray(iq))
+        raw = _samples.encode(np.asarray(iq), self.kind, self.bits, self.storage, self.packed, self.byteorder == ">")
+        return raw if self.packed else raw.view(self.dtype)
 
     def __str__(self):
         return f"{self.kind}{self.bits}" + ("" if self.bits == self.storage else f" in {self.storage}") \
@@ -86,67 +100,3 @@ INT16 = SampleFormat("int", 16, 16)
 INT12 = SampleFormat("int", 12, 16)                  # 12-bit values in 16-bit words
 INT12_PACKED = SampleFormat("int", 12, 12, packed=True)  # I and Q in 3 bytes
 FLOAT32 = SampleFormat("float", 32, 32)
-
-def _bytes_of(raw):
-    return raw if isinstance(raw, np.ndarray) else np.frombuffer(raw, dtype=np.uint8)
-
-@lru_cache(maxsize=None)
-def _converter(fmt: SampleFormat):
-    if fmt.packed:
-        return _packed12_converter(fmt)
-    dtype, scale = fmt.dtype, np.float32(1.0 / fmt.full_scale)
-    offset = np.float32(fmt.full_scale) if fmt.kind == "uint" else None
-    scaled = fmt.kind != "float"
-    def convert(raw, valid=None):
-        if isinstance(raw, np.ndarray):
-            a = raw if raw.dtype == dtype else raw.view(dtype)   # e.g. a uint8 byte view of int16 data
-        else:
-            a = np.frombuffer(raw, dtype=dtype)
-        if valid is not None:
-            a = a[:valid // dtype.itemsize]
-        out = a[:len(a) & ~1].astype(np.float32)   # whole I/Q pairs only
-        if offset is not None:
-            out -= offset
-        if scaled:
-            out *= scale
-        return out.view(np.complex64)
-    return convert
-
-def _packed12_converter(fmt):
-    scale = np.float32(1.0 / fmt.full_scale)
-    def convert(raw, valid=None):
-        b = _bytes_of(raw)
-        if valid is not None:
-            b = b[:valid]
-        b = b[:len(b) // 3 * 3].reshape(-1, 3).astype(np.int16)
-        comps = np.empty((len(b), 2), dtype=np.int16)
-        comps[:, 0] = b[:, 0] | ((b[:, 1] & 0x0F) << 8)           # I
-        comps[:, 1] = (b[:, 1] >> 4) | (b[:, 2] << 4)             # Q
-        comps = (comps ^ 0x800) - 0x800                           # sign extend 12 -> 16
-        return (comps.astype(np.float32) * scale).reshape(-1).view(np.complex64)
-    return convert
-
-@lru_cache(maxsize=None)
-def _encoder(fmt: SampleFormat):
-    def components(iq):
-        iq = np.ascontiguousarray(iq, dtype=np.complex64)
-        return iq.view(np.float32)   # I, Q, I, Q ... as float32
-    if fmt.kind == "float":
-        return lambda iq: components(iq).astype(fmt.dtype)
-    scale = fmt.full_scale
-    if fmt.kind == "uint":
-        lo, hi = 0, 2 ** fmt.bits - 1
-        quant = lambda x: np.clip(np.rint(x * scale + scale), lo, hi)
-    else:
-        lo, hi = -(2 ** (fmt.bits - 1)), 2 ** (fmt.bits - 1) - 1
-        quant = lambda x: np.clip(np.rint(x * scale), lo, hi)
-    if not fmt.packed:
-        return lambda iq: quant(components(iq)).astype(fmt.dtype)
-    def encode(iq):
-        c = quant(components(iq)).astype(np.int16).reshape(-1, 2) & 0x0FFF
-        out = np.empty((len(c), 3), dtype=np.uint8)
-        out[:, 0] = c[:, 0] & 0xFF
-        out[:, 1] = (c[:, 0] >> 8) | ((c[:, 1] & 0x0F) << 4)
-        out[:, 2] = c[:, 1] >> 4
-        return out.reshape(-1)
-    return encode

@@ -12,6 +12,8 @@
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
+#include <algorithm>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <thread>
@@ -108,6 +110,47 @@ py::class_<Device> bind_device(py::module_& m, const char* name) {
         .def("rx_sample_format", [](const Device& d) {
             SampleFormat f = d.rx_sample_format();
             return py::make_tuple(kind_name(f.kind), f.bits, f.storage_bits, f.packed);
+        })
+
+        // ---- buffered receive: the driver's thread converts to complex64 and queues, no Python involved ---- //
+        .def("set_rx_buffer", [](Device& d, size_t samples) { d.set_rx_buffer(samples); },
+             "Queue up to `samples` complex samples (the oldest are dropped past that); discards pending ones.")
+        .def("reset_rx_stats", [](Device& d) { d.reset_rx_stats(); })
+        .def_property_readonly("rx_available", &Device::rx_available)
+        .def("read_rx", [](Device& d, py::object count) {
+            // Oldest pending samples first (all if `count` is None); removes what it returns
+            size_t want = d.rx_available();
+            if (!count.is_none()) want = std::min(want, count.cast<size_t>());
+            py::array_t<cfloat> out(want);
+            size_t got = 0;
+            if (want) {
+                py::gil_scoped_release release;
+                got = d.read_rx(out.mutable_data(), want);
+            }
+            if (got == want) return out;
+            py::array_t<cfloat> trimmed(got);   // another reader got there first
+            if (got) std::memcpy(trimmed.mutable_data(), out.data(), got * sizeof(cfloat));
+            return trimmed;
+        }, py::arg("count") = py::none())
+        .def("rx_stats", [](const Device& d) {
+            RingStats s = d.rx_stats();
+            py::dict out;
+            out["samples"] = s.samples;
+            out["dropped"] = s.dropped;
+            out["pending"] = s.pending;
+            out["max_chunk"] = s.max_chunk;
+            out["calls"] = s.calls;
+            out["busy"] = s.busy;
+            out["age"] = s.seen ? py::object(py::float_(s.age)) : py::none();   // None: nothing delivered yet
+            return out;
+        })
+
+        // Test/bench hook: hand `data` to the receive path on the calling thread
+        .def("_dispatch_rx", [](Device& d, py::buffer data) {
+            py::buffer_info info = data.request();
+            const size_t bytes = static_cast<size_t>(info.size * info.itemsize);
+            py::gil_scoped_release release;
+            return d.dispatch_rx(info.ptr, bytes, bytes);
         })
 
         // Test hook: run `data` through the same path a driver's streaming thread uses (callback marshalling

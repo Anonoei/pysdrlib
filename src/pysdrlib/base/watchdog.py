@@ -18,12 +18,15 @@ class Report:
     stalled: bool       # delivering has stopped (and not resumed)
     new_stall: bool     # ... and this is the first poll to see it
     missing: int        # samples the device failed to deliver in the window just closed
+    shortfall_start: bool   # ... and the previous window was not short: a new episode, worth one warning
 
 class Watchdog:
     """Notices when a device's sample stream stops, or delivers fewer samples than its rate requires.
 
-    A driver's streaming thread calls `feed(n)` with every chunk; the consumer calls `poll()` when it reads.
-    Nothing runs in the background, so a stall is noticed the next time the consumer looks.
+    It learns about the stream one of two ways: a Python streaming thread calls `feed(n)` with every chunk,
+    or (native devices, whose streaming thread never touches Python) the consumer passes the driver's own
+    counters to `observe()` before it `poll()`s. Nothing runs in the background, so a stall is noticed the
+    next time the consumer looks.
 
     - stalled: no samples for `stall_timeout` seconds (from `start`, if none ever arrive). Set it to None
       to disable the watchdog.
@@ -47,7 +50,7 @@ class Watchdog:
             self._rate = rate
             self._last = now
             self._samples = self._stalls = self._missing = 0
-            self._stalled = False
+            self._stalled = self._short = False
             self._max_chunk = 0
             self._win_t, self._win_n = None, 0   # opened by the first chunk
 
@@ -71,10 +74,23 @@ class Watchdog:
             if self._win_t is None:
                 self._win_t, self._win_n = now, self._samples   # the first chunk marks time zero
 
+    def observe(self, samples, age, max_chunk):
+        """The driver's counters, in place of `feed`: `samples` delivered since `start`, `age` seconds since
+        the latest chunk arrived (None if none has), `max_chunk` samples in the largest one"""
+        with self._lock:
+            if not self._running:
+                return
+            self._samples = samples
+            self._max_chunk = max_chunk
+            if age is not None:
+                self._last = self._clock() - age
+                if self._win_t is None:   # the latest chunk is a point whose time and running count are both known
+                    self._win_t, self._win_n = self._last, samples
+
     def poll(self) -> Report:
         with self._lock:
             if not self._running or self.stall_timeout is None:
-                return Report(False, False, 0)
+                return Report(False, False, 0, False)
             now = self._clock()
             stalled = now - self._last > self.stall_timeout
             new_stall = stalled and not self._stalled
@@ -82,15 +98,17 @@ class Watchdog:
             if self._stalled and not stalled:   # resumed: the gap is not a rate shortfall
                 self._win_t, self._win_n = None, 0
             self._stalled = stalled
-            missing = 0
+            missing = start = 0
             if not stalled and self._win_t is not None and now - self._win_t >= self.window:
                 expected = self._rate * (now - self._win_t)
                 short = expected - (self._samples - self._win_n) - 2 * self._max_chunk
                 if short > self.tolerance * expected:
                     missing = int(short)
                     self._missing += missing
+                    start = not self._short
+                self._short = missing > 0
                 self._win_t, self._win_n = now, self._samples
-            return Report(stalled, new_stall, missing)
+            return Report(stalled, new_stall, missing, bool(start))
 
     def stats(self, dropped=0) -> StreamStats:
         """Snapshot; `dropped` is the consumer-side drop count, which the watchdog cannot see"""

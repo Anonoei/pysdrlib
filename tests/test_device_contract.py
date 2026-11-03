@@ -1,6 +1,6 @@
 """What every hardware device must do, run against each one in tests/devices.py over a fake driver.
 
-No hardware or driver library is needed. Device-specific behaviour (gain stages, rates) is tested in
+No hardware or driver library is needed. Device-specific behavior (gain stages, rates) is tested in
 test_<device>_api.py.
 """
 import numpy as np
@@ -82,7 +82,7 @@ class TestTuning:
 
     def test_sample_rate_resizes_the_buffer(self, sdr, spec):
         sdr.set_sample_rate(spec.rate)
-        assert sdr._buffer._N == int(type(sdr).BUFFER_SECONDS * spec.rate)
+        assert sdr.device.of("set_rx_buffer")[-1] == (int(type(sdr).BUFFER_SECONDS * spec.rate),)
 
 
 class TestConfig:
@@ -115,52 +115,49 @@ class TestConfig:
 
 
 class TestRx:
-    def test_start_installs_the_callback_before_streaming(self, sdr):
+    def test_start_queues_in_the_driver_before_streaming(self, sdr):
+        """Samples are converted and queued by the extension's own thread, never by a Python callback"""
         sdr.start_rx()
         names = sdr.device.names()
-        assert sdr.state["rx"] and names.index("set_rx_callback") < names.index("start_rx")
-        assert sdr.device.rx_callback == sdr._rx_callback
+        assert sdr.state["rx"] and names.index("set_rx_buffer") < names.index("reset_rx_stats") < names.index("start_rx")
+        assert sdr.device.rx_callback is None and "set_rx_callback" not in names
         sdr.stop_rx()
         assert not sdr.state["rx"] and "stop_rx" in sdr.device.names()
 
     def test_start_sizes_the_buffer_for_the_rate(self, sdr, spec):
         sdr.set_sample_rate(spec.rate)
-        sdr._buffer.reset(1)
         sdr.start_rx()
-        assert sdr._buffer._N == int(type(sdr).BUFFER_SECONDS * spec.rate)
+        assert sdr.device.of("set_rx_buffer")[-1] == (int(type(sdr).BUFFER_SECONDS * spec.rate),)
 
     def test_samples_arrive_as_complex64(self, sdr, spec):
+        sdr.set_sample_rate(spec.rate)
         sdr.start_rx()
         _, raw = spec.raw()
-        assert sdr.device.rx_callback(raw, raw.nbytes, raw.nbytes) == 0
+        sdr.device.deliver(raw)
         samples = sdr.get_samples()
         assert samples.dtype == np.complex64   # every device returns complex64, no complex128 intermediate
-        np.testing.assert_allclose(samples, SAMPLES)
+        np.testing.assert_allclose(samples, SAMPLES, rtol=0, atol=spec.atol or 1e-7)
 
     def test_only_the_valid_bytes_are_used(self, sdr, spec):
+        sdr.set_sample_rate(spec.rate)
         sdr.start_rx()
         raw = np.concatenate([spec.raw()[1], spec.raw()[1]])
-        sdr.device.rx_callback(raw, raw.nbytes // 2, raw.nbytes)
-        np.testing.assert_allclose(sdr.get_samples(), SAMPLES)
-
-    def test_buffer_is_fed_complex64_directly(self, sdr, spec, monkeypatch):
-        seen = []
-        monkeypatch.setattr(sdr._buffer, "update", lambda samples: seen.append(samples))
-        sdr.start_rx()
-        raw = spec.raw()[1]
-        sdr.device.rx_callback(raw, raw.nbytes, raw.nbytes)
-        assert seen[0].dtype == np.complex64
+        sdr.device.deliver(raw, raw.nbytes // 2)
+        np.testing.assert_allclose(sdr.get_samples(), SAMPLES, rtol=0, atol=spec.atol or 1e-7)
 
     def test_samples_are_consumed_by_reading(self, sdr, spec):
+        sdr.set_sample_rate(spec.rate)
         sdr.start_rx()
-        raw = spec.raw()[1]
-        sdr.device.rx_callback(raw, raw.nbytes, raw.nbytes)
+        sdr.device.deliver(spec.raw()[1])
         assert len(sdr.get_samples()) == len(SAMPLES)
         assert len(sdr.get_samples()) == 0
 
-    def test_instances_do_not_share_a_buffer(self, make_sdr, spec):
+    def test_instances_do_not_share_a_queue(self, make_sdr, spec):
         a, b = make_sdr(), make_sdr()
-        assert a._buffer is not b._buffer
+        a.open(); b.open()
+        a.set_sample_rate(spec.rate); a.start_rx()
+        a.device.deliver(spec.raw()[1])
+        assert len(b.device.read_rx()) == 0 and len(a.get_samples()) == len(SAMPLES)
 
 
 class FakeClock:
@@ -176,11 +173,12 @@ def rx(sdr, spec):
     rx.deliver(n) is the driver delivering n samples."""
     sdr.clock = FakeClock()
     sdr._watchdog._clock = sdr.clock
+    sdr.device.clock = sdr.clock   # the fake driver's transfers are timed on it too
     sdr.set_sample_rate(spec.rate)
     sdr.start_rx()
     def deliver(n):
         raw = np.tile(spec.raw()[1], -(-n // len(SAMPLES)))[: n * 2]
-        sdr.device.rx_callback(raw, raw.nbytes, raw.nbytes)
+        sdr.device.deliver(raw)
     sdr.deliver = deliver
     return sdr
 
@@ -240,7 +238,7 @@ class TestWatchdog:
         rx.get_samples()
 
     def test_samples_not_read_in_time_are_reported_once(self, rx):
-        rx._buffer.reset(8)
+        rx.device.set_rx_buffer(8)
         rx.deliver(100)   # far more than the buffer holds
         with pytest.warns(Warning, match="dropped") as caught:
             rx.get_samples()
@@ -255,6 +253,14 @@ class TestWatchdog:
         with pytest.warns(Warning, match="fewer samples"):
             rx.get_samples()
         assert rx.stats.missing > 0.5 * rx.Fs * 0.5 * 0.8 and rx.stats.stalls == 0
+
+    def test_a_continuing_shortfall_warns_once(self, rx):
+        rx.deliver(1000)
+        with pytest.warns(Warning, match="fewer samples") as caught:
+            for _ in range(4):
+                rx.clock.now += 0.25   # four short windows, still inside the stall timeout
+                rx.get_samples()
+        assert len(caught) == 1 and rx.stats.missing > 0
 
     def test_a_healthy_stream_warns_about_nothing(self, rx):
         with warnings_as_errors():
@@ -323,4 +329,5 @@ def test_hardware_rx_roundtrip(spec, hardware):
         samples = sdr.get_samples()
         sdr.stop_rx()
     assert samples.dtype == np.complex64 and len(samples) > 0
-    assert np.isfinite(samples).all() and np.abs(samples).max() <= 1.0
+    assert np.isfinite(samples).all()
+    assert max(np.abs(samples.real).max(), np.abs(samples.imag).max()) <= 1.0   # I and Q each, not the magnitude

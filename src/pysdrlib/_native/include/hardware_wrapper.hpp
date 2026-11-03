@@ -1,12 +1,16 @@
 #pragma once
 
 // Generic, device-agnostic pieces shared by every C++ driver wrapper.
-// Device-specific wrappers live next to their device, in <device>/lib/.
+// Device-specific wrappers live in their own folder next to this one: _native/<device>/.
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <stdexcept>
 #include <string>
+
+#include "hardware_format.hpp"
+#include "hardware_rx.hpp"
 
 // Error carrying the vendor library's numeric error code.
 class HardwareError : public std::runtime_error {
@@ -16,22 +20,6 @@ public:
     int code() const noexcept { return code_; }
 private:
     int code_;
-};
-
-// Layout of one component (I or Q) of the raw stream a device delivers. Devices differ:
-// 8-bit ints, 12-bit values in 16-bit words, 12-bit packed, offset-binary unsigned, floats...
-// Mirrors pysdrlib.base.convert.SampleFormat, which does the conversion to complex64.
-enum class SampleKind { Int, UInt, Float };
-
-struct SampleFormat {
-    SampleKind kind;
-    int bits;          // significant bits per component (e.g. 12)
-    int storage_bits;  // bits a component occupies in memory (8/16/32/64); == bits when packed
-    bool packed = false;
-
-    bool operator==(const SampleFormat& o) const {
-        return kind == o.kind && bits == o.bits && storage_bits == o.storage_bits && packed == o.packed;
-    }
 };
 
 // Owns a native device handle. Child classes implement open/close, streaming and the device-specific
@@ -55,16 +43,33 @@ public:
     // Layout of the raw receive stream (what the RxCallbackFn data contains)
     virtual SampleFormat rx_sample_format() const = 0;
 
-    // Set the callback before start_rx(). It is dropped by close().
+    // Raw tap: set a callback before start_rx() to receive the device's bytes yourself. It is dropped by
+    // close(). With a callback set, the buffered path below is not used.
     void set_rx_callback(RxCallbackFn callback) { rx_callback_ = std::move(callback); }
+
+    // Buffered receive (the default way to read a device): with no callback set, each transfer is
+    // converted to complex64 and queued on the streaming thread, without Python. `samples` is how many the
+    // queue holds before it drops the oldest.
+    void set_rx_buffer(size_t samples) { rx_.configure(rx_sample_format(), samples); }
+    void reset_rx_stats() { rx_.reset_stats(); }
+    size_t rx_available() const { return rx_.available(); }
+    size_t read_rx(hw::cfloat* dst, size_t max_count) { return rx_.read(dst, max_count); }
+    hw::RingStats rx_stats() const { return rx_.stats(); }
+
     virtual void start_rx() = 0;
     virtual void stop_rx() = 0;
     virtual bool is_streaming() const = 0;
 
-    // What a driver's streaming thread calls with each buffer: hands it to the callback, or returns -1
-    // (stop streaming) if there is none. Public so tests can drive the real path without hardware.
+    // What a driver's streaming thread calls with each buffer: hands it to the callback if there is one,
+    // else queues it (see set_rx_buffer), else returns -1 (stop streaming). Public so tests can drive the
+    // real path without hardware.
     int dispatch_rx(const void* data, size_t valid_bytes, size_t buffer_bytes) const {
-        return rx_callback_ ? rx_callback_(data, valid_bytes, buffer_bytes) : -1;
+        if (rx_callback_) return rx_callback_(data, valid_bytes, buffer_bytes);
+        if (rx_.enabled()) {
+            rx_.push(data, valid_bytes);
+            return 0;
+        }
+        return -1;
     }
 
 protected:
@@ -78,4 +83,5 @@ protected:
     HandleT handle_ = nullptr;
     // Only safe to drop once no streaming thread can call it, i.e. after the driver has stopped
     RxCallbackFn rx_callback_;
+    mutable hw::RxPipeline rx_;
 };

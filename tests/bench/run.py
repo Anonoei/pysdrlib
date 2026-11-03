@@ -2,7 +2,8 @@
 
     python tests/bench/run.py                   run everything, print a table
     python tests/bench/run.py --quick           faster, noisier
-    python tests/bench/run.py --hardware        also stream from a real HackRF
+    python tests/bench/run.py --hardware        also stream from every supported SDR that is plugged in
+    python tests/bench/run.py --hardware rtl_sdr  ONLY the hardware benchmarks, for the named devices
     python tests/bench/run.py --update-baseline record this machine's baseline (.benchmarks/baseline.json)
     python tests/bench/run.py --check           compare to the baseline; exit 1 on a regression
 
@@ -61,7 +62,9 @@ def _merge_best(old, new):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--quick", action="store_true", help="fewer repeats, skip the slow benchmarks")
-    ap.add_argument("--hardware", action="store_true", help="include benchmarks that need a HackRF")
+    ap.add_argument("--hardware", nargs="*", metavar="DEVICE",
+                    help=f"include hardware benchmarks for every supported device that is plugged in; "
+                         f"name devices ({', '.join(suite.HARDWARE)}) to run only their hardware benchmarks")
     ap.add_argument("--group", action="append", help="only this group (repeatable)")
     ap.add_argument("--name", action="append", help="only this benchmark (repeatable)")
     ap.add_argument("--list", action="store_true", help="list benchmarks and exit")
@@ -76,13 +79,21 @@ def main(argv=None):
 
     if args.list:
         for spec in suite.REGISTRY.values():
-            print(f"{spec.group:<9}{spec.name}{'  (needs hardware)' if spec.hardware else ''}{'  (slow)' if spec.slow else ''}")
+            print(f"{spec.group:<9}{spec.name}{f'  (needs {spec.device})' if spec.hardware else ''}{'  (slow)' if spec.slow else ''}")
         return 0
+
+    only_hardware = bool(args.hardware)   # devices named: nothing but their hardware benchmarks
+    unknown = [d for d in args.hardware or () if d not in suite.HARDWARE]
+    if unknown:
+        ap.error(f"unknown device {', '.join(unknown)}; choose from {', '.join(suite.HARDWARE)}")
+    hardware = args.hardware if only_hardware else args.hardware is not None   # names, True (detect) or False
+    if hardware is True and not suite.attached():
+        print("no supported SDR is plugged in; running the software benchmarks only")
 
     names = set(args.name) if args.name else None
     groups = set(args.group) if args.group else None
     run = lambda only=None: suite.run(names=only or names, groups=groups, quick=args.quick,
-                                      hardware=args.hardware, log=print)
+                                      hardware=hardware, only_hardware=only_hardware, log=print)
 
     print("pysdrlib benchmarks" + (" (quick)" if args.quick else ""))
     cur = run()
@@ -121,7 +132,7 @@ def main(argv=None):
     suspects = {r[0] for r in rows if r[1] == "regression"}
     if suspects:
         print(f"\nre-measuring {len(suspects)} suspected regression(s) to rule out noise...")
-        again = suite.run(names=suspects, quick=args.quick, hardware=args.hardware)
+        again = suite.run(names=suspects, quick=args.quick, hardware=hardware, only_hardware=only_hardware)
         _merge_best(cur, again)
         rows = suite.compare(base, cur, args.threshold)
 

@@ -6,7 +6,8 @@ Measures the overhead pysdrlib adds on the sample path (driver callback -> conve
 
 ```sh
 python tests/bench/run.py                    # full table (~40 s); --quick is ~7 s
-python tests/bench/run.py --hardware         # also stream from a real HackRF at 10 and 20 MS/s
+python tests/bench/run.py --hardware         # also stream from every supported SDR that is plugged in
+python tests/bench/run.py --hardware rtl_sdr # ONLY the hardware benchmarks, for the named device(s)
 python tests/bench/run.py --list
 ```
 

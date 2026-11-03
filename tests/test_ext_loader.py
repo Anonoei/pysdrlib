@@ -254,3 +254,27 @@ class TestImportDevice:
         assert not lib.is_missing(ImportError("No module named 'x'"))
         for hint in lib.missing_hints:
             assert lib.is_missing(ImportError(f"cannot open shared object file: {hint}.so"))
+
+
+class TestSamplesExtension:
+    """pysdrlib.base.lib._samples (conversion and ring) needs no vendor library, so it is always built"""
+
+    def test_sources_and_dependencies_exist(self):
+        extension = utils.samples_extension()
+        assert extension.name == "pysdrlib.base.lib._samples"
+        for path in [*extension.sources, *extension.depends]:
+            assert (ROOT / path).exists(), path
+        assert all((ROOT / d).is_dir() for d in extension.include_dirs)
+
+    def test_links_nothing_and_is_not_optional(self, monkeypatch):
+        extension = utils.samples_extension()
+        assert not extension.libraries and not extension.library_dirs and not extension.optional
+        monkeypatch.setattr(utils.sys, "platform", "win32")
+        assert not utils.samples_extension().optional   # unlike the devices', which need a vendor library
+
+    def test_rounds_exactly_like_the_reference_on_every_cpu(self, ext):
+        """No fused multiply-add in the conversion, or results would differ between machines"""
+        if sys.platform != "win32":
+            for flag in ("-ffp-contract=off", "-fno-trapping-math"):   # exact rounding; vectorisable clamps
+                assert flag in utils.samples_extension().extra_compile_args
+                assert flag in ext.get().extra_compile_args

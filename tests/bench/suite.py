@@ -5,6 +5,7 @@ machine), and, where a bare-numpy equivalent exists, a "floor" so you get an ove
 Gauge benchmarks report a value from a longer scenario (e.g. dropped samples in a 20 MS/s stream).
 
 Everything except the `hardware` group uses the simulated device (pysdrlib.sim), no hardware.
+The `hardware` group streams from whichever supported devices are plugged in (see HARDWARE).
 """
 import gc
 import io
@@ -15,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Optional
@@ -41,6 +43,7 @@ class Spec:
     kind: str = "time"                 # "time" -> Case, "gauges" -> {suffix: Gauge}
     slow: bool = False                 # skipped by --quick
     hardware: bool = False
+    device: Optional[str] = None       # the pysdrlib device package a hardware benchmark needs
 
 
 @dataclass
@@ -95,16 +98,24 @@ def _entry_time(case: Case, repeat, min_time):
     return entry
 
 
-def run(names=None, groups=None, quick=False, hardware=False, log=lambda *_: None):
-    """Run benchmarks, return the results dict (see `meta()` for the header)."""
+def run(names=None, groups=None, quick=False, hardware=False, only_hardware=False, log=lambda *_: None):
+    """Run benchmarks, return the results dict (see `meta()` for the header).
+
+    hardware:      False: none. True: the devices that are plugged in (see `attached`). Or a list of
+                   device package names (e.g. ["rtl_sdr"]) to benchmark whether or not they are detected.
+    only_hardware: run only the hardware benchmarks
+    """
     repeat, min_time = (3, 0.02) if quick else (7, 0.1)
+    devices = _devices(hardware)
     results = {}
     for spec in REGISTRY.values():
         if names and spec.name not in names:
             continue
         if groups and spec.group not in groups:
             continue
-        if (quick and spec.slow) or (spec.hardware and not hardware):
+        if (quick and spec.slow) or (spec.hardware and spec.device not in devices):
+            continue
+        if only_hardware and not spec.hardware:
             continue
         try:
             made = spec.factory(quick)
@@ -121,11 +132,20 @@ def run(names=None, groups=None, quick=False, hardware=False, log=lambda *_: Non
                 results[name] = {"kind": "gauge", "group": spec.group, "value": g.value, "unit": g.unit,
                                  "lower_is_better": g.lower_is_better, "abs_tol": g.abs_tol}
                 log(format_row(name, results[name]))
-    return {"meta": meta(quick, hardware), "results": results}
+    return {"meta": meta(quick, sorted(devices)), "results": results}
 
 
 class _Skip(Exception):
     pass
+
+
+def _devices(hardware):
+    """Device package names to benchmark for a `hardware` argument of run()"""
+    if not hardware:
+        return set()
+    if hardware is True:
+        return set(attached())
+    return set(hardware)
 
 
 def meta(quick, hardware):
@@ -269,16 +289,18 @@ for _fmt in ("INT8", "UINT8", "INT16", "INT12", "INT12_PACKED", "FLOAT32"):
 
 @bench("hackrf.rx_callback", "convert")
 def _(quick):
-    """The production HackRF callback (convert + buffer), floor = convert alone"""
+    """The production HackRF receive path, native: convert + queue on the driver's thread (no Python, no
+    GIL). Floor = the same conversion alone, so this is the cost of the ring on top of it"""
     try:
-        from pysdrlib.hackrf import hackrf as hm
+        from pysdrlib.hackrf import lib
+        from pysdrlib.hackrf.hackrf import HackRF
     except ImportError as exc:
         raise _Skip(f"hackrf unavailable: {exc}")
     raw = _raw_int8()
-    sdr = hm.HackRF()
-    sdr._buffer.reset(4 * N)
-    fmt = hm.HackRF.SAMPLE_FORMAT
-    return Case(lambda: sdr._rx_callback(raw, len(raw), len(raw)), lambda: fmt.to_complex64(raw), items=N)
+    dev = lib.hackrf.device()
+    dev.set_rx_buffer(4 * N)
+    fmt = HackRF.SAMPLE_FORMAT
+    return Case(lambda: dev._dispatch_rx(raw), lambda: fmt.to_complex64(raw), items=N)
 
 
 # ------------------------------------------------------------------ benchmarks: generic device layer
@@ -414,44 +436,70 @@ def _(quick):
 
 
 # ------------------------------------------------------------------ benchmarks: real hardware
-def _hackrf_stream(Fs, seconds):
-    """Stream from a real HackRF; measure the Python-side callback cost."""
-    from pysdrlib import hackrf
-    spent, calls = [0.0], [0]
-    with hackrf.Device() as sdr:
-        orig = sdr._rx_callback
-        def timed(buffer, valid, buflen):
-            t = time.perf_counter()
-            rtr = orig(buffer, valid, buflen)
-            spent[0] += time.perf_counter() - t
-            calls[0] += 1
-            return rtr
-        sdr._rx_callback = timed   # picked up by start_rx
-        sdr.initialize(cf=100e6, Fs=Fs)
-        sdr._buffer.clear_dropped()
+@dataclass
+class Hardware:
+    count: Callable          # the device's native module -> number of attached devices
+    cf: float                # a centre frequency the device can tune
+    rates: tuple             # sample rates (S/s) to stream at
+
+# Every device with streaming benchmarks, by package name (pysdrlib.<name>)
+HARDWARE = {
+    "hackrf": Hardware(lambda native: len(native.device_list()), 100e6, (10e6, 20e6)),
+    "extio": Hardware(lambda native: native.device_count(), 7.1e6, (8e6, 16e6)),
+    "rtl_sdr": Hardware(lambda native: native.device_count(), 100e6, (1.024e6, 2.4e6)),
+}
+
+
+def attached(names=None):
+    """Names of the devices (of `names`, default all that have benchmarks) that are plugged in"""
+    import importlib
+    found = []
+    for name in names or HARDWARE:
+        try:
+            lib = importlib.import_module(f"pysdrlib.{name}.lib")   # loads (or builds) the vendor library
+            if HARDWARE[name].count(getattr(lib, name)) > 0:
+                found.append(name)
+        except Exception:   # not built, library missing, or no permission to enumerate
+            pass
+    return found
+
+
+def _stream(name, Fs, cf, seconds):
+    """Stream from a real device; measure what the receive path costs and whether it keeps up."""
+    import importlib
+    device = importlib.import_module(f"pysdrlib.{name}").Device
+    with device() as sdr:
+        sdr.initialize(cf=cf, Fs=Fs)
         got, t0 = 0, time.perf_counter()
-        sdr.start_rx()
+        sdr.start_rx()   # resets the driver's counters
         while time.perf_counter() - t0 < seconds:
             got += len(sdr.get_samples())
             time.sleep(0.005)
         sdr.stop_rx()
         elapsed = time.perf_counter() - t0
         got += len(sdr.get_samples())
-        dropped = sdr._buffer.dropped
+        native = sdr.device.rx_stats()   # kept on the driver's thread: busy = seconds converting and queueing
+        stats = sdr.stats
     return {
-        "dropped": Gauge(dropped, "samples", abs_tol=0),
+        "dropped": Gauge(native["dropped"], "samples", abs_tol=0),
+        "missing": Gauge(stats.missing, "samples", abs_tol=0),
         "rate": Gauge(got / elapsed / 1e6, "MS/s", lower_is_better=False, abs_tol=0.5),
-        "callback_us": Gauge(spent[0] / max(calls[0], 1) * 1e6, "us/transfer", abs_tol=20),
-        "callback_load": Gauge(spent[0] / elapsed * 100, "% of one core", abs_tol=0.5),
+        "callback_us": Gauge(native["busy"] / max(native["calls"], 1) * 1e6, "us/transfer", abs_tol=20),
+        "callback_load": Gauge(native["busy"] / elapsed * 100, "% of one core", abs_tol=0.5),
     }
 
 
-for _rate in (10, 20):
-    def _make_hw(rate):
-        def factory(quick):
-            try:
-                return _hackrf_stream(rate * 1e6, 1.0 if quick else 3.0)
-            except Exception as exc:  # no device / driver missing
-                raise _Skip(f"no usable HackRF: {exc}")
-        return factory
-    bench(f"hackrf.stream_{_rate}MS", "hardware", kind="gauges", hardware=True)(_make_hw(_rate))
+def _make_hw(name, hw, rate):
+    def factory(quick):
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")   # drops are measured, not warned about
+                return _stream(name, rate, hw.cf, 1.0 if quick else 3.0)
+        except Exception as exc:  # no device / driver missing
+            raise _Skip(f"no usable {name}: {exc}")
+    return factory
+
+for _name, _hw in HARDWARE.items():
+    for _rate in _hw.rates:
+        bench(f"{_name}.stream_{_rate / 1e6:g}MS", "hardware", kind="gauges", hardware=True, device=_name)(
+            _make_hw(_name, _hw, _rate))

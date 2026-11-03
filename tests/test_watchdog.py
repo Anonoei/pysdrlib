@@ -118,6 +118,17 @@ class TestMissingSamples:
         actual = RATE // 2 * 2   # half the stream, for the 2 s that followed
         assert 0.7 * actual < total <= actual   # a lower bound: each window forgives two chunks
 
+    def test_a_shortfall_is_one_episode_until_the_stream_recovers(self, dog, clock):
+        stream(dog, clock, 0.2)
+        dog.poll()
+        starts = []
+        for rate in [RATE // 2] * 3 + [RATE] * 2 + [RATE // 2] * 2:
+            stream(dog, clock, 0.3, rate=rate)   # every poll closes a window
+            report = dog.poll()
+            starts.append((report.missing > 0, report.shortfall_start))
+        assert starts == [(True, True), (True, False), (True, False), (False, False), (False, False),
+                          (True, True), (True, False)]
+
     def test_normal_jitter_is_not_missing(self, dog, clock):
         stream(dog, clock, 0.2)
         dog.poll()
@@ -171,3 +182,85 @@ def test_feeding_from_another_thread_while_polling():
         dog.stats()
     t.join()
     assert dog.stats().samples == 2000
+
+
+class Driver:
+    """The counters a native driver keeps on its own thread, as `observe` is given them"""
+    def __init__(self, clock):
+        self.clock, self.samples, self.last, self.max_chunk = clock, 0, None, 0
+
+    def deliver(self, n):
+        self.samples += n
+        self.last = self.clock()
+        self.max_chunk = max(self.max_chunk, n)
+
+    def observe(self, dog):
+        dog.observe(self.samples, None if self.last is None else self.clock() - self.last, self.max_chunk)
+
+    def stream(self, dog, seconds, rate=RATE, chunk=CHUNK, poll_every=0.25):
+        """Deliver `seconds` of stream, polling as a consumer would; returns the reports"""
+        reports, since = [], 0.0
+        for _ in range(int(seconds * rate / chunk)):
+            self.clock.advance(chunk / rate)
+            self.deliver(chunk)
+            since += chunk / rate
+            if since >= poll_every:
+                since = 0.0
+                self.observe(dog)
+                reports.append(dog.poll())
+        return reports
+
+
+class TestObserve:
+    """The same judgements from the driver's counters (`observe`) as from per-chunk `feed`"""
+
+    @pytest.fixture
+    def driver(self, clock):
+        return Driver(clock)
+
+    def test_a_steady_stream_is_healthy(self, dog, clock, driver):
+        reports = driver.stream(dog, 5)
+        assert reports and not any(r.stalled or r.missing for r in reports)
+
+    def test_stalls_after_the_timeout_without_data(self, dog, clock, driver):
+        driver.stream(dog, 0.5)
+        clock.advance(0.9)
+        driver.observe(dog)
+        assert not dog.poll().stalled
+        clock.advance(0.2)
+        driver.observe(dog)
+        report = dog.poll()
+        assert report.stalled and report.new_stall
+
+    def test_a_device_that_never_starts_stalls(self, dog, clock, driver):
+        clock.advance(2)
+        driver.observe(dog)   # age None: nothing has arrived
+        assert dog.poll().stalled
+
+    def test_a_shortfall_is_reported_once(self, dog, clock, driver):
+        driver.stream(dog, 0.5)
+        reports = driver.stream(dog, 1.0, rate=RATE // 2)   # delivering half what was asked
+        assert sum(r.shortfall_start for r in reports) == 1 and sum(r.missing for r in reports) > 0
+
+    def test_samples_and_age_are_in_stats(self, dog, clock, driver):
+        driver.deliver(1000)
+        clock.advance(0.1)
+        driver.observe(dog)
+        stats = dog.stats()
+        assert stats.samples == 1000 and stats.age == pytest.approx(0.1)
+
+    def test_ignored_when_not_running(self, clock, driver):
+        dog = Watchdog(clock=clock)   # never started
+        driver.deliver(1000)
+        dog.observe(driver.samples, 0.0, 1000)
+        assert dog.stats().samples == 0 and dog.stats().age is None
+
+    def test_a_late_burst_is_not_a_shortfall(self, dog, clock, driver):
+        """Delivery held up for 100 ms and then caught up: nothing was lost, so nothing is reported"""
+        driver.stream(dog, 0.5)
+        clock.advance(0.1)
+        driver.deliver(RATE // 10)   # the whole backlog at once
+        driver.observe(dog)
+        assert dog.poll().missing == 0
+        reports = driver.stream(dog, 1.0)
+        assert not any(r.missing for r in reports)
