@@ -60,11 +60,18 @@ def _pack_nibbles(nibbles):
         raise ValueError("4-bit formats store I/Q pairs; need an even number of values")
     return ((n[0::2] << 4) | n[1::2]).astype(np.uint8).tobytes()
 
+class RangeError(ValueError):
+    """A value cannot be represented in the format"""
+
 def _as_int(data, lo, hi, name):
-    arr = np.rint(np.asarray(data)) if np.asarray(data).dtype.kind == "f" else np.asarray(data)
+    arr = np.asarray(data)
+    if arr.dtype.kind == "f":
+        if not np.isfinite(arr).all():
+            raise RangeError(f"{name} cannot store NaN or infinity")
+        arr = np.rint(arr)
     arr = arr.astype(np.int64)
     if arr.size and (arr.min() < lo or arr.max() > hi):
-        raise ValueError(f"{name} values must be within [{lo}, {hi}]")
+        raise RangeError(f"{name} values must be within [{lo}, {hi}]")
     return arr
 
 class Format:
@@ -86,6 +93,7 @@ class Format:
         arr = np.asarray(data)
         if np.dtype(cls.DTYPE).kind in "iu" and arr.dtype.kind == "f":
             arr = np.rint(arr)
+        cls._check_range(arr)
         io.write(arr.astype(cls.DTYPE).tobytes())
 
     @classmethod
@@ -101,6 +109,28 @@ class Format:
         else:
             return None
         return float(info.min), float(info.max)
+
+    @classmethod
+    def integer(cls):
+        """True if components are stored as integers (so NaN/inf have no representation)"""
+        return cls.DTYPE is None or np.dtype(cls.DTYPE).kind in "iu"
+
+    @classmethod
+    def _check_range(cls, arr):
+        """Raise ValueError rather than let numpy wrap (integers) or overflow to inf (float16).
+        NaN and infinity are only valid in float formats."""
+        limits = cls.limits()
+        if limits is None or arr.size == 0:
+            return
+        lo, hi = limits
+        mn, mx = arr.min(), arr.max()
+        if lo <= mn and mx <= hi:
+            return
+        if not cls.integer() and np.isnan(arr).any() | np.isinf(arr).any():
+            finite = arr[np.isfinite(arr)]
+            if finite.size == 0 or (lo <= finite.min() and finite.max() <= hi):
+                return  # NaN/inf are representable in a float format
+        raise RangeError(f"values must be within [{lo:g}, {hi:g}]")
 
     @classmethod
     def bits(cls):
@@ -238,6 +268,9 @@ class ComplexFormat(Format):
     @classmethod
     def limits(cls):
         return cls.BASE.limits()
+    @classmethod
+    def integer(cls):
+        return cls.BASE.integer()
     @classmethod
     def read(cls, io, count):
         parts = cls.BASE.read(io, count * 2 if count >= 0 else -1)

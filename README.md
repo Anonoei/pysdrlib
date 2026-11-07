@@ -96,8 +96,8 @@ with FileSink("out.cs16", "ci32t", clip=True) as out:   # or FileSink(..., open=
     out.write(samples)
 ```
 - `File.next(count, partial=False)`, `forward(count, partial=False)` and `File(...)(count, partial=False)`: `partial=True` returns the remaining samples at the end of the file (an empty array once at EOF) instead of raising or stopping early.
-- `FileSink(path, fmt, append=False, open=False, clip=False)` truncates an existing file unless `append=True`; the format of an existing file is **not** checked when appending. `write()` needs the sink opened (`open()`, `open=True`, or `with`).
-- `clip=True` saturates values outside the format's range (per I/Q component) and logs one warning, "N samples clipped", when the sink closes; `sink.clipped` holds the running count. Without it, out-of-range values are not checked for plain integer formats (they wrap) and raise `ValueError` for 4-bit and one's-complement formats.
+- `FileSink(path, fmt, append=False, open=False, clip=False)` truncates an existing file unless `append=True`; the format of an existing file is **not** checked when appending. `write()` takes 1-D samples (other shapes raise `ValueError`; flatten or write per channel) and needs the sink opened (`open()`, `open=True`, or `with`).
+- `clip=True` saturates values outside the format's range (per I/Q component) and logs one warning, "N samples clipped", when the sink closes; `sink.clipped` holds the running count. NaN is stored as 0 in integer formats and counted; infinity saturates. Without `clip`, any value outside the format's range (including NaN/inf in integer formats) raises `ValueError`; nothing wraps.
 - Neither class scales: integer formats are read and written as stored, not divided by full scale.
 
 ### Stalls and dropped samples

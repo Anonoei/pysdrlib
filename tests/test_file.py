@@ -338,3 +338,56 @@ class TestClip:
         with FileSink(tmp_path / "b.bin", "f32", clip=True) as s:
             s.write([1e30])
             assert s.clipped == 0
+
+
+class TestRangeChecks:
+    def test_plain_integer_formats_raise_instead_of_wrapping(self, tmp_path):
+        from pysdrlib.file import FileSink
+        for fmt, bad in (("i16t", [40000]), ("ci32t", np.array([40000 + 0j], dtype=np.complex64)),
+                         ("ui8", [300]), ("i16t", [np.nan]), ("i16t", [np.inf])):
+            with FileSink(tmp_path / "w.bin", fmt) as s:
+                with pytest.raises(ValueError):
+                    s.write(bad)
+
+    def test_in_range_and_float_formats_unchanged(self, tmp_path):
+        from pysdrlib.file import FileSink
+        with FileSink(tmp_path / "w.bin", "i16t") as s:
+            s.write([-32768, 32767, 3.4])
+        with FileSink(tmp_path / "f.bin", "f32") as s:
+            s.write([np.nan, np.inf, 1e30])
+        with FileSink(tmp_path / "h.bin", "f16") as s:
+            s.write([np.nan, np.inf, 1.0])
+            with pytest.raises(ValueError):
+                s.write([70000.0])
+
+    def test_clip_counts_nonfinite_and_stores_zero(self, tmp_path):
+        from pysdrlib.file import FileSink
+        with FileSink(tmp_path / "n.bin", "i16t", clip=True) as s:
+            s.write(np.array([np.nan, np.inf, -np.inf, 3], dtype=np.float32))
+            assert s.clipped == 3
+        with File(tmp_path / "n.bin", "i16t") as r:
+            assert ints(r.next(4)) == [0, 32767, -32768, 3]
+
+    def test_rejects_non_1d(self, tmp_path):
+        from pysdrlib.file import FileSink
+        with FileSink(tmp_path / "m.bin", "i16t") as s:
+            with pytest.raises(ValueError):
+                s.write(np.zeros((2, 2)))
+            assert s.count == 0
+
+
+class TestNits:
+    def test_failed_write_leaves_counters(self, tmp_path):
+        from pysdrlib.file import FileSink
+        with FileSink(tmp_path / "o.bin", "i4o", clip=True) as s:
+            with pytest.raises(ValueError):
+                s.write([100, 0, 1])  # odd count: nibble packer raises
+            assert s.clipped == 0 and s.count == 0
+
+    def test_error_text(self, tmp_path):
+        from pysdrlib.file import FileSink
+        with pytest.raises(ValueError, match=r"^i16t: values must be within \[-32768, 32767\]$"):
+            Formats.i16t.write(open(tmp_path / "a", "wb"), [40000])
+        with FileSink(tmp_path / "b", "i16t") as s:
+            with pytest.raises(ValueError, match=r"^i16t: .*clip=True"):
+                s.write([40000])

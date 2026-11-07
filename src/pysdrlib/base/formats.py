@@ -37,11 +37,18 @@ class Formats(Enum):
 
     def write(self, io, data):
         """Output as format"""
-        self.value.write(io, data)
+        try:
+            self.value.write(io, data)
+        except IO.RangeError as e:
+            raise IO.RangeError(f"{self.name}: {e}") from e
 
     def limits(self):
         """(lo, hi) of the values `write` accepts per component (I or Q), or None if unbounded"""
         return self.value.limits()
+
+    def integer(self):
+        """True if components are stored as integers"""
+        return self.value.integer()
 
     @property
     def bits(self):
