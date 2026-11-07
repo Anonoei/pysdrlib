@@ -84,6 +84,16 @@ samples = sdr.get_samples()
 ```
 One client controls a device; any number can attach as viewers (`pysdrlib.device("remote", addr, id="hackrf-0")`) to receive samples.
 
+### Reading and writing sample files
+```python
+from pysdrlib import File
+with File("capture.cfile", "cf32") as f:           # File(path, fmt); set_path/set_fmt also work
+    for block in f.forward(8192, partial=True):    # partial=True yields the short last block
+        ...
+    f.seek(0); tail = f.next(8192, partial=True)   # next() raises Overflow at EOF unless partial=True
+```
+`File.percent()` returns the fraction read (0.0 to 1.0); `percent(fraction=False)` gives 0-100. To write, use `FileSink(path, fmt, append=False)` with `write(samples)`; it's a context manager too.
+
 ### Stalls and dropped samples
 Hardware devices watch their own stream each time you call `get_samples()`:
 ```python

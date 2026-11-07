@@ -11,7 +11,7 @@ from ..base import Formats
 from . import err
 
 class File:
-    def __init__(self):
+    def __init__(self, path=None, fmt: str | None = None):
         self.log = logger.new("device.File")
         self.fmt: Formats = None # type: ignore
         self.path: Path = None # type: ignore
@@ -20,6 +20,10 @@ class File:
         self.max_samp = 0
         self._fsize = 0
         self.f = None
+        if fmt is not None:
+            self.set_fmt(fmt)
+        if path is not None:
+            self.set_path(path)
 
     def __str__(self):
         return f"File ({self.cur_samp}/{self.max_samp},{self.fmt.name}): {self.path}"
@@ -86,10 +90,16 @@ class File:
         self.cur_samp = samp
         if self.f is not None:
             self._seek(samp)
-    def next(self, count: int):
-        """Return the next <count> samples and move forward"""
+    def next(self, count: int, partial: bool = False):
+        """Return the next <count> samples and move forward.
+
+        With `partial=True`, a request running past EOF returns the remaining
+        samples (possibly an empty array) instead of raising Overflow.
+        """
         self.log.trace("next()")
         self._ensure_open("next")
+        if partial:
+            count = max(0, min(count, self.max_samp - self.cur_samp))
         if self.cur_samp + count > self.max_samp:
             raise err.Overflow(f"{self.cur_samp}+{count} > {self.max_samp}")
         samps = self._read(count)
@@ -122,21 +132,26 @@ class File:
         """Read <count> samples at the current position (does not touch cur_samp)"""
         return self.fmt.read(self.f, count)
 
-    def forward(self, count: int):
-        """Return <count> samples until EOF"""
+    def forward(self, count: int, partial: bool = False):
+        """Yield blocks of <count> samples until EOF.
+
+        With `partial=True`, a short final block is yielded too.
+        """
         while self.cur_samp + count <= self.max_samp:
-            # return self.next(count)
             yield self.next(count)
+        if partial and self.cur_samp < self.max_samp:
+            yield self.next(count, partial=True)
     def reverse(self, count: int):
         while self.cur_samp - count >= 0:
             # return self.prev(count)
             yield self.prev(count)
 
-    def percent(self):
-        """Return percent of file read"""
+    def percent(self, fraction: bool = True):
+        """Return how much of the file has been read: 0.0-1.0 by default, 0-100 with `fraction=False`"""
         if self.max_samp == 0:
             return 0.0
-        return float(self.cur_samp/self.max_samp)*100
+        done = float(self.cur_samp/self.max_samp)
+        return done if fraction else done * 100
 
-    def __call__(self, count):
-        return self.forward(count)
+    def __call__(self, count, partial: bool = False):
+        return self.forward(count, partial)

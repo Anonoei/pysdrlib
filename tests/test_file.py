@@ -79,7 +79,7 @@ class TestForward:
 
     def test_percent(self, f):
         f.next(25)
-        assert f.percent() == 25.0
+        assert f.percent() == 0.25
 
     def test_get_samples_uses_count(self, f):
         f.set_sample_count(7)
@@ -89,7 +89,7 @@ class TestForward:
     def test_read_exactly_to_end(self, f):
         f.next(N)
         assert f.cur_samp == N
-        assert f.percent() == 100.0
+        assert f.percent() == 1.0
 
     def test_overflow(self, f):
         f.next(95)
@@ -234,3 +234,63 @@ class TestOpenClose:
             file.next(1)
         with pytest.raises(err.NotOpen):
             file.prev(1)
+
+
+class TestConvenience:
+    def test_constructor_args(self, tmp_path):
+        file = File(make_file(tmp_path), "i16t")
+        assert file.max_samp == N and file.fmt is Formats.i16t
+
+    def test_next_partial_returns_short_last_block(self, f):
+        f.seek(N - 3)
+        assert ints(f.next(10, partial=True)) == [N - 3, N - 2, N - 1]
+        assert len(f.next(10, partial=True)) == 0
+        with pytest.raises(file_err.Overflow):
+            f.next(10)
+
+    def test_forward_partial_yields_tail(self, f):
+        sizes = [len(b) for b in f.forward(30, partial=True)]
+        assert sizes == [30, 30, 30, 10]
+
+    def test_forward_default_skips_tail(self, f):
+        assert [len(b) for b in f.forward(30)] == [30, 30, 30]
+
+
+class TestFileSink:
+    def test_round_trip(self, tmp_path):
+        from pysdrlib.file import FileSink
+        path = tmp_path / "out.bin"
+        with FileSink(path, "i16t") as s:
+            s.write(np.arange(10))
+            s.write(np.arange(10, 20))
+            assert s.count == 20
+        with File(path, "i16t") as r:
+            assert ints(r.next(20)) == list(range(20))
+
+    def test_complex_round_trip(self, tmp_path):
+        from pysdrlib.file import FileSink
+        path = tmp_path / "out.cf32"
+        x = (np.arange(8) + 1j * np.arange(8)).astype(np.complex64)
+        with FileSink(path, "cf32") as s:
+            s.write(x)
+        with File(path, "cf32") as r:
+            assert np.array_equal(r.next(8), x)
+
+    def test_truncates_unless_append(self, tmp_path):
+        from pysdrlib.file import FileSink
+        path = tmp_path / "out.bin"
+        for append, expect in ((False, 5), (True, 10), (False, 5)):
+            with FileSink(path, "i16t", append=append) as s:
+                s.write(np.arange(5))
+            assert File(path, "i16t").max_samp == expect
+
+    def test_write_requires_open(self, tmp_path):
+        from pysdrlib.file import FileSink
+        with pytest.raises(err.NotOpen):
+            FileSink(tmp_path / "x.bin", "i16t").write([1])
+
+
+def test_percent_as_0_100(f):
+    f.next(25)
+    assert f.percent() == 0.25
+    assert f.percent(fraction=False) == 25.0
