@@ -7,7 +7,7 @@ import pytest
 
 from devices import BY_NAME, HW
 
-pytest.importorskip("pysdrlib.hackrf")
+pytest.importorskip("pysdrlib.hackrf", exc_type=ImportError)
 from pysdrlib.hackrf import lib
 from pysdrlib.hackrf.lib import err as lib_err
 

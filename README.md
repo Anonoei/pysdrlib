@@ -12,6 +12,42 @@ This serves as a lightweight backend for my [pyspecan](https://github.com/Anonoe
 with minimal user intervention.
 Other projects, like SoapySDR, are likely what you're looking for.
 
+## Building from source
+For each device's vendor (HackRF, ExtIO, etc), if the necessary libraries aren't installed, each vendor library is build on first use.
+This requires `cmake`, a C++17 compiler
+and the development files below (Debian/Ubuntu package names);
+tests for a device whose library can't be built are skipped.
+
+Prebuilt `librtlsdr` / `libhackrf` packages can be installed instead of building those two.
+All packages are the build tools (`cmake`, a C++17 compiler, `pkg-config`) plus the development files listed.
+
+**RTL-SDR** needs:
+- `librtlsdr`, or
+- Debian/Ubuntu: `sudo apt install cmake libusb-1.0-0-dev`
+- Fedora/RHEL: `sudo dnf install gcc-c++ cmake pkgconf-pkg-config libusb1-devel`
+- Arch: `sudo pacman -S base-devel cmake libusb`
+- openSUSE: `sudo zypper install gcc-c++ cmake pkg-config libusb-1_0-devel`
+- Alpine: `apk add build-base cmake pkgconf libusb-dev`
+- macOS (Homebrew): `brew install cmake pkg-config libusb`
+
+**HackRF** needs:
+- `libhackrf`, or
+- Debian/Ubuntu: `sudo apt install cmake libusb-1.0-0-dev`
+- Fedora/RHEL: `sudo dnf install gcc-c++ cmake pkgconf-pkg-config libusb1-devel`
+- Arch: `sudo pacman -S base-devel cmake libusb`
+- openSUSE: `sudo zypper install gcc-c++ cmake pkg-config libusb-1_0-devel`
+- Alpine: `apk add build-base cmake pkgconf libusb-dev`
+- macOS (Homebrew): `brew install cmake pkg-config libusb`
+
+**RX-888 (extio)** needs:
+- `libextio_sdcc`, or
+- Debian/Ubuntu: `sudo apt install cmake libusb-1.0-0-dev libfftw3-dev`
+- Fedora/RHEL: `sudo dnf install gcc-c++ cmake pkgconf-pkg-config libusb1-devel fftw-devel`
+- Arch: `sudo pacman -S base-devel cmake libusb fftw`
+- openSUSE: `sudo zypper install gcc-c++ cmake pkg-config libusb-1_0-devel fftw3-devel`
+- Alpine: `apk add build-base cmake pkgconf libusb-dev fftw-dev`
+- macOS (Homebrew): `brew install cmake pkg-config libusb fftw`
+
 # Roadmap
 - [X] [RTL-SDR](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/rtl_sdr)
 - [X] [Hack RF](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/hackrf)

@@ -2,6 +2,10 @@
 import pytest
 
 from devices import BY_NAME
+
+# A device whose vendor library cannot be built here (missing system packages) is skipped, not failed
+pytest.importorskip("pysdrlib.hackrf", exc_type=ImportError)
+
 from pysdrlib.hackrf.config import ConfigHackRF as config
 from pysdrlib.hackrf.lib import err as lib_err
 

@@ -2,6 +2,10 @@
 import pytest
 
 from devices import BY_NAME
+
+# A device whose vendor library cannot be built here (missing system packages) is skipped, not failed
+pytest.importorskip("pysdrlib.rtl_sdr", exc_type=ImportError)
+
 from pysdrlib.rtl_sdr.config import ConfigRTL_SDR as config
 
 

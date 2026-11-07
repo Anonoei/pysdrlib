@@ -2,6 +2,10 @@
 import pytest
 
 from devices import BY_NAME
+
+# A device whose vendor library cannot be built here (missing system packages) is skipped, not failed
+pytest.importorskip("pysdrlib.extio", exc_type=ImportError)
+
 from pysdrlib.extio.config import ConfigRX888 as config
 
 

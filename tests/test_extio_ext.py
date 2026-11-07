@@ -9,7 +9,7 @@ import pytest
 
 from devices import BY_NAME, HW
 
-pytest.importorskip("pysdrlib.extio")   # loads (or builds) libsddc_core
+pytest.importorskip("pysdrlib.extio", exc_type=ImportError)   # loads (or builds) libsddc_core
 from pysdrlib.extio import lib
 from pysdrlib.extio.config import ConfigRX888 as config
 from pysdrlib.extio.lib import err as lib_err

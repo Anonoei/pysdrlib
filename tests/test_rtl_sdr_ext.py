@@ -9,7 +9,7 @@ import pytest
 
 from devices import BY_NAME, HW
 
-pytest.importorskip("pysdrlib.rtl_sdr")   # loads (or builds) librtlsdr
+pytest.importorskip("pysdrlib.rtl_sdr", exc_type=ImportError)   # loads (or builds) librtlsdr
 from pysdrlib.rtl_sdr import lib
 from pysdrlib.rtl_sdr.config import ConfigRTL_SDR as config
 from pysdrlib.rtl_sdr.lib import err as lib_err
