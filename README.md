@@ -86,13 +86,19 @@ One client controls a device; any number can attach as viewers (`pysdrlib.device
 
 ### Reading and writing sample files
 ```python
-from pysdrlib import File
+from pysdrlib import File, FileSink
 with File("capture.cfile", "cf32") as f:           # File(path, fmt); set_path/set_fmt also work
-    for block in f.forward(8192, partial=True):    # partial=True yields the short last block
-        ...
+    for block in f.forward(8192, partial=True):    # partial=True also yields the short last block
+        print(f.percent())                         # fraction read, 0.0-1.0 (percent(fraction=False): 0-100)
     f.seek(0); tail = f.next(8192, partial=True)   # next() raises Overflow at EOF unless partial=True
+
+with FileSink("out.cs16", "ci32t", clip=True) as out:   # or FileSink(..., open=True) and close() yourself
+    out.write(samples)
 ```
-`File.percent()` returns the fraction read (0.0 to 1.0); `percent(fraction=False)` gives 0-100. To write, use `FileSink(path, fmt, append=False)` with `write(samples)`; it's a context manager too.
+- `File.next(count, partial=False)`, `forward(count, partial=False)` and `File(...)(count, partial=False)`: `partial=True` returns the remaining samples at the end of the file (an empty array once at EOF) instead of raising or stopping early.
+- `FileSink(path, fmt, append=False, open=False, clip=False)` truncates an existing file unless `append=True`; the format of an existing file is **not** checked when appending. `write()` needs the sink opened (`open()`, `open=True`, or `with`).
+- `clip=True` saturates values outside the format's range (per I/Q component) and logs one warning, "N samples clipped", when the sink closes; `sink.clipped` holds the running count. Without it, out-of-range values are not checked for plain integer formats (they wrap) and raise `ValueError` for 4-bit and one's-complement formats.
+- Neither class scales: integer formats are read and written as stored, not divided by full scale.
 
 ### Stalls and dropped samples
 Hardware devices watch their own stream each time you call `get_samples()`:

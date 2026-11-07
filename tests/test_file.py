@@ -294,3 +294,47 @@ def test_percent_as_0_100(f):
     f.next(25)
     assert f.percent() == 0.25
     assert f.percent(fraction=False) == 25.0
+
+
+def test_sink_open_on_construction_and_top_level_export(tmp_path):
+    import pysdrlib
+    s = pysdrlib.FileSink(tmp_path / "o.bin", "i16t", open=True)
+    s.write([1, 2, 3])
+    s.close()
+    assert File(tmp_path / "o.bin", "i16t").max_samp == 3
+
+
+class TestClip:
+    def test_clips_and_warns_once_on_close(self, tmp_path):
+        import logging
+        from pysdrlib.file import FileSink
+        path = tmp_path / "c.bin"
+        x = np.array([1 + 2j, 40000 - 50000j, -3 + 0j, 0 + 33000j], dtype=np.complex64)
+        s = FileSink(path, "ci32t", clip=True, open=True)
+        records = []  # pysdrlib loggers are detached from the root logger, so listen on the sink's own
+        class Grab(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+        s.log.addHandler(Grab(logging.WARNING))
+        s.write(x)
+        s.write(x[:1])
+        assert not records  # nothing logged until close
+        s.close()
+        assert s.clipped == 2
+        assert [r.getMessage() for r in records if "clipped" in r.getMessage()] == \
+            [f"2 samples clipped writing {path}"]
+        with File(path, "ci32t") as r:
+            out = r.next(5)
+        assert out.dtype == np.complex64
+        assert out[1] == 32767 - 32768j and out[3] == 0 + 32767j and out[0] == 1 + 2j
+
+    def test_real_integer_and_float_formats(self, tmp_path):
+        from pysdrlib.file import FileSink
+        with FileSink(tmp_path / "a.bin", "i8t", clip=True) as s:
+            s.write([-500, 0, 500])
+            assert s.clipped == 2
+        with File(tmp_path / "a.bin", "i8t") as r:
+            assert ints(r.next(3)) == [-128, 0, 127]
+        with FileSink(tmp_path / "b.bin", "f32", clip=True) as s:
+            s.write([1e30])
+            assert s.clipped == 0

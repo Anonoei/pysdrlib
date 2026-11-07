@@ -89,6 +89,20 @@ class Format:
         io.write(arr.astype(cls.DTYPE).tobytes())
 
     @classmethod
+    def limits(cls):
+        """(lo, hi) of the values `write` accepts per component, or None if unbounded (float32/64)"""
+        if cls.DTYPE is None:
+            return None
+        dt = np.dtype(cls.DTYPE)
+        if dt.kind in "iu":
+            info = np.iinfo(dt)
+        elif dt.kind == "f" and dt.itemsize == 2:
+            info = np.finfo(dt)
+        else:
+            return None
+        return float(info.min), float(info.max)
+
+    @classmethod
     def bits(cls):
         """Return size of format in bits"""
         return cls.SIZE
@@ -119,6 +133,9 @@ class i4_t(Format):
     @classmethod
     def write(cls, io, data):
         io.write(_pack_nibbles(_as_int(data, -8, 7, "int4") & 0x0F))
+    @classmethod
+    def limits(cls):
+        return -8.0, 7.0
 
 class i8_t(Format):
     """Two's compliment int8, Eq. to C int8_t"""
@@ -162,6 +179,9 @@ class i4_o(Format):
     @classmethod
     def write(cls, io, data):
         io.write(_pack_nibbles(t2o(_as_int(data, -7, 7, "one's compliment int4"), 4, np.uint8)))
+    @classmethod
+    def limits(cls):
+        return -7.0, 7.0
 
 class i8_o(Format):
     """One's compliment int8"""
@@ -172,6 +192,9 @@ class i8_o(Format):
     @classmethod
     def write(cls, io, data):
         io.write(t2o(_as_int(data, -127, 127, "one's compliment int8"), cls.SIZE, np.uint8).tobytes())
+    @classmethod
+    def limits(cls):
+        return -127.0, 127.0
 
 class i16_o(Format):
     """One's compliment int16"""
@@ -183,6 +206,9 @@ class i16_o(Format):
     def write(cls, io, data):
         out = t2o(_as_int(data, -32767, 32767, "one's compliment int16"), cls.SIZE, np.dtype(LE + "u2"))
         io.write(out.tobytes())
+    @classmethod
+    def limits(cls):
+        return -32767.0, 32767.0
 
 # ===============================================
 #     Floats
@@ -209,6 +235,9 @@ class ComplexFormat(Format):
     """Format subclass for complex numbers, stored as interleaved (I, Q) of BASE"""
     BASE: type = None # type: ignore
     OUT = np.complex64
+    @classmethod
+    def limits(cls):
+        return cls.BASE.limits()
     @classmethod
     def read(cls, io, count):
         parts = cls.BASE.read(io, count * 2 if count >= 0 else -1)

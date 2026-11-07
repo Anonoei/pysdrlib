@@ -39,6 +39,10 @@ class Formats(Enum):
         """Output as format"""
         self.value.write(io, data)
 
+    def limits(self):
+        """(lo, hi) of the values `write` accepts per component (I or Q), or None if unbounded"""
+        return self.value.limits()
+
     @property
     def bits(self):
         """Return size of format in bits"""
