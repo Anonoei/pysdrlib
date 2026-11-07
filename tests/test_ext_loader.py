@@ -2,6 +2,7 @@
 device package is first imported. Covers pysdrlib._ext for every device in tests/devices.py without
 needing cmake, libusb or a device.
 """
+import os
 import sys
 from pathlib import Path
 
@@ -165,9 +166,12 @@ class TestBuild:
         assert "-B" in configure and "Release" in " ".join(configure)
 
     def test_never_writes_into_the_package(self, lib, cache, fake_cmake):
-        before = sorted(lib.source.rglob("*"))
+        def snapshot():
+            # os.walk skips what it can't read; Path.rglob raises on 3.12 for the vendor symlinks a Windows checkout can't resolve
+            return sorted(Path(root, name) for root, dirs, files in os.walk(lib.source) for name in dirs + files)
+        before = snapshot()
         lib.build()
-        assert sorted(lib.source.rglob("*")) == before
+        assert snapshot() == before
 
     def test_read_only_package_uses_the_user_cache(self, lib, cache, fake_cmake, monkeypatch):
         _, user = cache
