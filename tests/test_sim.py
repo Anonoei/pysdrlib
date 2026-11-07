@@ -131,7 +131,11 @@ class TestSignal:
 
 
 class TestBuffering:
-    def test_keeping_up_loses_nothing(self, sim):
+    def test_keeping_up_loses_nothing(self):
+        # Paced to the sample rate, so "keeping up" doesn't depend on the host's sleep granularity (15 ms on Windows)
+        sim = Sim(realtime=True, block_samples=4096)
+        sim.open()
+        sim.initialize(cf=100e6, Fs=1e6)
         got = 0
         sim.start_rx()
         deadline = time.time() + 0.3
@@ -142,6 +146,7 @@ class TestBuffering:
         got += len(sim.get_samples())
         assert sim.dropped == 0
         assert got == sim.blocks * 4096
+        sim.close()
 
     def test_falling_behind_drops_oldest_and_counts_it(self):
         dev = Sim(realtime=False, block_samples=4096)

@@ -1,4 +1,5 @@
 """Tests for the remote client/server (needs pyzmq). Everything runs against the sim device."""
+import sys
 import time
 
 import numpy as np
@@ -15,6 +16,8 @@ from pysdrlib.remote.cli import main as cli
 
 @pytest.fixture(params=["tcp", "ipc"])
 def server(request, tmp_path):
+    if request.param == "ipc" and sys.platform == "win32":
+        pytest.skip("ZeroMQ has no ipc:// transport on Windows")
     bind = "tcp://127.0.0.1:0" if request.param == "tcp" else f"ipc://{tmp_path}/c2"
     with Server(bind, devices=["sim"], lease=0) as s:
         yield s
