@@ -22,6 +22,7 @@ import zmq
 from .. import err
 from .. import logger
 from ..base import caps as _caps
+from ..base import convert
 from ..base.device import Device
 from ..base.stream import RxMeta
 from . import protocol
@@ -97,7 +98,7 @@ class Client:
 class RemoteDevice(Device):
     NAME = "pysdrlib Remote Device"
 
-    def __init__(self, address: str, device=None, *, id=None, timeout=DEFAULT_TIMEOUT, init_args=(), init_kwargs=None, wire=None):
+    def __init__(self, address: str, device=None, *, id=None, timeout=DEFAULT_TIMEOUT, init_args=(), init_kwargs=None, wire=None, tx_wire="native"):
         """
         address: server C2 endpoint, e.g. tcp://host:5555
         device: device type to open on the server (this client becomes its controller)
@@ -105,6 +106,9 @@ class RemoteDevice(Device):
         init_args/init_kwargs: passed to the device type's constructor on the server
         wire: RX wire format to request when opening a device type (default: the server's, normally the
               device's native layout). See `set_wire`.
+        tx_wire: wire format the TX stream is sent in: "native" (the device's own layout, lossless: the device
+              quantises to it anyway, and it is several times smaller than complex64), "complex64", "int8", ...
+              See `set_tx_wire`.
         """
         if (device is None) == (id is None):
             raise ValueError("give exactly one of `device` (a type to open) or `id` (a hosted device)")
@@ -123,6 +127,8 @@ class RemoteDevice(Device):
         self.dropped_blocks = 0     # RX blocks lost between server and here (detected by sequence number)
         self._init = (list(init_args), dict(init_kwargs or {}))
         self._wire = wire
+        protocol.wire_format(tx_wire) if tx_wire != "native" else None    # validate now
+        self.tx_wire = tx_wire      # format of the TX stream we send ("native": the device's own layout)
         self.wire = None            # format of the RX stream, e.g. "int8" (see `refresh`)
         self._host = _host_of(address)
         self._c2 = None
@@ -299,6 +305,28 @@ class RemoteDevice(Device):
         self.wire = self._ctrl.request("set_wire", format=fmt, token=self.token)
         return self.wire
 
+    def set_tx_wire(self, fmt="native"):
+        """Choose the wire format of the TX stream this client sends (it is the controller's alone, so this is local):
+        "native" (the device's own layout, lossless), "complex64", "int8", "int16", ... Narrower than the device's
+        native is lossy. Returns the format name."""
+        if fmt != "native":
+            protocol.wire_format(fmt)
+        self.tx_wire = fmt
+        return self.tx_wire_name
+
+    @property
+    def tx_wire_name(self):
+        """Name of the format TX blocks are sent in right now (with "native" resolved to the device's layout)"""
+        return protocol.wire_name(self._tx_format())
+
+    def _tx_format(self):
+        if self.tx_wire != "native":
+            return protocol.wire_format(self.tx_wire)
+        try:
+            return protocol.wire_format((self.capabilities or {}).get("native_wire"))
+        except ValueError:   # no capabilities yet, or a layout with no wire name: complex64 always works
+            return convert.FLOAT32
+
     def __getattr__(self, name):
         # Only reached when normal lookup fails: device-specific methods of the hosted device
         caps = self.__dict__.get("capabilities")
@@ -410,11 +438,12 @@ class RemoteDevice(Device):
                 raise err.NotController("only the controller can transmit")
             raise err.NotSupported(f"the server at {self.address} has no TX stream (update it)")
         channel = self._tx_channels[slot]
+        fmt = self._tx_format()
         self._tx.setsockopt(zmq.SNDTIMEO, -1 if timeout is None or timeout < 0 else int(timeout * 1000))
         done = 0
         for i in range(0, len(samples), protocol.MAX_BLOCK_SAMPLES):
             part = samples[i:i + protocol.MAX_BLOCK_SAMPLES]
-            header, payload = protocol.pack_block(self._tx_seq, time.time(), part, channel=channel)
+            header, payload = protocol.pack_block(self._tx_seq, time.time(), part, fmt, channel=channel)
             try:
                 self._tx.send_multipart([self.token.encode(), header, payload], copy=False)
             except zmq.Again:   # the server (the device's queue) is full: timed out

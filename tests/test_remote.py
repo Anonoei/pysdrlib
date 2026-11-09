@@ -322,8 +322,8 @@ class TestCli:
     def test_errors_are_one_line(self, server):
         with pytest.raises(SystemExit, match="no hosted device"):
             cli(["client", server.endpoint, "info", "sim-42"])
-        with pytest.raises(SystemExit, match="not implemented"):
-            cli(["client", server.endpoint, "tx", "sim"])
+        with pytest.raises(SystemExit, match="no such file"):
+            cli(["client", server.endpoint, "tx", "sim", "-i", "/nonexistent.cfile", "--init", "transmit=True"])
 
     def test_unreachable(self):
         with pytest.raises(SystemExit, match="no reply"):
@@ -385,9 +385,24 @@ class TestWire:
         with pytest.raises(ValueError):
             Server("tcp://127.0.0.1:0", wire="int3")
 
-    def test_cli_wire(self, server, tmp_path, capsys):
-        cli(["client", server.endpoint, "rx", "sim", "--wire", "int16", "--rate", "1e6", "-n", "20000", "-o", str(tmp_path / "w")])
+    @pytest.mark.parametrize("flag", ["--rx-wire", "--wire"])
+    def test_cli_wire(self, server, tmp_path, capsys, flag):
+        cli(["client", server.endpoint, "rx", "sim", flag, "int16", "--rate", "1e6", "-n", "20000", "-o", str(tmp_path / "w")])
         assert "wire=int16" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("wire, atol", [("native", 1 / 127), ("int16", 2 / 32768), ("complex64", 1e-7)])
+    def test_cli_tx(self, server, tmp_path, capsys, monkeypatch, wire, atol):
+        from pysdrlib.sim.sim import Sim
+        made, init = [], Sim.__init__
+        monkeypatch.setattr(Sim, "__init__", lambda self, *a, **k: (init(self, *a, **k), made.append(self))[0])   # the CLI closes its device
+        a = np.exp(2j * np.pi * 0.01 * np.arange(150_000)).astype(np.complex64)   # more than one chunk
+        a.tofile(tmp_path / "in.cfile")
+        cli(["client", server.endpoint, "tx", "sim", "-i", str(tmp_path / "in.cfile"), "--init", "transmit=True",
+             "--rate", "1e6", "--tx-wire", wire])
+        out = capsys.readouterr().out
+        assert "transmitted 150,000 samples" in out and "tx_wire=" + ("int8" if wire == "native" else wire) in out
+        (sim,) = made
+        assert np.allclose(np.concatenate(sim.transmitted[0]), a, atol=atol)
 
 
 class TestGenericControlsRemotely:
@@ -467,6 +482,7 @@ class TestChannelsRemotely:
 class TestTransmitRemotely:
     def test_rows_reach_their_channels(self, dual):
         d, sim = dual
+        d.set_tx_wire("complex64")      # exact; the default (native) quantises to the device's own layout
         d.start_tx(channels=(0, 1))
         a = np.exp(2j * np.pi * 0.01 * np.arange(50_000)).astype(np.complex64)
         assert d.write(np.stack((a, -a))) == 50_000
@@ -476,6 +492,50 @@ class TestTransmitRemotely:
         got0, got1 = np.concatenate(sim.transmitted[0]), np.concatenate(sim.transmitted[1])
         assert np.allclose(got0, a) and np.allclose(got1, -a)
         assert d.get_tx_stats(1)["written"] == 50_000
+
+    def _sent(self, sim, n, channel=0):
+        deadline = time.time() + 5
+        while time.time() < deadline and sum(len(x) for x in sim.transmitted[channel]) < n:
+            time.sleep(0.02)
+        return np.concatenate(sim.transmitted[channel])
+
+    def test_native_is_the_default_and_quantises_to_the_device_layout(self, dual):
+        d, sim = dual
+        assert d.tx_wire == "native" and d.tx_wire_name == d.capabilities["native_wire"] == "int8"
+        a = np.exp(2j * np.pi * 0.01 * np.arange(20_000)).astype(np.complex64)
+        d.start_tx()
+        assert d.write(a) == 20_000
+        got = self._sent(sim, 20_000)
+        assert np.allclose(got, a, atol=1 / 127)
+        grid = np.stack((got.real, got.imag)) * 128
+        assert np.array_equal(grid, np.round(grid))    # on the int8 grid: that is what crossed the wire
+
+    @pytest.mark.parametrize("name", ["complex64", "int16"])
+    def test_other_formats(self, dual, name):
+        d, sim = dual
+        assert d.set_tx_wire(name) == name
+        a = np.exp(2j * np.pi * 0.01 * np.arange(10_000)).astype(np.complex64)
+        d.start_tx()
+        assert d.write(a) == 10_000
+        assert np.allclose(self._sent(sim, 10_000), a, atol=2 / 32768)
+
+    def test_the_wire_can_change_mid_stream(self, dual):
+        d, sim = dual
+        a = np.full(4000, 0.5 + 0.25j, np.complex64)
+        d.start_tx()
+        d.set_tx_wire("complex64")
+        d.write(a)
+        d.set_tx_wire("native")
+        d.write(a)
+        assert np.allclose(self._sent(sim, 8000), a.tolist() * 2)
+
+    def test_unknown_tx_wire(self, dual, server):
+        d, _ = dual
+        with pytest.raises(ValueError, match="unknown wire format"):
+            d.set_tx_wire("int3")
+        assert d.tx_wire == "native"
+        with pytest.raises(ValueError, match="unknown wire format"):
+            RemoteDevice(server.endpoint, "sim", tx_wire="int3")
 
     def test_transmit_while_receiving(self, dual):
         d, sim = dual

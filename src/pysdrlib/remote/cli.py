@@ -5,9 +5,11 @@
     pysdrlib client tcp://host:5555 info hackrf-0
     pysdrlib client tcp://host:5555 rx hackrf --freq 100e6 --rate 10e6 -o out.cfile -t 5
     pysdrlib client tcp://host:5555 watch hackrf-0 -o out.cfile -t 5
+    pysdrlib client tcp://host:5555 tx hackrf -i out.cfile --freq 915e6 --rate 2e6 --tx-gain 0 --tx-wire int8
     pysdrlib client tcp://host:5555 set hackrf-0 freq=101e6 rx_lna_gain=16
 
-Recordings are raw complex64 (GNU Radio `.cfile`).
+Recordings and transmit files are raw complex64 (GNU Radio `.cfile`).
+--rx-wire / --tx-wire choose the format samples cross the network in (native = the device's own layout).
 """
 import argparse
 import json
@@ -38,7 +40,7 @@ def build_parser():
     s.add_argument("--port-range", type=_port_range, help="LOW-HIGH ports for per-device sockets (default: any free port)")
     s.add_argument("--devices", help="comma separated device types clients may open (default: all)")
     s.add_argument("--open", action="append", default=[], metavar="TYPE", help="open a device at startup, uncontrolled until a client claims it (repeatable)")
-    s.add_argument("--wire", default="native", help="RX wire format: native (device's own sample layout, default), complex64, int8, int16, ...")
+    s.add_argument("--wire", "--rx-wire", dest="wire", default="native", help="default RX wire format: native (device's own sample layout, default), complex64, int8, int16, ...")
     s.add_argument("--lease", type=float, default=15.0, help="seconds a silent controller keeps control, 0 = forever (default %(default)s)")
     s.add_argument("-v", "--verbose", action="store_true")
 
@@ -55,7 +57,8 @@ def build_parser():
     r = cmd.add_parser("rx", help="open a new device, configure it and record")
     r.add_argument("type", help="device type, e.g. hackrf")
     _record_args(r)
-    r.add_argument("--wire", help="RX wire format for this device (default: the server's)")
+    r.add_argument("--rx-wire", "--wire", dest="rx_wire", help="RX wire format for this device (default: the server's)")
+    r.add_argument("--init", action="append", default=[], metavar="KEY=VALUE", help="device constructor argument (repeatable)")
     r.add_argument("--freq", type=_number)
     r.add_argument("--rate", type=_number)
     r.add_argument("--rx-gain", type=_number)
@@ -69,9 +72,16 @@ def build_parser():
     st.add_argument("device")
     st.add_argument("settings", nargs="+", metavar="KEY=VALUE", help="calls set_<key>(value): freq, sample_rate, rx_gain, rx_lna_gain, ...")
 
-    t = cmd.add_parser("tx", help="transmit a file (not implemented yet)")
-    t.add_argument("type")
-    t.add_argument("-i", "--input")
+    t = cmd.add_parser("tx", help="open a new device, configure it and transmit a file")
+    t.add_argument("type", help="device type, e.g. hackrf")
+    t.add_argument("-i", "--input", required=True, help="file of raw complex64 to transmit")
+    t.add_argument("--tx-wire", default="native", help="TX wire format: native (device's own sample layout, default), complex64, int8, int16, ...")
+    t.add_argument("--freq", type=_number)
+    t.add_argument("--rate", type=_number)
+    t.add_argument("--tx-gain", type=_number, help="total TX gain in dB (default: the device's)")
+    t.add_argument("--loop", action="store_true", help="repeat the file until Ctrl+C")
+    t.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="device specific setter, e.g. tx_if_gain=0 (repeatable)")
+    t.add_argument("--init", action="append", default=[], metavar="KEY=VALUE", help="device constructor argument (repeatable)")
     return p
 
 def _record_args(p):
@@ -111,6 +121,41 @@ def _record(dev, args):
             pass
     print(f"wrote {total:,} samples to {args.output}" + (f" ({dev.dropped_blocks} blocks dropped)" if dev.dropped_blocks else ""))
 
+CHUNK_SAMPLES = 65536
+
+def _transmit(dev, args):
+    import numpy as np
+    total = 0
+    try:
+        with open(args.input, "rb") as f:
+            if not f.seek(0, 2):
+                raise SystemExit(f"{args.input} is empty")
+            f.seek(0)
+            dev.start_tx()
+            try:
+                while True:
+                    samples = np.fromfile(f, dtype=np.complex64, count=CHUNK_SAMPLES)
+                    if not samples.size:
+                        if not args.loop:
+                            break
+                        f.seek(0)
+                        continue
+                    total += dev.write(samples)
+                # write() returns once queued: let the device send what is still pending before stopping
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    stats = dev.get_tx_stats()
+                    if stats["written"] >= total and not stats["pending"]:
+                        break
+                    time.sleep(0.05)
+            finally:
+                dev.stop_tx()
+    except KeyboardInterrupt:
+        pass
+    except FileNotFoundError:
+        raise SystemExit(f"no such file: {args.input}")
+    print(f"transmitted {total:,} samples from {args.input}")
+
 def run_server(args):
     from .server import Server
     if args.verbose:
@@ -147,7 +192,8 @@ def run_client(args):
         with RemoteDevice(args.address, id=args.device, timeout=args.timeout) as dev:
             print(json.dumps(dev.capabilities, indent=2))
     elif args.cmd == "rx":
-        with RemoteDevice(args.address, args.type, timeout=args.timeout, wire=args.wire) as dev:
+        with RemoteDevice(args.address, args.type, timeout=args.timeout, wire=args.rx_wire,
+                          init_kwargs=dict(_setting(i) for i in args.init)) as dev:
             dev.initialize(cf=args.freq, Fs=args.rate, rx_gain=args.rx_gain)
             _apply(dev, [_setting(s) for s in args.set])
             print(f"{dev.id}: cf={dev.CF:,.0f} Fs={dev.Fs:,.0f} wire={dev.wire}")
@@ -167,7 +213,12 @@ def run_client(args):
             finally:
                 dev.release()
     elif args.cmd == "tx":
-        raise SystemExit("tx is not implemented yet")
+        with RemoteDevice(args.address, args.type, timeout=args.timeout, tx_wire=args.tx_wire,
+                          init_kwargs=dict(_setting(i) for i in args.init)) as dev:
+            dev.initialize(cf=args.freq, Fs=args.rate, tx_gain=args.tx_gain)
+            _apply(dev, [_setting(x) for x in args.set])
+            print(f"{dev.id}: cf={dev.CF:,.0f} Fs={dev.Fs:,.0f} tx_wire={dev.tx_wire_name}")
+            _transmit(dev, args)
 
 def main(argv=None):
     args = build_parser().parse_args(argv)

@@ -145,6 +145,7 @@ Host SDRs on one machine and use them from another (`pip install pysdrlib[remote
 pysdrlib server --bind tcp://0.0.0.0:5555 --port-range 6000-6100
 pysdrlib client tcp://host:5555 list
 pysdrlib client tcp://host:5555 rx hackrf --freq 100e6 --rate 10e6 -t 5 -o out.cfile
+pysdrlib client tcp://host:5555 tx hackrf -i out.cfile --freq 915e6 --rate 2e6 --tx-gain 0 --tx-wire int8
 ```
 ```python
 sdr = pysdrlib.device("remote", "tcp://host:5555", "hackrf")  # same API as a local device

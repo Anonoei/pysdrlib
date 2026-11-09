@@ -19,8 +19,9 @@ samples in the layout the header describes: a `convert.SampleFormat`. The header
 and the stream index of its first sample (samples since start_rx), so a client keeps channels apart and aligned, and
 sees where samples were lost. By default that is the device's own native layout (8-bit for a
 HackRF, ...), which is lossless and several times smaller than complex64; clients always hand the
-caller complex64. The format may change between blocks (the controller can switch it), so it is
-read from every header.
+caller complex64. The same goes for the TX stream: the controller sends blocks in the device's native layout
+by default (or any other wire format) and the server decodes whatever the header says. The format may change
+between blocks (the controller can switch it), so it is read from every header.
 
 Endpoints handed out by the server may contain `{host}`, which the client replaces with the host
 it used to reach the C2 socket (so a server bound to 0.0.0.0 doesn't need to know its own address).
