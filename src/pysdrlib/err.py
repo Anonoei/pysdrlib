@@ -25,3 +25,15 @@ class Busy(_Error):
 
 class ProtocolError(_Error):
     """Error thrown when a remote peer sends something that isn't valid pysdrlib protocol"""
+
+class Timeout(_Error, TimeoutError):
+    """Error thrown by `read` when the samples asked for did not arrive in time"""
+
+class NotStreaming(_Error):
+    """Error thrown when reading from a device that isn't receiving"""
+
+class Dropped(_Error):
+    """Error thrown when samples were lost and the device's `on_drop` is 'raise'"""
+
+class NotSupported(_Error, NotImplementedError):
+    """Error thrown when a device has no such control (see `Device.caps`)"""

@@ -55,7 +55,7 @@ WIRE_FORMATS = {
 MAX_BLOCK_SAMPLES = 131072
 
 # Device methods that are never callable remotely: lifecycle is C2's job and samples are streamed.
-BLOCKED_METHODS = frozenset({"open", "close", "get_samples"})
+BLOCKED_METHODS = frozenset({"open", "close", "get_samples", "read", "read_into", "stream", "flush"})
 
 # Errors are re-raised on the client as the same type if it is one of these
 _ERRORS = {

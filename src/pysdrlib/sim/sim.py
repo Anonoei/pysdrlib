@@ -133,6 +133,16 @@ class Sim(Device):
     def _get_samples(self):
         return self.buffer.samples
 
+    # the generic read path (Device.read) on the ring the "driver" fills
+    def _rx_wait(self, count, timeout):
+        return self.buffer.wait(int(count), float(timeout))
+    def _rx_read(self, count):
+        return self.buffer.read_indexed(int(count))
+    def _rx_position(self):
+        return self.buffer.total, self.buffer.age
+    def _rx_flush(self):
+        return len(self.buffer.read())
+
     def _resize_buffer(self):
         self.buffer.reset(min(int(0.5 * self._Fs), MAX_BUFFER_SAMPLES))
 

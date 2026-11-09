@@ -69,6 +69,47 @@ import pysdrlib.rtl_sdr
 sdr = pysdrlib.rtl_sdr.Device() # Initialize sdr
 ```
 
+### Finding devices
+```python
+for info in pysdrlib.find():          # the radios attached, for every driver whose library is installed or built
+    print(info.driver, info.label, info.serial)
+sdr = pysdrlib.open(pysdrlib.find()[0])           # or pysdrlib.open("<driver>", serial="...")
+```
+`find()` never builds a vendor library (`find(build=True)` allows it); `find(virtual=True)` also lists the simulated device.
+
+### Reading
+```python
+sdr.start_rx()
+x = sdr.read(65536, timeout=1.0)                 # exactly 65536 samples, waiting for them (err.Timeout after 1 s)
+x, m = sdr.read(65536, meta=True)                # m.index: first sample's position in the stream; m.gaps / m.dropped:
+                                                 # where samples were lost; m.events: retunes inside the block; m.time
+sdr.read_into(buffer)                            # into an array you own
+
+with sdr.stream(65536, meta=True) as s:          # starts receiving, stops on exit
+    for x, m in s: ...
+
+sdr.set_freq(162.4e6, flush=True)                # the next read is all at the new frequency (settling skipped)
+```
+`get_samples()` (whatever has arrived) still works. `sdr.on_drop` decides what lost samples do: `"warn"` (default),
+`"raise"`, `"ignore"` or a function.
+
+### Controls
+Every device describes itself in `sdr.caps` (refined for the attached unit once open), and the same calls work on all of
+them; a control a device doesn't have raises `err.NotSupported`:
+```python
+sdr.caps.freq, sdr.caps.rates                    # [Range]: tunable and sample-rate ranges (lo == hi: one discrete value)
+sdr.gains()                                      # {stage: GainStage}: the device's own gain stages, by its names
+sdr.set_gain(40)                                 # total gain (the device splits it); sdr.set_gain(16, stage="...") one stage
+sdr.get_gain(), sdr.set_gain_mode("auto")        # readback; automatic gain where the device has it (sdr.gain_modes())
+sdr.set_bandwidth(1.5e6)                         # analog filter (sdr.caps.bandwidths)
+sdr.set_freq_correction(14.8)                    # ppm error of the reference: tuning (and continuous rates) corrected
+sdr.settings(); sdr.set_setting("bias_t", True)  # everything else the device has
+sdr.antennas(), sdr.clock_sources()              # where the device has them
+sdr.strict = True                                # out-of-range values raise err.InvalidValue instead of being clamped
+sdr.dc_correction = True                         # remove the DC offset from what read() returns
+```
+Every control takes `direction="rx"`/`"tx"` where it applies and `channel=0` (the count is in `sdr.caps.channels`).
+
 ### Remote devices
 Host SDRs on one machine and use them from another (`pip install pysdrlib[remote]`, uses ZeroMQ).
 
@@ -80,9 +121,9 @@ pysdrlib client tcp://host:5555 rx hackrf --freq 100e6 --rate 10e6 -t 5 -o out.c
 ```python
 sdr = pysdrlib.device("remote", "tcp://host:5555", "hackrf")  # same API as a local device
 sdr.open(); sdr.initialize(cf=100e6, Fs=10e6); sdr.start_rx()
-samples = sdr.get_samples()
+samples = sdr.read(65536)
 ```
-One client controls a device; any number can attach as viewers (`pysdrlib.device("remote", addr, id="hackrf-0")`) to receive samples.
+The controls above are forwarded to the hosted device and `sdr.caps` comes from it. One client controls a device; any number can attach as viewers (`pysdrlib.device("remote", addr, id="hackrf-0")`) to receive samples.
 
 ### Reading and writing sample files
 ```python

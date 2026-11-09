@@ -53,7 +53,9 @@ public:
     void set_rx_buffer(size_t samples) { rx_.configure(rx_sample_format(), samples); }
     void reset_rx_stats() { rx_.reset_stats(); }
     size_t rx_available() const { return rx_.available(); }
-    size_t read_rx(hw::cfloat* dst, size_t max_count) { return rx_.read(dst, max_count); }
+    size_t read_rx(hw::cfloat* dst, size_t max_count, uint64_t* first = nullptr) { return rx_.read(dst, max_count, first); }
+    // Block (GIL released by the binding) until `samples` are queued or `timeout` seconds pass; returns how many are
+    size_t wait_rx(size_t samples, double timeout) { return rx_.wait(samples, timeout); }
     hw::RingStats rx_stats() const { return rx_.stats(); }
 
     virtual void start_rx() = 0;

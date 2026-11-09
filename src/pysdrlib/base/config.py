@@ -6,11 +6,15 @@ from .. import logger
 
 @dataclass(frozen=True)
 class GainStage:
-    """One adjustable gain element of a device (its name is whatever the device calls it)"""
+    """One adjustable gain element of a device (its name is whatever the device calls it)
+
+    values: the gains it really has, when they are uneven steps (a tuner's table); set gains snap to the nearest
+    """
     step: int
     min: int
     max: int
     default: Optional[int] = None
+    values: Optional[tuple] = None
 
 _STAGE_KEY = re.compile(r"^(RX|TX)_(.+)_(STEP|MIN|MAX)$")
 _ATTR = re.compile(r"^(DEFAULT_)?GAIN_(RX|TX)_([A-Z0-9_]+?)(?:_(STEP|MIN|MAX))?$")
@@ -35,7 +39,6 @@ class ConfigDevice:
     def __new__(cls, *args, **kwargs):
         if cls.__instance is None:
             cls.__instance = super().__new__(cls)
-            cls.__instance.__init__(*args, **kwargs)
         return cls.__instance
 
     def __init__(self, sets):

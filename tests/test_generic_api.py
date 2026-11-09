@@ -1,0 +1,268 @@
+"""The device-agnostic API: blocking reads with stream metadata, capabilities, gains, filters, settings, correction
+
+Reading runs on the simulated device (the real C++ ring and a streaming thread); the controls run on every
+hardware device over its fake driver (tests/devices.py), so each driver's mapping onto them is checked.
+"""
+import dataclasses
+import time
+
+import numpy as np
+import pytest
+
+import pysdrlib
+from pysdrlib import err
+from pysdrlib.base import caps as caps_mod
+from pysdrlib.sim import Sim
+
+from devices import BY_NAME, fake_lib
+
+def sim(rate=1e6, realtime=True, block=4096):
+    s = Sim(realtime=realtime, block_samples=block)
+    s.open()
+    s.initialize(cf=100e6, Fs=rate)
+    return s
+
+# ---------------------------------------------------------------- read / read_into / stream
+class TestRead:
+    def test_read_returns_exactly_count(self):
+        s = sim()
+        s.start_rx()
+        try:
+            for n in (1, 1000, 12345):
+                x = s.read(n, timeout=2)
+                assert x.dtype == np.complex64 and len(x) == n
+        finally:
+            s.stop_rx()
+
+    def test_consecutive_reads_are_contiguous(self):
+        s = sim()
+        s.start_rx()
+        try:
+            _, a = s.read(5000, timeout=2, meta=True)
+            _, b = s.read(7000, timeout=2, meta=True)
+        finally:
+            s.stop_rx()
+        assert a.index == 0 and b.index == 5000 and not a.gaps and not b.gaps and a.dropped == 0
+        assert a.freq == 100e6 and a.rate == 1e6 and a.time is not None and a.time <= b.time
+
+    def test_read_into_fills_the_array(self):
+        s = sim()
+        buf = np.zeros(3000, np.complex64)
+        s.start_rx()
+        try:
+            n, m = s.read_into(buf, timeout=2, meta=True)
+        finally:
+            s.stop_rx()
+        assert n == 3000 and m.count == 3000 and np.all(buf != 0)
+        with pytest.raises(TypeError):
+            s.read_into(np.zeros(10, np.complex128))
+
+    def test_timeout(self):
+        s = sim(rate=1e3, block=256)   # 1000 samples/s: 10^6 can't come in 0.2 s
+        s.start_rx()
+        try:
+            t = time.monotonic()
+            with pytest.raises(err.Timeout):
+                s.read(1_000_000, timeout=0.2)
+            assert time.monotonic() - t < 1.0
+            with pytest.raises(TimeoutError):   # err.Timeout is a TimeoutError
+                s.read(1_000_000, timeout=0.05)
+        finally:
+            s.stop_rx()
+
+    def test_reading_needs_a_stream(self):
+        s = sim()
+        with pytest.raises(err.NotStreaming):
+            s.read(10, timeout=0.1)
+
+    def test_lost_samples_show_as_a_gap(self):
+        s = sim(rate=1e6, realtime=False, block=65536)   # floods the 0.5 s ring while nothing reads
+        s.start_rx()
+        try:
+            s.read(1000, timeout=2)
+            time.sleep(0.3)
+            _, m = s.read(1000, timeout=2, meta=True)
+        finally:
+            s.stop_rx()
+        assert m.dropped > 0 and m.gaps[0][0] == 0 and m.index == 1000 + m.dropped
+
+    def test_stream_starts_and_stops(self):
+        s = sim()
+        with s.stream(2048, timeout=2, meta=True) as st:
+            assert s.state["rx"]
+            blocks = []
+            for x, m in st:
+                blocks.append(m.index)
+                if len(blocks) == 3:
+                    break
+        assert not s.state["rx"] and blocks == [0, 2048, 4096]
+
+    def test_flush_discards_what_is_queued(self):
+        s = sim()
+        s.start_rx()
+        try:
+            time.sleep(0.05)
+            n = s.flush()
+            _, m = s.read(100, timeout=2, meta=True)
+        finally:
+            s.stop_rx()
+        assert n > 0 and m.index >= n and m.dropped == 0 and m.discarded >= n
+
+    def test_retune_is_marked_and_flush_skips_the_old_samples(self):
+        s = sim()
+        s.start_rx()
+        try:
+            s.read(1000, timeout=2)
+            s.set_freq(101e6)
+            x, m = s.read(200_000, timeout=2, meta=True)        # the change lands inside or before this block
+            s.set_freq(102e6, flush=True)
+            _, m2 = s.read(1000, timeout=2, meta=True)
+        finally:
+            s.stop_rx()
+        changes = [e for e in m.events if e.kind == "freq"]
+        assert (changes and changes[0].value == 101e6 and m.freq == 100e6) or m.freq == 101e6
+        assert m2.freq == 102e6 and not m2.events and m2.dropped == 0
+
+    def test_dc_correction(self):
+        s = sim()
+        s.dc_correction = True
+        s.start_rx()
+        try:
+            for _ in range(5):
+                x = s.read(50_000, timeout=2)
+        finally:
+            s.stop_rx()
+        assert abs(x.mean()) < 0.05
+
+# ---------------------------------------------------------------- capabilities and controls, on every driver
+@pytest.fixture
+def driver(spec, monkeypatch):
+    monkeypatch.setattr(spec.device_module, "lib", fake_lib(spec))
+    d = spec.device_class()
+    d.open()
+    return d
+
+class TestCapabilities:
+    def test_closed_and_open(self, spec, monkeypatch):
+        monkeypatch.setattr(spec.device_module, "lib", fake_lib(spec))
+        d = spec.device_class()
+        closed = d.caps
+        assert closed.driver == d.NAME and closed.freq and closed.rates and closed.gains["rx"]
+        d.open()
+        assert d.caps is not closed and d.caps.channels["rx"] == 1
+
+    def test_json_round_trip(self, driver):
+        c = driver.caps
+        back = caps_mod.from_json(driver.get_caps())
+        assert back.json() == c.json()
+
+    def test_gain_stages_by_name(self, driver):
+        stages = driver.gains()
+        name, stage = next(iter(stages.items()))
+        got = driver.set_gain(stage.max, stage=name.lower())
+        assert got == stage.max and driver.get_gain(name) == stage.max
+        with pytest.raises(err.NotSupported):
+            driver.set_gain(1, stage="no such stage")
+
+    def test_total_gain_is_the_sum_of_the_stages(self, driver):
+        driver.set_gain(20)
+        assert driver.get_gain() == sum(v for v in (driver.get_gain(n) for n in driver.gains()) if v is not None)
+
+    def test_strict(self, driver, spec):
+        driver.strict = True
+        with pytest.raises(err.InvalidValue):
+            driver.set_freq(spec.config.FREQ_MAX * 2)
+        driver.strict = False
+        with pytest.warns(Warning):
+            driver.set_freq(spec.config.FREQ_MAX * 2)
+
+    def test_channels(self, driver):
+        with pytest.raises(err.InvalidValue):
+            driver.set_freq(100e6, channel=1)
+        with pytest.raises(ValueError):
+            driver.gains("sideways")
+
+    def test_unsupported_controls_say_so(self, driver):
+        if not driver.caps.antennas["rx"]:
+            with pytest.raises(err.NotSupported):
+                driver.set_antenna("A")
+        if not driver.caps.clock_sources:
+            with pytest.raises(err.NotSupported):
+                driver.set_clock_source("external")
+        if driver.caps.gain_modes["rx"] == ["manual"]:
+            with pytest.raises(err.NotSupported):
+                driver.set_gain_mode("auto")
+
+    def test_settings_reach_the_driver(self, driver):
+        for name, s in driver.settings().items():
+            if s.kind is bool:
+                assert driver.set_setting(name, True) is True and driver.get_setting(name) is True
+        with pytest.raises(err.NotSupported):
+            driver.set_setting("no such setting", 1)
+
+    def test_freq_correction(self, driver, spec):
+        f = 100e6 if 100e6 in driver.caps.freq[0] else spec.config.DEFAULT_FREQ
+        driver.set_freq(f)
+        driver.set_freq_correction(10.0)
+        assert driver.get_freq_correction() == pytest.approx(10.0) and driver.get_freq() == f
+        if spec.name == "rtl_sdr":   # whole ppm in the hardware
+            assert driver.device.of("set_freq_correction")[-1] == (10,)
+            assert driver.device.of("set_freq")[-1] == (int(f),)
+        else:                        # asked for less, so a fast reference lands on f
+            assert driver.device.of("set_freq")[-1] == (int(f / (1 + 10e-6)),)
+        assert driver.get_sample_rate() == pytest.approx(spec.config.DEFAULT_SAMPLE_RATE if spec.name != "rtl_sdr" else driver.Fs)
+
+# ---------------------------------------------------------------- driver specifics through the generic API
+def test_hackrf_bandwidth(monkeypatch):
+    spec = BY_NAME["hackrf"]
+    monkeypatch.setattr(spec.device_module, "lib", fake_lib(spec))
+    d = spec.device_class()
+    d.open()
+    assert d.set_bandwidth(4e6) == 5_000_000            # the narrowest filter that passes 4 MHz
+    assert d.device.of("set_baseband_filter_bandwidth")[-1] == (5_000_000,)
+    assert d.get_bandwidth() == 5_000_000
+    with pytest.warns(Warning):
+        assert d.set_bandwidth(40e6) == 28_000_000
+
+def test_rtl_sdr_gain_table_and_agc(monkeypatch):
+    spec = BY_NAME["rtl_sdr"]
+    monkeypatch.setattr(spec.device_module, "lib", fake_lib(spec))
+    d = spec.device_class()
+    d.open()
+    d.device._returns = {**d.device._returns, "gains": lambda: [0.0, 0.9, 1.4, 2.7, 29.7, 32.8, 49.6]}   # not the spec's dict
+    d._caps = None
+    assert d.caps.gains["rx"]["RF"].values[-1] == 49.6
+    assert d.set_gain(30) == 29.7 and d.device.of("set_rx_rf_gain")[-1] == (29.7,)
+    assert d.gain_modes() == ["manual", "auto"]
+    d.set_gain_mode("auto")
+    assert d.device.of("set_agc")[-1] == (True,) and d.get_gain_mode() == "auto"
+    assert len(d.caps.rates) == 2   # the RTL2832U has no rates between them
+
+def test_rx888_rates_and_settings(monkeypatch):
+    spec = BY_NAME["extio"]
+    monkeypatch.setattr(spec.device_module, "lib", fake_lib(spec))
+    d = spec.device_class()
+    d.open()
+    assert [r.lo for r in d.caps.rates] == [2e6, 4e6, 8e6, 16e6, 32e6]
+    assert {"dither", "random", "pga"} <= set(d.settings())
+    d.set_setting("dither", True)
+    assert d.device.of("set_dither")[-1] == (True,)
+
+# ---------------------------------------------------------------- finding devices
+def test_find_lists_virtual_devices_only_when_asked():
+    assert not [i for i in pysdrlib.find() if i.driver == "sim"]
+    infos = [i for i in pysdrlib.find(virtual=True) if i.driver == "sim"]
+    assert infos and infos[0].extra["virtual"]
+    s = pysdrlib.open(infos[0])
+    assert s.state["open"]
+    s.close()
+
+def test_open_by_driver_name_and_serial(monkeypatch, spec):
+    monkeypatch.setattr(spec.device_module, "lib", fake_lib(spec))
+    if spec.name == "extio":
+        pytest.skip("the RX-888 driver has no serial numbers")
+    d = pysdrlib.open(spec.name, serial="1234")
+    assert d.state["open"]
+
+def test_ls_lists_drivers_only():
+    assert "_native" not in pysdrlib.devices.ls() and "sim" in pysdrlib.devices.ls()

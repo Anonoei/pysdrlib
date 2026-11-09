@@ -18,4 +18,6 @@ from .base.device import Device
 from . import devices
 from .file import File, FileSink
 
-from .devices import device
+from .devices import device, find, open, DeviceInfo
+from .base.caps import Capabilities, Range, Setting
+from .base.stream import RxMeta, Event

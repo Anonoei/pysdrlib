@@ -78,6 +78,10 @@ class VendorLibrary:
                     return directory / file
         return None
 
+    def available(self) -> bool:
+        """True if the library can be loaded without building it (installed, or built before)"""
+        return bool(ctypes.util.find_library(self.name)) or self.find_cached() is not None
+
     def is_missing(self, exc: ImportError) -> bool:
         """True if `exc` means the extension is there but this library's symbols aren't"""
         msg = str(exc).lower()

@@ -50,7 +50,8 @@ public:
     }
 
     size_t available() const { return ring_.available(); }
-    size_t read(cfloat* dst, size_t max_count) { return ring_.read(dst, max_count); }
+    size_t read(cfloat* dst, size_t max_count, uint64_t* first = nullptr) { return ring_.read(dst, max_count, first); }
+    size_t wait(size_t n, double timeout) { return ring_.wait(n, timeout); }
     RingStats stats() const { return ring_.stats(); }
 
 private:

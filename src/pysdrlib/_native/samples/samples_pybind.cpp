@@ -92,6 +92,33 @@ PYBIND11_MODULE(_samples, m) {
             if (got) std::memcpy(trimmed.mutable_data(), out.data(), got * sizeof(cfloat));
             return trimmed;
         }, py::arg("count") = py::none(), "Remove and return up to `count` of the oldest pending samples (all if None).")
+        .def("read_indexed", [](Ring& r, size_t count) {
+            py::array_t<cfloat> out(count);
+            size_t got = 0;
+            uint64_t first = 0;
+            {
+                py::gil_scoped_release release;
+                got = r.read(out.mutable_data(), count, &first);
+            }
+            if (got != count) {
+                py::array_t<cfloat> trimmed(got);
+                if (got) std::memcpy(trimmed.mutable_data(), out.data(), got * sizeof(cfloat));
+                return py::make_tuple(trimmed, first);
+            }
+            return py::make_tuple(out, first);
+        }, py::arg("count"), "(samples, index of the first): up to `count` of the oldest pending samples.")
+        .def("wait", [](Ring& r, size_t count, double timeout) {
+            py::gil_scoped_release release;
+            return r.wait(count, timeout);
+        }, py::arg("count"), py::arg("timeout"),
+           "Wait until `count` samples are pending (at most the capacity) or `timeout` seconds pass (negative: no "
+           "limit); returns how many are pending.")
+        .def_property_readonly("total", [](const Ring& r) { return r.stats().total; },
+                               "Samples written since reset(): the index the next one gets.")
+        .def_property_readonly("age", [](const Ring& r) {
+            RingStats st = r.stats();
+            return st.seen ? py::object(py::float_(st.age)) : py::object(py::none());
+        }, "Seconds since the last write (None: nothing written since reset_stats).")
         .def_property_readonly("available", &Ring::available)
         .def_property_readonly("capacity", &Ring::capacity)
         .def_property_readonly("dropped", &Ring::dropped)

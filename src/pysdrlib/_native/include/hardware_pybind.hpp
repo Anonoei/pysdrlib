@@ -132,10 +132,34 @@ py::class_<Device> bind_device(py::module_& m, const char* name) {
             if (got) std::memcpy(trimmed.mutable_data(), out.data(), got * sizeof(cfloat));
             return trimmed;
         }, py::arg("count") = py::none())
+        .def("read_rx_indexed", [](Device& d, size_t count) {
+            // (samples, index of the first): up to `count` of the oldest pending samples. A jump in the index from
+            // the end of the previous read is the number of samples dropped in between.
+            py::array_t<cfloat> out(count);
+            size_t got = 0;
+            uint64_t first = 0;
+            {
+                py::gil_scoped_release release;
+                got = d.read_rx(out.mutable_data(), count, &first);
+            }
+            if (got != count) {
+                py::array_t<cfloat> trimmed(got);
+                if (got) std::memcpy(trimmed.mutable_data(), out.data(), got * sizeof(cfloat));
+                return py::make_tuple(trimmed, first);
+            }
+            return py::make_tuple(out, first);
+        }, py::arg("count"))
+        .def("wait_rx", [](Device& d, size_t samples, double timeout) {
+            py::gil_scoped_release release;
+            return d.wait_rx(samples, timeout);
+        }, py::arg("samples"), py::arg("timeout"),
+           "Wait until `samples` are queued (at most the queue's size) or `timeout` seconds pass (negative: no limit); "
+           "returns how many are queued.")
         .def("rx_stats", [](const Device& d) {
             RingStats s = d.rx_stats();
             py::dict out;
             out["samples"] = s.samples;
+            out["total"] = s.total;
             out["dropped"] = s.dropped;
             out["pending"] = s.pending;
             out["max_chunk"] = s.max_chunk;

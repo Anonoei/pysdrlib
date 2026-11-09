@@ -1,6 +1,7 @@
 from ..base.native import NativeDevice
 from ..base import convert
-from .. import err, warn
+from ..base.caps import Range, Setting
+from .. import err
 
 from .config import ConfigRX888 as config
 from . import lib
@@ -11,6 +12,12 @@ class RX888(NativeDevice):
     CAN_TRANSMIT = False
     DUPLEX = False
     SAMPLE_FORMAT = convert.FLOAT32 # the driver's DDC delivers interleaved float32 I/Q
+    RETUNE_SETTLE = 0.01   # the DDC's NCO moves at once; the VHF tuner's PLL and the DDC's filters take a few ms
+    SETTINGS = {
+        "dither": Setting(bool, "ADC dither (spreads spurs at the cost of a little noise)", "set_dither", default=False),
+        "random": Setting(bool, "ADC output randomizer (cuts digital interference)", "set_random", default=False),
+        "pga": Setting(bool, "ADC programmable gain amplifier (+3.5 dB)", "set_pga", default=False),
+    }
 
     def __init__(self):
         super().__init__()
@@ -25,7 +32,7 @@ class RX888(NativeDevice):
     def _set_sample_rate(self, Fs):
         actual = self.device.set_sample_rate(Fs)
         if actual != Fs:
-            warn.InvalidValue(f"Sample rate must be one of {self.device.sample_rates()}, using {actual:,}")
+            self._invalid(f"Sample rate must be one of {self.device.sample_rates()}, using {actual:,}")
             self._Fs = actual
         self._rate_changed()
     def _set_freq(self, freq):
@@ -58,6 +65,13 @@ class RX888(NativeDevice):
     def _set_bias_t(self, bias):
         """Bias tee on the active input"""
         self.device.set_bias_t(bool(bias))
+
+    def _capabilities(self, caps):
+        try:
+            caps.rates = [Range(r, r) for r in self.device.sample_rates()]
+        except Exception:
+            pass
+        return caps
 
     # ADC controls
     def set_dither(self, enable):

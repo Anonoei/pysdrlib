@@ -388,3 +388,27 @@ class TestWire:
     def test_cli_wire(self, server, tmp_path, capsys):
         cli(["client", server.endpoint, "rx", "sim", "--wire", "int16", "--rate", "1e6", "-n", "20000", "-o", str(tmp_path / "w")])
         assert "wire=int16" in capsys.readouterr().out
+
+
+class TestGenericControlsRemotely:
+    """The device-agnostic controls reach the hosted device; samples still come over the stream"""
+    def test_caps_come_from_the_server(self, dev):
+        assert dev.caps.driver == "Simulated" and set(dev.gains()) == {"IF", "BB"}
+
+    def test_gain_and_correction_are_forwarded(self, dev):
+        assert dev.set_gain(10, stage="IF") == 10 and dev.get_gain("IF") == 10
+        assert dev.set_freq_correction(5.0) == 5.0 and dev.get_freq_correction() == 5.0
+
+    def test_read_with_meta(self, dev):
+        dev.initialize(cf=100e6, Fs=1e6)
+        dev.start_rx()
+        try:
+            _, a = dev.read(1000, timeout=5, meta=True)
+            _, b = dev.read(1000, timeout=5, meta=True)
+        finally:
+            dev.stop_rx()
+        assert (a.index, b.index) == (0, 1000) and a.freq == 100e6
+
+    def test_reading_is_not_a_remote_call(self, dev):
+        for name in ("read", "read_into", "stream", "flush"):
+            assert name not in dev.capabilities["methods"]

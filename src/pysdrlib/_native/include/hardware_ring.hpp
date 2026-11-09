@@ -8,6 +8,10 @@
 //     ring.reset(capacity);                  // size it (discards pending samples and `dropped`)
 //     ring.write(samples, n);                // producer: never blocks on the consumer
 //     ring.read(dst, max_count);             // consumer: oldest first, removes what it returns
+//     ring.wait(n, timeout);                 // consumer: block until n samples are pending (or timeout)
+//
+// Every sample has an index: its position in everything written since reset(). read() can report the index of
+// the first sample it returns, so a consumer sees exactly where samples were dropped (a jump in the index).
 //
 // If the consumer falls behind by more than the capacity, the OLDEST pending samples are dropped, so a
 // read is always the most recent data; `dropped` counts them.
@@ -17,6 +21,7 @@
 #include <algorithm>
 #include <chrono>
 #include <complex>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -29,6 +34,7 @@ using cfloat = std::complex<float>;
 // What the ring has seen, read in one go so the numbers agree with each other
 struct RingStats {
     uint64_t samples = 0;      // written since reset_stats()
+    uint64_t total = 0;        // written since reset(): the index the next written sample gets
     uint64_t dropped = 0;      // discarded because the consumer fell behind
     uint64_t pending = 0;      // waiting to be read
     uint64_t max_chunk = 0;    // samples in the largest write
@@ -52,6 +58,7 @@ public:
         cap_ = capacity;
         head_ = pending_ = 0;
         dropped_ = 0;
+        total_ = 0;
     }
 
     // Forget the counts (and `dropped`), keeping pending samples and the capacity
@@ -67,8 +74,37 @@ public:
     // unseen. Runs under the ring's lock.
     template <typename Fill>
     void push(size_t n, Fill&& fill) {
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            push_locked(n, fill);
+        }
+        cv_.notify_all();
+    }
+
+    void write(const cfloat* samples, size_t n) {
+        push(n, [samples](cfloat* dst, size_t first, size_t count) {
+            if (count) std::memcpy(dst, samples + first, count * sizeof(cfloat));
+        });
+    }
+
+    // Consumer: wait until at least `n` samples are pending (at most the capacity), for up to `timeout`
+    // seconds (negative: no limit). Returns the number pending. Call without holding the GIL; callers that
+    // must notice a stopped stream wait in short slices.
+    size_t wait(size_t n, double timeout) {
+        std::unique_lock<std::mutex> lock(m_);
+        auto ready = [&] { return pending_ >= std::min(n, cap_); };   // a ring never holds more than its capacity
+        if (timeout < 0) {
+            cv_.wait(lock, ready);
+        } else {
+            cv_.wait_for(lock, std::chrono::duration<double>(timeout), ready);
+        }
+        return pending_;
+    }
+
+private:
+    template <typename Fill>
+    void push_locked(size_t n, Fill& fill) {
         const auto start = clock::now();
-        std::lock_guard<std::mutex> lock(m_);
         if (cap_ == 0) {
             dropped_ += n;
         } else if (n >= cap_) {   // this write alone fills the ring
@@ -89,6 +125,7 @@ public:
             pending_ = pending;
         }
         samples_ += n;
+        total_ += n;
         max_chunk_ = std::max<uint64_t>(max_chunk_, n);
         ++calls_;
         seen_ = true;
@@ -96,11 +133,7 @@ public:
         busy_ += std::chrono::duration<double>(last_ - start).count();
     }
 
-    void write(const cfloat* samples, size_t n) {
-        push(n, [samples](cfloat* dst, size_t first, size_t count) {
-            if (count) std::memcpy(dst, samples + first, count * sizeof(cfloat));
-        });
-    }
+public:
 
     size_t available() const {
         std::lock_guard<std::mutex> lock(m_);
@@ -122,9 +155,11 @@ public:
         return d;
     }
 
-    // Consumer: move up to `max_count` of the oldest pending samples to `dst`; returns how many
-    size_t read(cfloat* dst, size_t max_count) {
+    // Consumer: move up to `max_count` of the oldest pending samples to `dst`; returns how many.
+    // `first_index`: set to the index of the first sample returned (or of the next one to come, if none)
+    size_t read(cfloat* dst, size_t max_count, uint64_t* first_index = nullptr) {
         std::lock_guard<std::mutex> lock(m_);
+        if (first_index) *first_index = total_ - pending_;
         const size_t take = std::min(max_count, pending_);
         if (take == 0) return 0;
         const size_t start = (head_ + cap_ - pending_) % cap_;
@@ -139,6 +174,7 @@ public:
         std::lock_guard<std::mutex> lock(m_);
         RingStats s;
         s.samples = samples_;
+        s.total = total_;
         s.dropped = dropped_;
         s.pending = pending_;
         s.max_chunk = max_chunk_;
@@ -153,9 +189,10 @@ private:
     cfloat* samples() { return reinterpret_cast<cfloat*>(buf_.get()); }
 
     mutable std::mutex m_;
+    std::condition_variable cv_;
     std::unique_ptr<float[]> buf_;   // 2 * cap_ floats: cap_ complex samples
     size_t cap_ = 0, head_ = 0, pending_ = 0;   // capacity; next write; unread
-    uint64_t dropped_ = 0, samples_ = 0, max_chunk_ = 0, calls_ = 0;
+    uint64_t dropped_ = 0, samples_ = 0, max_chunk_ = 0, calls_ = 0, total_ = 0;
     double busy_ = 0;
     bool seen_ = false;
     clock::time_point last_;

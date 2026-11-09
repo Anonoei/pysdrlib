@@ -20,7 +20,9 @@ import zmq
 
 from .. import err
 from .. import logger
+from ..base import caps as _caps
 from ..base.device import Device
+from ..base.stream import RxMeta
 from . import protocol
 
 DEFAULT_TIMEOUT = 5.0
@@ -129,6 +131,9 @@ class RemoteDevice(Device):
         self._leftover = np.empty(0, dtype=np.complex64)
         self._beat = None
         self._beat_stop = threading.Event()
+        self._init_generic()
+        self._remote_caps = None
+        self._rx_index = 0
 
     def __str__(self):
         return f"{type(self).__name__}({self.id}@{self.address}): {self.state}"
@@ -206,6 +211,7 @@ class RemoteDevice(Device):
             self._sub.close(0)
             self._sub = None
         self.token = None
+        self._remote_caps = None
 
     def _start_heartbeat(self, lease):
         if not lease or lease <= 0:
@@ -257,6 +263,8 @@ class RemoteDevice(Device):
             self._Fs = result
         elif method in _SYNC_AFTER:
             self.refresh()
+        if method == "start_rx":
+            self._rx_index = 0
         return result
 
     def refresh(self):
@@ -313,8 +321,31 @@ class RemoteDevice(Device):
             return np.empty(0, dtype=np.complex64)
         return blocks[0] if len(blocks) == 1 else np.concatenate(blocks)
 
-    def read(self, count, timeout=None) -> np.ndarray:
-        """Exactly `count` samples, waiting for them (`TimeoutError` after `timeout` seconds)"""
+    @property
+    def caps(self):
+        """The hosted device's capabilities (fetched once per connection)"""
+        if self.__dict__.get("_remote_caps") is None:
+            self._remote_caps = _caps.from_json(self._call("get_caps"))
+        return self._remote_caps
+
+    def set_setting(self, name, value):
+        """Apply one of the hosted device's `settings()`"""
+        return self._call("set_setting", name, value)
+
+    def read(self, count, timeout=None, meta=False, channel=0):
+        """Exactly `count` samples, waiting for them (`TimeoutError` after `timeout` seconds).
+        meta=True also returns an RxMeta (index counted here: blocks lost on the network show in `dropped_blocks`)"""
+        self._check_channel("rx", channel)
+        first = self._rx_index
+        dropped = self.dropped_blocks
+        out = self._read(count, timeout)
+        self._rx_index += count
+        if not meta:
+            return out
+        gaps = ((0, -1),) if self.dropped_blocks != dropped else ()   # lost, size unknown
+        return out, RxMeta(index=first, count=count, freq=self._cf, rate=self._Fs, channel=channel, gaps=gaps)
+
+    def _read(self, count, timeout=None) -> np.ndarray:
         deadline = None if timeout is None else time.monotonic() + timeout
         have = np.empty(0, dtype=np.complex64)
         parts, size = [], 0
@@ -344,6 +375,10 @@ def _forwarder(name):
 # Everything Device implements locally (against CONFIG a remote device doesn't have) runs on the server instead
 for _name in ("initialize", "start_rx", "stop_rx", "start_tx", "stop_tx", "set_sample_rate", "set_freq",
               "set_rx_gain", "set_tx_gain", "set_bias_t"):
+    setattr(RemoteDevice, _name, _forwarder(_name))
+for _name in ("set_gain", "set_gain_mode", "set_bandwidth", "set_antenna", "set_clock_source", "set_freq_correction",
+              "get_gain", "get_gain_mode", "get_bandwidth", "get_antenna", "get_clock_source", "get_setting",
+              "get_freq_correction"):
     setattr(RemoteDevice, _name, _forwarder(_name))
 for _name in ("get_sample_rate", "get_freq"):
     setattr(RemoteDevice, _name, _forwarder(_name))

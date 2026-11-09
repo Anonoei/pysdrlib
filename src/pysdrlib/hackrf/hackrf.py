@@ -1,5 +1,6 @@
 from ..base.native import NativeDevice
 from ..base import convert
+from ..base.caps import Range
 from .. import err
 
 from .config import ConfigHackRF as config
@@ -11,6 +12,10 @@ class HackRF(NativeDevice):
     CAN_TRANSMIT = True
     DUPLEX = False
     SAMPLE_FORMAT = convert.INT8 # libhackrf delivers interleaved signed 8-bit I/Q
+    # After a retune: up to two 256 KiB USB transfers (131072 samples each) were filled before it, and the
+    # synthesizer takes about a millisecond to lock
+    RETUNE_SAMPLES = 2 * 131072
+    RETUNE_SETTLE = 0.002
 
     def __init__(self):
         super().__init__()
@@ -98,3 +103,24 @@ class HackRF(NativeDevice):
 
     def _set_bias_t(self, bias):
         self.device.set_antenna_enable(bool(bias))
+
+    # --- generic controls --- #
+    def _capabilities(self, caps):
+        filters = [Range(bw, bw) for bw in type(self).CONFIG.BASEBAND_FILTERS]
+        caps.bandwidths = {"rx": filters, "tx": list(filters)}
+        try:
+            caps.info["part_id"], caps.info["serial"] = self.device.board_partid_serialno_read()
+        except Exception:
+            pass
+        for key, read in (("board_id", "board_id_read"), ("firmware", "version_string_read")):
+            try:
+                caps.info[key] = getattr(self.device, read)()
+            except Exception:
+                pass
+        return caps
+
+    def _set_bandwidth(self, direction, bandwidth):
+        # One baseband filter serves both directions
+        self.device.set_baseband_filter_bandwidth(int(bandwidth))
+        return bandwidth
+

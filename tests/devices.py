@@ -123,8 +123,14 @@ class FakeDevice:
     def read_rx(self, count=None):
         return self._ring.read(count)
 
+    def read_rx_indexed(self, count):
+        return self._ring.read_indexed(count)
+
+    def wait_rx(self, samples, timeout):
+        return self._ring.wait(samples, timeout)
+
     def rx_stats(self):
-        return {"samples": self._samples, "dropped": self._ring.dropped, "pending": self._ring.available,
+        return {"samples": self._samples, "total": self._ring.total, "dropped": self._ring.dropped, "pending": self._ring.available,
                 "max_chunk": self._max_chunk, "calls": self._calls, "busy": 0.0,
                 "age": None if self._last is None else self.clock() - self._last}
 
