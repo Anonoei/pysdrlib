@@ -6,33 +6,46 @@
 """
 import importlib
 import pathlib
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-from . import logger
+from . import err, logger
 from .base.device import Device
 
 _log = logger.new("devices")
 
+# Packages with a `Device` that aren't local hardware drivers: they read files, or reach a driver elsewhere. `get` and
+# `device` load them ("remote" is `pysdrlib.device("remote", address, driver)`); `ls` doesn't list them.
+NOT_DRIVERS = ("file", "remote")
+
+def _has_device(path: pathlib.Path) -> bool:
+    """The package declares `Device = <class>` in its __init__.py (read, not imported: importing a driver may build its
+    vendor library). One without (a stub, `base`, `_native`...) isn't a device package."""
+    init = path / "__init__.py"
+    if path.name.startswith(("_", ".")) or not init.is_file():
+        return False
+    try:
+        return re.search(r"^Device\s*=", init.read_text(encoding="utf-8"), re.MULTILINE) is not None
+    except OSError:
+        return False
+
+def _packages():
+    return sorted(p.name for p in pathlib.Path(__file__).parent.iterdir() if p.is_dir() and _has_device(p))
+
 def ls():
-    """Driver names"""
-    vendors = []
-    for file in (pathlib.Path(__file__).parent).iterdir():
-        if file.is_dir():
-            if file.name in ("_ext", "_native", "base", "file", "remote", "__pycache__"):
-                continue
-            vendors.append(file.name)
-    return vendors
+    """Driver names: every package here whose `__init__.py` says `Device = ...`. Adding a driver needs no list edited."""
+    return [name for name in _packages() if name not in NOT_DRIVERS]
 
 def get(name: str):
-    try:
-        module = importlib.import_module(f".{name}", "pysdrlib")
-    except ModuleNotFoundError:
-        return None
-    return module
+    """The device package `name` (a driver, or "file" / "remote"). Raises err.NoDevice, naming the drivers there are,
+    for one that doesn't exist"""
+    if name not in _packages():
+        raise err.NoDevice(f"no driver {name!r} (drivers: {', '.join(ls())})")
+    return importlib.import_module(f".{name}", "pysdrlib")
 
 def device(name: str, *args, **kwargs) -> Device:
-    return get(name).Device(*args, **kwargs) # type: ignore
+    return get(name).Device(*args, **kwargs)
 
 @dataclass(frozen=True)
 class DeviceInfo:

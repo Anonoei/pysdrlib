@@ -189,3 +189,8 @@ Samples lost because `get_samples()` wasn't called often enough, or because the 
 2. `cd pysdrlib`
 3. `git branch -c feature/<your feature>`
 4. `python3 builder.py -b -l` build and install locally
+
+## Adding a device
+`python -m pysdrlib.scaffold my_radio` writes the skeleton of a driver (`--python-only` for one without a C++ extension),
+`pysdrlib.testing.check_package("my_radio")` checks it as you fill it in, and the
+[contributing guide](https://anonoei.github.io/pysdrlib/contributing.html) (`src/pysdrlib/contributing.py`) walks through the rest.

@@ -382,8 +382,6 @@ class Server:
         if dtype not in self.types():
             raise err.NoDevice(f"device type {dtype!r} is not available on this server (have: {', '.join(self.types())})")
         module = devices.get(dtype)
-        if module is None:
-            raise err.NoDevice(f"device type {dtype!r} could not be imported")
         device = module.Device(*init_args, **(init_kwargs or {}))
         device.open(*args, **(kwargs or {}))
         n = self._counts[dtype] = self._counts.get(dtype, -1) + 1

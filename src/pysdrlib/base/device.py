@@ -62,6 +62,23 @@ def _call(fn, *args, **kw):
             raise err.NotSupported(f"{getattr(fn, '__qualname__', fn)} has no {k} {v}")
     return fn(*args, **passed)
 
+def _stage_setter(cls, direction, stage, spec, name):
+    hook = f"_set_{direction.lower()}_{stage.lower()}_gain"
+
+    def setter(self, gain=None):
+        apply = getattr(self, hook, None)
+        if apply is None:
+            raise NotImplementedError(f"{type(self).__name__} declares a {direction} {stage} gain stage but has no {hook}")
+        return self._set_gain_stage(direction, stage, gain, apply)
+
+    steps = f" in {spec.step} dB steps" if spec.step else ""
+    default = f" (default {spec.default})" if spec.default is not None else ""
+    setter.__name__ = name
+    setter.__qualname__ = f"{cls.__qualname__}.{name}"
+    setter.__doc__ = f"{direction} {stage} gain [dB], {spec.min}-{spec.max}{steps}{default}. None: the default. Returns the gain set"
+    setter._generated = True   # type: ignore[attr-defined]
+    return setter
+
 class Device:
     NAME = "pysdrlib Device"
     CONFIG: ConfigDevice = None # type: ignore
@@ -83,6 +100,27 @@ class Device:
         "_caps", "_caps_open", "_tuning", "_rx_channels", "_tx_channels",
         "_rx_next", "_rx_discard", "_rx_events", "_rx_now", "_rx_dc", "_rx_buf", "_rx_buf_index",
     )
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls._make_stage_setters()
+
+    @classmethod
+    def _make_stage_setters(cls):
+        """Give the class a `set_<rx|tx>_<stage>_gain(gain=None)` for each gain stage its CONFIG declares (TX only if it
+        can transmit), unless it defines one itself (to say more than the config can). Each applies the stage through the
+        driver's `_set_<rx|tx>_<stage>_gain(gain, channel=0)` hook, so a driver writes the hardware call and nothing else"""
+        config = cls.CONFIG
+        if config is None:
+            return
+        for direction in ("RX", "TX"):
+            if direction == "TX" and not cls.CAN_TRANSMIT:
+                continue
+            for stage, spec in config.stages[direction].items():
+                name = f"set_{direction.lower()}_{stage.lower()}_gain"
+                if name in dir(cls) and not getattr(getattr(cls, name), "_generated", False):
+                    continue
+                setattr(cls, name, _stage_setter(cls, direction, stage, spec, name))
+
     def __init__(self):
         self.log = logger.new(f"device.{type(self).__name__}")
         self.device = None

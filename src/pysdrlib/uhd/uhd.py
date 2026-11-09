@@ -151,12 +151,6 @@ class B210(NativeDevice):
                     (self.device.set_rx_freq if d == "rx" else self.device.set_tx_freq)(float(freq), ch)
 
     # --- gain: one stage per direction --- #
-    def set_rx_pga_gain(self, gain=None):
-        """Receive PGA, 0-76 dB in 1 dB steps"""
-        return self._set_gain_stage("RX", "PGA", gain, self._set_rx_pga_gain)
-    def set_tx_pga_gain(self, gain=None):
-        """Transmit PGA, 0-89.75 dB in 0.25 dB steps"""
-        return self._set_gain_stage("TX", "PGA", gain, self._set_tx_pga_gain)
 
     def _set_rx_pga_gain(self, gain, channel=0):
         self.device.set_rx_gain(float(gain), channel)

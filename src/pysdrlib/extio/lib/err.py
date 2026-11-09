@@ -1,11 +1,7 @@
-class ExtIOError(Exception):
-    pass
+from ...base.errors import make_errors
 
-class INVALID_PARAM(ExtIOError):
-    pass
-
-class NOT_FOUND(ExtIOError):
-    pass
-
-class NOT_OPEN(ExtIOError):
-    pass
+make_errors(globals(), "ExtIOError", {
+    "INVALID_PARAM": "",
+    "NOT_FOUND": "",
+    "NOT_OPEN": "",
+})

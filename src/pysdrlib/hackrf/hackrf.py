@@ -46,23 +46,8 @@ class HackRF(NativeDevice):
         self.device.set_freq(int(freq))
 
     # HackRF gain stages: RF amp, IF (LNA), baseband (VGA), plus the TX amp and TXVGA.
-    # Device-specific controls; a total (`set_gain`, `set_rx_gain`) is split across them by Device.split_gain.
-    def set_rx_rf_gain(self, gain=None):
-        """RF amp (0 or 11 dB)"""
-        return self._set_gain_stage("RX", "RF", gain, self._set_rx_rf_gain)
-    def set_rx_if_gain(self, gain=None):
-        """IF (LNA) gain, 0-40 dB in 8 dB steps"""
-        return self._set_gain_stage("RX", "IF", gain, self._set_rx_if_gain)
-    def set_rx_bb_gain(self, gain=None):
-        """Baseband (VGA) gain, 0-62 dB in 2 dB steps"""
-        return self._set_gain_stage("RX", "BB", gain, self._set_rx_bb_gain)
-    def set_tx_rf_gain(self, gain=None):
-        """RF amp (0 or 11 dB)"""
-        return self._set_gain_stage("TX", "RF", gain, self._set_tx_rf_gain)
-    def set_tx_if_gain(self, gain=None):
-        """TXVGA gain, 0-47 dB in 1 dB steps"""
-        return self._set_gain_stage("TX", "IF", gain, self._set_tx_if_gain)
-
+    # Device-specific controls: `set_rx_if_gain` and the rest are made from CONFIG (see Device._make_stage_setters),
+    # these apply them. A total (`set_gain`, `set_rx_gain`) is split across them by Device.split_gain.
     def _set_rx_rf_gain(self, gain):
         gain = bool(gain)
         self.device.set_amp_enable(gain)

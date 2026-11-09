@@ -194,12 +194,6 @@ class Sim(Device):
         rtr["if"] = self.set_rx_if_gain(if_gain)
         rtr["bb"] = self.set_rx_bb_gain(bb_gain)
         return rtr
-    def set_rx_if_gain(self, gain=None):
-        """IF gain stage (device-specific)"""
-        return self._set_gain_stage("RX", "IF", gain, self._set_rx_if_gain)
-    def set_rx_bb_gain(self, gain=None):
-        """Baseband gain stage (device-specific)"""
-        return self._set_gain_stage("RX", "BB", gain, self._set_rx_bb_gain)
     def _set_rx_if_gain(self, gain):
         self._gain["if"] = gain
     def _set_rx_bb_gain(self, gain):

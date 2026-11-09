@@ -210,3 +210,17 @@ def samples_extension():
         extra_compile_args=FP_FLAGS,
         cxx_std=17,
     )
+
+
+def driver_extensions():
+    """Every device's Extension (setup.py): one for each `_ext/<name>.py` that has a `get()` returning one. A module
+    whose `get()` returns None is a driver still being written (see `pysdrlib.scaffold`) and is left out of the build."""
+    found = []
+    for path in sorted(Path(__file__).parent.glob("*.py")):
+        if path.stem in ("__init__", "utils"):
+            continue
+        get = getattr(importlib.import_module(f"pysdrlib._ext.{path.stem}"), "get", None)
+        ext = get() if get else None
+        if ext is not None:
+            found.append(ext)
+    return found

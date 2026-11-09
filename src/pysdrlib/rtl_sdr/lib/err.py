@@ -1,17 +1,9 @@
-class RTLSDRError(Exception):
-    pass
+from ...base.errors import make_errors
 
-class INVALID_PARAM(RTLSDRError):
-    pass
-
-class NOT_FOUND(RTLSDRError):
-    pass
-
-class NOT_OPEN(RTLSDRError):
-    pass
-
-class OPEN_FAILED(RTLSDRError):
-    """The dongle is there but could not be opened: no permission, or something else has it"""
-
-class BUSY(RTLSDRError):
-    pass
+make_errors(globals(), "RTLSDRError", {
+    "INVALID_PARAM": "",
+    "NOT_FOUND": "",
+    "NOT_OPEN": "",
+    "OPEN_FAILED": "The dongle is there but could not be opened: no permission, or something else has it",
+    "BUSY": "",
+})
