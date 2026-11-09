@@ -153,7 +153,7 @@ class Format:
 # --- Two's compliment --- #
 ## Signed
 class i4_t(Format):
-    """Two's compliment int4. Meant for I/Q: one byte is one (I, Q) pair, I in the high nibble.
+    """Two's complement int4. Meant for I/Q: one byte is one (I, Q) pair, I in the high nibble.
     `count` and written data must therefore be even (see ci8_t)."""
     SIZE = 4
     @classmethod
@@ -168,39 +168,39 @@ class i4_t(Format):
         return -8.0, 7.0
 
 class i8_t(Format):
-    """Two's compliment int8, Eq. to C int8_t"""
+    """Two's complement int8: C `int8_t`"""
     SIZE = 8
     DTYPE = np.dtype(LE + "i1")
 
 class i16_t(Format):
-    """Two's compliment int16, Eq. to C int16_t"""
+    """Two's complement int16: C `int16_t`"""
     SIZE = 16
     DTYPE = np.dtype(LE + "i2")
 
 class i32_t(Format):
-    """Two's compliment int32, Eq. to C int32_t"""
+    """Two's complement int32: C `int32_t`"""
     SIZE = 32
     DTYPE = np.dtype(LE + "i4")
 
 ## Unsigned
 class ui8_t(Format):
-    """Unsigned int8, Eq. to C uint8_t"""
+    """Unsigned int8: C `uint8_t`"""
     SIZE = 8
     DTYPE = np.dtype(LE + "u1")
 
 class ui16_t(Format):
-    """Unsigned int16, Eq. to C uint16_t"""
+    """Unsigned int16: C `uint16_t`"""
     SIZE = 16
     DTYPE = np.dtype(LE + "u2")
 
 class ui32_t(Format):
-    """Unsigned int32, Eq. to C uint32_t"""
+    """Unsigned int32: C `uint32_t`"""
     SIZE = 32
     DTYPE = np.dtype(LE + "u4")
 
 # --- One's compliment --- #
 class i4_o(Format):
-    """One's compliment int4. Meant for I/Q: one byte is one (I, Q) pair, I in the high nibble.
+    """One's complement int4. Meant for I/Q: one byte is one (I, Q) pair, I in the high nibble.
     `count` and written data must therefore be even."""
     SIZE = 4
     @classmethod
@@ -214,7 +214,7 @@ class i4_o(Format):
         return -7.0, 7.0
 
 class i8_o(Format):
-    """One's compliment int8"""
+    """One's complement int8: a negative number is the bitwise NOT of its magnitude (range -127..127; 0xFF is -0, read as 0)"""
     SIZE = 8
     @classmethod
     def read(cls, io, count):
@@ -227,7 +227,7 @@ class i8_o(Format):
         return -127.0, 127.0
 
 class i16_o(Format):
-    """One's compliment int16"""
+    """One's complement int16: a negative number is the bitwise NOT of its magnitude (range -32767..32767)"""
     SIZE = 16
     @classmethod
     def read(cls, io, count):
@@ -244,17 +244,17 @@ class i16_o(Format):
 #     Floats
 # ===============================================
 class f16(Format):
-    """Eq. to C float16_t"""
+    """IEEE half precision: C `_Float16` (C23, GCC/Clang), numpy `float16`"""
     SIZE = 16
     DTYPE = np.dtype(LE + "f2")
 
 class f32(Format):
-    """Eq. to C float32_t"""
+    """IEEE single precision: C `float`"""
     SIZE = 32
     DTYPE = np.dtype(LE + "f4")
 
 class f64(Format):
-    """Eq. to C float64_t"""
+    """IEEE double precision: C `double`"""
     SIZE = 64
     DTYPE = np.dtype(LE + "f8")
 
@@ -285,33 +285,36 @@ class ComplexFormat(Format):
 
 # --- Integer --- #
 class ci8_t(ComplexFormat):
-    """Complex int8 (i4, i4)"""
+    """Complex int8: I and Q are each a 4-bit two's complement value, one byte per sample (I in the high nibble)"""
     SIZE = 8
     BASE = i4_t
 
 class ci16_t(ComplexFormat):
-    """Complex int16 (i8, i8)"""
+    """Complex int16: I and Q are each an `int8_t`, two bytes per sample (`struct { int8_t i, q; }`)"""
     SIZE = 16
     BASE = i8_t
 
 class ci32_t(ComplexFormat):
-    """Complex int32 (i16, i16)"""
+    """Complex int32: I and Q are each an `int16_t`, four bytes per sample (`struct { int16_t i, q; }`)"""
     SIZE = 32
     BASE = i16_t
 
 # --- Float --- #
 class cf32(ComplexFormat):
-    """Complex float32 (f16, f16)"""
+    """Complex float32: I and Q are each a half-precision `_Float16`, four bytes per sample.
+    Not a GNU Radio `.cfile`: that is `cf64`"""
     SIZE = 32
     BASE = f16
 
 class cf64(ComplexFormat):
-    """Complex float64 (f32, f32)"""
+    """Complex float64: I and Q are each a `float`, eight bytes per sample (C `float _Complex`, C++ `std::complex<float>`,
+    numpy `complex64`). The GNU Radio `.cfile` layout"""
     SIZE = 64
     BASE = f32
 
 class cf128(ComplexFormat):
-    """Complex float128 (f64, f64)"""
+    """Complex float128: I and Q are each a `double`, sixteen bytes per sample (C `double _Complex`, numpy `complex128`).
+    Read as `complex128`, the only format that is"""
     SIZE = 128
     BASE = f64
     OUT = np.complex128

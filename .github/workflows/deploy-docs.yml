@@ -52,7 +52,7 @@ jobs:
 
       - name: Build docs
         run: |
-            python -m pdoc -o docs --html --force --skip-errors src/pysdrlib
+            python -m pdoc --html --force --skip-errors --template-dir pdoc_templates -o docs pysdrlib
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

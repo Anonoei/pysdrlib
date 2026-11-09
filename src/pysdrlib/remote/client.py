@@ -87,6 +87,7 @@ class Client:
         return self._c2.request("list")["devices"]
 
     def close(self):
+        """Close the connection"""
         self._c2.close()
 
     def __enter__(self):

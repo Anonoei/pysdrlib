@@ -80,6 +80,12 @@ def _stage_setter(cls, direction, stage, spec, name):
     return setter
 
 class Device:
+    """The interface every driver implements. Use `pysdrlib.open` or `pysdrlib.device` to get one; see the module
+    docs (`pysdrlib.base.device`) for an overview.
+
+    Class attributes a driver sets: `NAME`, `CONFIG` (its limits, `pysdrlib.base.config`), `CAN_TRANSMIT`, `DUPLEX`
+    (receive and transmit at once) and `SAMPLE_FORMAT` (the layout of the samples the hardware delivers).
+    """
     NAME = "pysdrlib Device"
     CONFIG: ConfigDevice = None # type: ignore
     CAN_TRANSMIT = False
@@ -284,6 +290,7 @@ class Device:
         self._tuned("rate", rate, dirs, channel, flush)
         return rate
     def get_sample_rate(self, channel=0, direction="rx"):
+        """Sample rate [Hz] last set for this channel and direction"""
         d = self._direction(direction, channel)
         return self._tuning.get(("rate", d, channel), self._Fs)
     def set_freq(self, freq=None, channel=0, flush=False, direction=None):
@@ -306,6 +313,7 @@ class Device:
         self._tuned("freq", freq, dirs, channel, flush)
         return freq
     def get_freq(self, channel=0, direction="rx"):
+        """Center frequency [Hz] last set for this channel and direction"""
         d = self._direction(direction, channel)
         return self._tuning.get(("freq", d, channel), self._cf)
 
@@ -329,6 +337,7 @@ class Device:
                 setter(self._cf if kind == "freq" else self._Fs, channel)
         return self._ppm
     def get_freq_correction(self, channel=0):
+        """Frequency reference error [ppm] last set with `set_freq_correction`"""
         return self._ppm
 
     # ------------------------------------------------------------------ gain
@@ -425,6 +434,7 @@ class Device:
         self._gain_mode[(d, channel)] = mode
         return mode
     def get_gain_mode(self, direction="rx", channel=0):
+        """Current gain mode, "manual" unless `set_gain_mode` changed it"""
         return self._gain_mode.get((self._direction(direction, channel), channel), "manual")
 
     # ------------------------------------------------------------------ filter, antenna, clock
@@ -449,12 +459,14 @@ class Device:
             self._note("bandwidth", bw, channel, False)
         return bw
     def get_bandwidth(self, direction="rx", channel=0):
+        """Analog filter bandwidth [Hz] last set (None: never set)"""
         return self._bandwidth.get((self._direction(direction, channel), channel))
 
     def antennas(self, direction="rx", channel=0):
         """Selectable antenna ports ([]: just the one)"""
         return list(self.caps.antennas[self._direction(direction, channel)])
     def set_antenna(self, name, direction="rx", channel=0):
+        """Select an antenna port by name (see `antennas`). Raises `err.NotSupported` for a name the device lacks"""
         d = self._direction(direction, channel)
         self._ensure_open("set_antenna")
         if name not in self.caps.antennas[d]:
@@ -463,12 +475,14 @@ class Device:
         self._antenna[(d, channel)] = name
         return name
     def get_antenna(self, direction="rx", channel=0):
+        """The antenna port last selected (None: never set)"""
         return self._antenna.get((self._direction(direction, channel), channel))
 
     def clock_sources(self):
         """Reference clock sources ([]: not selectable)"""
         return list(self.caps.clock_sources)
     def set_clock_source(self, name):
+        """Select the reference clock by name (see `clock_sources`). Raises `err.NotSupported` for a name the device lacks"""
         self._ensure_open("set_clock_source")
         if name not in self.caps.clock_sources:
             raise err.NotSupported(f"{type(self).NAME} has no clock source {name!r} (it has {self.caps.clock_sources})")
@@ -476,6 +490,7 @@ class Device:
         self._clock_source = name
         return name
     def get_clock_source(self):
+        """The reference clock last selected (None: never set)"""
         return self._clock_source
 
     def set_bias_t(self, bias):
@@ -503,6 +518,7 @@ class Device:
         self._settings[(name, channel)] = value
         return value
     def get_setting(self, name, channel=0):
+        """Value of a device specific setting listed in `caps.settings`. Raises `err.NotSupported` for an unknown name"""
         spec = self.caps.settings.get(name)
         if spec is None:
             raise err.NotSupported(f"{type(self).NAME} has no setting {name!r}")

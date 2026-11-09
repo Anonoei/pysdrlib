@@ -3,6 +3,8 @@ from .._ext import uhd as ext, utils
 B210 = utils.import_device(__package__, ".uhd", "B210", ext.LIB)
 Device = B210
 
+__pdoc__ = {"vendor": False}  # vendored third-party sources are not API
+
 def find():
     """[DeviceInfo] of the USRPs attached (USB B2xx)"""
     from ..devices import DeviceInfo

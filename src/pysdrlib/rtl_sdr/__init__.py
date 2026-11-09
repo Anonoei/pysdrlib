@@ -3,6 +3,8 @@ from .._ext import rtl_sdr as ext, utils
 RTLSDR = utils.import_device(__package__, ".rtlsdr", "RTLSDR", ext.LIB)
 Device = RTLSDR
 
+__pdoc__ = {"vendor": False}  # vendored third-party sources are not API
+
 def find():
     """[DeviceInfo] of the RTL-SDR dongles attached"""
     from ..devices import DeviceInfo

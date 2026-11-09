@@ -45,6 +45,8 @@ def get(name: str):
     return importlib.import_module(f".{name}", "pysdrlib")
 
 def device(name: str, *args, **kwargs) -> Device:
+    """A new, unopened device of driver `name` (see `ls`); the arguments go to its constructor.
+    Call `open()` on it before use. `pysdrlib.open` is the shortcut that also finds and opens an attached radio"""
     return get(name).Device(*args, **kwargs)
 
 @dataclass(frozen=True)

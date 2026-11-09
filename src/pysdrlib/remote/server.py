@@ -76,6 +76,7 @@ class DeviceWorker:
 
     # --- ownership --- #
     def claim(self) -> str:
+        """Make a new controller token the owner. Raises `err.Busy` if the device already has a controller"""
         with self.lock:
             if self.token is not None:
                 raise err.Busy(f"{self.id} already has a controller")
@@ -84,9 +85,11 @@ class DeviceWorker:
             return self.token
 
     def is_controller(self, token) -> bool:
+        """Whether `token` is the current controller's"""
         return self.token is not None and isinstance(token, str) and hmac.compare_digest(self.token, token)
 
     def touch(self):
+        """Note that the controller is still there (renews its lease)"""
         self.last_seen = time.monotonic()
 
     def release(self):
@@ -125,6 +128,7 @@ class DeviceWorker:
         }
 
     def status(self):
+        """What `list` shows clients: id, type, name, state, frequency, sample rate, wire format and whether it is controlled"""
         with self.lock:
             return {
                 "id": self.id, "type": self.type, "name": type(self.device).NAME,
@@ -322,6 +326,7 @@ class Server:
         return self
 
     def serve_forever(self):
+        """Serve in this thread until Ctrl+C, then `stop`"""
         try:
             self._run()
         except KeyboardInterrupt:
@@ -330,6 +335,7 @@ class Server:
             self.stop()
 
     def stop(self):
+        """Stop serving and close every hosted device"""
         self._stop.set()
         if self._thread is not None:
             self._thread.join()
@@ -374,6 +380,7 @@ class Server:
 
     # --- C2 ops --- #
     def types(self):
+        """Device types clients may open: the `devices` given to the server, or every driver"""
         return self.allowed if self.allowed is not None else devices.ls()
 
     def open_device(self, dtype, init_args=(), init_kwargs=None, args=(), kwargs=None, controlled=False, wire=None):

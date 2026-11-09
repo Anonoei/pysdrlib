@@ -84,9 +84,11 @@ def jsonable(obj):
     raise TypeError(f"{type(obj).__name__} is not JSON serializable")
 
 def pack(msg: dict) -> bytes:
+    """JSON-encode a request or reply message"""
     return json.dumps(msg, default=jsonable, separators=(",", ":")).encode()
 
 def unpack(data: bytes) -> dict:
+    """Decode a message. Raises `err.ProtocolError` if it isn't a JSON object"""
     try:
         msg = json.loads(data)
     except ValueError as e:
@@ -96,9 +98,11 @@ def unpack(data: bytes) -> dict:
     return msg
 
 def ok(req_id, result=None) -> bytes:
+    """A success reply to request `req_id`"""
     return pack({"id": req_id, "ok": True, "result": result})
 
 def fail(req_id, exc: BaseException) -> bytes:
+    """An error reply to request `req_id`; the client re-raises it as the same pysdrlib error type"""
     return pack({"id": req_id, "ok": False, "error": {"type": type(exc).__name__, "msg": str(exc)}})
 
 def raise_error(error: dict):

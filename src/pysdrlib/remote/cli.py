@@ -32,6 +32,7 @@ def _port_range(text):
     return int(low), int(high)
 
 def build_parser():
+    """The `pysdrlib` argument parser: `server` and `client` modes (see the module docs)"""
     p = argparse.ArgumentParser(prog="pysdrlib", description="pysdrlib remote server and client")
     sub = p.add_subparsers(dest="mode", required=True)
 
@@ -157,6 +158,7 @@ def _transmit(dev, args):
     print(f"transmitted {total:,} samples from {args.input}")
 
 def run_server(args):
+    """`pysdrlib server`: host devices until Ctrl+C"""
     from .server import Server
     if args.verbose:
         import logging
@@ -176,6 +178,7 @@ def run_server(args):
     server.serve_forever()
 
 def run_client(args):
+    """`pysdrlib client`: list, info, rx, watch, set and tx"""
     import pysdrlib
     from .client import Client, RemoteDevice
     if args.cmd == "list":
@@ -221,6 +224,7 @@ def run_client(args):
             _transmit(dev, args)
 
 def main(argv=None):
+    """Entry point of the `pysdrlib` command; errors exit with a message instead of a traceback"""
     args = build_parser().parse_args(argv)
     try:
         import zmq  # noqa: F401

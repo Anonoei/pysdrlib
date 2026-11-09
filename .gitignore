@@ -35,3 +35,6 @@ logs/
 
 # Benchmark baselines/runs are per machine
 .benchmarks/
+
+# Built documentation
+docs/

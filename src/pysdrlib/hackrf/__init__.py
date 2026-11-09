@@ -3,6 +3,8 @@ from .._ext import hackrf as ext, utils
 HackRF = utils.import_device(__package__, ".hackrf", "HackRF", ext.LIB)
 Device = HackRF
 
+__pdoc__ = {"vendor": False}  # vendored third-party sources are not API
+
 _BOARDS = {0x604B: "HackRF Jawbreaker", 0x6089: "HackRF One", 0xCC15: "rad1o"}
 
 def find():
