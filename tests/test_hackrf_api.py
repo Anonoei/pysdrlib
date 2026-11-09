@@ -1,4 +1,5 @@
 """HackRF's own Python behaviour over a fake driver. What every device does is in test_device_contract.py."""
+import numpy as np
 import pytest
 
 from devices import BY_NAME
@@ -6,6 +7,7 @@ from devices import BY_NAME
 # A device whose vendor library cannot be built here (missing system packages) is skipped, not failed
 pytest.importorskip("pysdrlib.hackrf", exc_type=ImportError)
 
+from pysdrlib import err
 from pysdrlib.hackrf.config import ConfigHackRF as config
 from pysdrlib.hackrf.lib import err as lib_err
 
@@ -105,3 +107,43 @@ class TestConfig:
 ])
 def test_error_classes(name):
     assert issubclass(getattr(lib_err, name), lib_err.HackRFError)
+
+
+class TestTransmit:
+    def test_start_sizes_the_queue_for_the_rate(self, sdr):
+        sdr.set_sample_rate(10e6)
+        sdr.start_tx()
+        assert calls(sdr, "set_tx_buffer")[-1] == (int(type(sdr).TX_BUFFER_SECONDS * sdr.Fs),)
+        assert sdr.device.names()[-1] == "start_tx"
+        sdr.stop_tx()
+        assert sdr.device.names()[-1] == "stop_tx"
+
+    def test_write_needs_start_tx(self, sdr):
+        with pytest.raises(err.NotStreaming):
+            sdr.write(np.zeros(4, np.complex64))
+
+    def test_write_hands_over_complex64_whatever_it_was_given(self, sdr):
+        got = []
+        sdr.device._returns["write_tx"] = lambda x, timeout: got.append(x) or len(x)
+        sdr.device._returns["tx_error"] = lambda: ""
+        sdr.start_tx()
+        assert sdr.write(np.ones(8, np.complex128)) == 8
+        assert got[0].dtype == np.complex64 and got[0].flags.c_contiguous
+
+    def test_write_reports_a_dead_transmitter(self, sdr):
+        sdr.device._returns["write_tx"] = lambda x, timeout: 0
+        sdr.device._returns["tx_error"] = lambda: "STREAMING_STOPPED"
+        sdr.start_tx()
+        with pytest.raises(err.StreamStalled):
+            sdr.write(np.zeros(8, np.complex64))
+
+    def test_half_duplex_refuses_tx_while_receiving(self, sdr):
+        sdr.start_rx()
+        with pytest.raises(err.Busy):
+            sdr.start_tx()
+        assert "start_tx" not in sdr.device.names()
+
+    def test_half_duplex_refuses_rx_while_transmitting(self, sdr):
+        sdr.start_tx()
+        with pytest.raises(err.Busy):
+            sdr.start_rx()

@@ -85,3 +85,36 @@ class HackRF(NativeDevice):
         self.device.set_baseband_filter_bandwidth(int(bandwidth))
         return bandwidth
 
+
+    # --- transmit --- #
+    # HackRF is half-duplex: one synthesizer and one data path, so it receives or transmits, never both at once.
+    TX_BUFFER_SECONDS = 0.25   # how much stream `write` may queue ahead of the radio before it blocks
+
+    def _start_rx(self):
+        if self.state["tx"]:
+            raise err.Busy(f"{type(self).NAME} is half-duplex: stop_tx() before start_rx()")
+        super()._start_rx()
+
+    def _start_tx(self):
+        if self.state["rx"]:
+            raise err.Busy(f"{type(self).NAME} is half-duplex: stop_rx() before start_tx()")
+        self.device.set_tx_buffer(int(type(self).TX_BUFFER_SECONDS * self._Fs))
+        self.device.start_tx()
+    def _stop_tx(self):
+        self.device.stop_tx()
+
+    # Device.write() on the native transmit queue; the libhackrf transmit callback encodes complex64 to int8
+    def _tx_write(self, samples, timeout, slot=0):
+        return self.device.write_tx(samples, timeout)
+    def _tx_check(self):
+        tx_error = self.device.tx_error()
+        if tx_error:
+            raise err.StreamStalled(f"{type(self).NAME} stopped transmitting: {tx_error}")
+    def _tx_stats(self, slot=0):
+        return self.device.tx_stats()
+
+    @property
+    def tx_stats(self):
+        """{"written", "sent", "underruns", "pending"} samples counted since start_tx (underruns: samples of silence
+        sent because `write` was not keeping up)"""
+        return self._tx_stats(0)

@@ -16,5 +16,17 @@
     - IF [lna] (0-40:8, default=30)
     - baseband [vga] (0-62:2, default=50)
   - Transmit
-    - RF (0 or 11, default=11)
-    - IF (0-47:1, adjust)
+    - RF [amp] (0 or 11, default=0)
+    - IF [txvga] (0-47:1, default=0)
+
+## Transmit
+HackRF is half-duplex: it receives or transmits, never both. `start_tx` raises `err.Busy` while receiving (and
+`start_rx` while transmitting). Samples are complex64 in [-1, 1]; the transmit callback converts to int8. If `write`
+falls behind, silence is sent and counted in `tx_stats["underruns"]`.
+
+```python
+sdr.initialize(cf=915e6, Fs=2e6, tx_gain=0)   # raise the TX gain gradually, into an antenna or load you intend
+sdr.start_tx()
+sdr.write(samples)        # complex64; blocks while the 0.25 s queue is full
+sdr.stop_tx()
+```

@@ -1,6 +1,10 @@
 #include "hackrf_device.hpp"
 
+#include "hardware_convert.hpp"
+
+#include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 
 namespace {
@@ -61,6 +65,8 @@ void HackRFDevice::close() {
     if (!handle_) return;
     hackrf_device* h = handle_;
     handle_ = nullptr;
+    tx_.close();                    // wake blocked writers; the callback then sends silence
+    tx_active_ = false;
     int result = hackrf_close(h);   // joins the streaming thread
     rx_callback_ = nullptr;         // only safe to drop once no thread can call it
     hackrf_check(result, "hackrf_close");
@@ -74,11 +80,59 @@ int HackRFDevice::rx_trampoline(hackrf_transfer* transfer) {
 }
 
 void HackRFDevice::start_rx() {
+    if (tx_active_.load()) throw HardwareError(HACKRF_ERROR_BUSY, "HackRF is transmitting (half-duplex): stop_tx() first");
     hackrf_check(hackrf_start_rx(require(), &HackRFDevice::rx_trampoline, this), "hackrf_start_rx");
 }
 
 void HackRFDevice::stop_rx() {
     hackrf_check(hackrf_stop_rx(require()), "hackrf_stop_rx");
+}
+
+int HackRFDevice::tx_trampoline(hackrf_transfer* transfer) {
+    auto* self = static_cast<HackRFDevice*>(transfer->tx_ctx);
+    if (!self) return -1;
+    const size_t capacity = static_cast<size_t>(transfer->buffer_length) / 2;   // complex samples that fit
+    const size_t want = std::min(capacity, self->tx_scratch_.size());
+    const size_t got = want ? self->tx_.read(self->tx_scratch_.data(), want, 0.0) : 0;
+    if (got) hw::encode_samples({SampleKind::Int, 8, 8, false}, self->tx_scratch_.data(), got, transfer->buffer);
+    if (got < capacity) {   // nothing (or not enough) queued: fill the rest with silence rather than stall
+        std::memset(transfer->buffer + 2 * got, 0, 2 * (capacity - got));
+        self->tx_.note_underrun(capacity - got);
+    }
+    transfer->valid_length = transfer->buffer_length;
+    return 0;
+}
+
+void HackRFDevice::start_tx() {
+    hackrf_device* h = require();
+    if (tx_active_.load()) return;
+    if (tx_.capacity() == 0) throw HardwareError(HACKRF_ERROR_INVALID_PARAM, "set_tx_buffer() before start_tx()");
+    if (is_streaming()) throw HardwareError(HACKRF_ERROR_BUSY, "HackRF is receiving (half-duplex): stop_rx() first");
+    tx_scratch_.assign(hackrf_get_transfer_buffer_size(h) / 2, hw::cfloat(0.f, 0.f));
+    tx_.open();
+    tx_active_ = true;
+    int r = hackrf_start_tx(h, &HackRFDevice::tx_trampoline, this);
+    if (r < 0) {
+        tx_active_ = false;
+        tx_.close();
+        hackrf_check(r, "hackrf_start_tx");
+    }
+}
+
+void HackRFDevice::stop_tx() {
+    hackrf_device* h = require();
+    if (!tx_active_.load()) return;
+    tx_.close();   // wakes writers blocked on a full queue
+    tx_active_ = false;
+    hackrf_check(hackrf_stop_tx(h), "hackrf_stop_tx");
+}
+
+std::string HackRFDevice::tx_error() const {
+    if (!tx_active_.load() || !handle_) return "";
+    const int r = hackrf_is_streaming(handle_);
+    if (r == HACKRF_TRUE) return "";
+    const char* name = hackrf_error_name(static_cast<enum hackrf_error>(r));
+    return std::string("transmit stream ended: ") + (name ? name : "unknown error");
 }
 
 bool HackRFDevice::is_streaming() const {

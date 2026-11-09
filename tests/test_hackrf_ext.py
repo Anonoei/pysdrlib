@@ -161,3 +161,24 @@ class TestHardware:
             assert not dev.is_streaming()
         finally:
             dev.close()
+
+    def test_transmit_silence(self):
+        """Transmits zeros at minimum gain with the amp off, so nothing meaningful is radiated"""
+        import numpy as np
+        dev = hackrf.open()
+        try:
+            dev.set_sample_rate(2_000_000)
+            dev.set_freq(915_000_000)
+            dev.set_tx_rf_gain(False)
+            dev.set_tx_if_gain(0)
+            dev.set_tx_buffer(500_000)
+            dev.start_tx()
+            assert dev.is_transmitting()
+            assert dev.write_tx(np.zeros(400_000, np.complex64), 5.0) == 400_000
+            time.sleep(0.3)
+            stats = dev.tx_stats()
+            dev.stop_tx()
+        finally:
+            dev.close()
+        assert stats["written"] == 400_000 and stats["sent"] > 0
+        assert not dev.tx_error()

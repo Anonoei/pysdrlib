@@ -93,6 +93,31 @@ PYBIND11_MODULE(_hackrf, m) {
         .def("set_txvga_gain", &HackRFDevice::set_txvga_gain)
         .def("set_antenna_enable", &HackRFDevice::set_antenna_enable)
 
+        // transmit: complex64 in, the libhackrf transmit callback encodes it to int8
+        .def("set_tx_buffer", &HackRFDevice::set_tx_buffer, py::arg("samples"))
+        .def("start_tx", &HackRFDevice::start_tx, py::call_guard<py::gil_scoped_release>())
+        .def("stop_tx", &HackRFDevice::stop_tx, py::call_guard<py::gil_scoped_release>())
+        .def("is_transmitting", &HackRFDevice::is_transmitting)
+        .def("write_tx", [](HackRFDevice& d, py::array_t<hw::cfloat, py::array::c_style | py::array::forcecast> samples,
+                            double timeout) {
+            py::buffer_info info = samples.request();
+            const size_t n = static_cast<size_t>(info.size);
+            const hw::cfloat* src = static_cast<const hw::cfloat*>(info.ptr);
+            py::gil_scoped_release release;
+            return d.write_tx(src, n, timeout);
+        }, py::arg("samples"), py::arg("timeout") = -1.0,
+           "Queue complex64 samples, waiting up to `timeout` seconds (negative: no limit) for room; returns how many were queued.")
+        .def("tx_stats", [](HackRFDevice& d) {
+            const auto s = d.tx_stats();
+            py::dict out;
+            out["written"] = s.written;
+            out["sent"] = s.sent;
+            out["underruns"] = s.underruns;
+            out["pending"] = s.pending;
+            return out;
+        })
+        .def("tx_error", &HackRFDevice::tx_error)
+
         // queries
         .def("board_id_read", &HackRFDevice::board_id_read)
         .def("version_string_read", &HackRFDevice::version_string_read)
