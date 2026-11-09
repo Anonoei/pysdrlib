@@ -103,7 +103,7 @@ class VendorLibrary:
         with tempfile.TemporaryDirectory(prefix=f"pysdrlib-{self.name}-") as tmp:
             try:
                 subprocess.check_call(["cmake", "-S", str(self.source), "-B", tmp, "-DCMAKE_BUILD_TYPE=Release"])
-                subprocess.check_call(["cmake", "--build", tmp, "--config", "Release"])
+                subprocess.check_call(["cmake", "--build", tmp, "--config", "Release", "--parallel"])
             except (subprocess.CalledProcessError, OSError) as exc:
                 raise RuntimeError(f"Building {self.name} failed ({exc}). {self.help}") from exc
             built = [p for glob in (self.build_globs or self.files) for p in Path(tmp).rglob(glob)]
@@ -171,17 +171,17 @@ NATIVE = "src/pysdrlib/_native"
 # FP traps, which nothing uses and which stop the encoder's clamps from being vectorised.
 FP_FLAGS = [] if sys.platform == "win32" else ["-ffp-contract=off", "-fno-trapping-math"]
 
-def pybind_extension(device: str, header_dir: str, header: str):
+def pybind_extension(device: str, header_dir: str, header: str, extra_sources=()):
     """The pybind11 Extension for `pysdrlib.<device>.lib._<device>` (setup.py). Does no building and
     does not link the vendor library: its symbols stay undefined and are resolved when the library is
-    loaded at import time. Sources are `<device>_pybind.cpp` and `<device>_device.{cpp,hpp}` in
+    loaded at import time. `extra_sources`: more files in the device's folder (a C shim, say). Sources are `<device>_pybind.cpp` and `<device>_device.{cpp,hpp}` in
     `src/pysdrlib/_native/<device>`, compiled against the vendor's `header` in `header_dir` (repo-relative)."""
     from pybind11.setup_helpers import Pybind11Extension
 
     src, shared = f"{NATIVE}/{device}", f"{NATIVE}/include"
     return Pybind11Extension(
         name=f"pysdrlib.{device}.lib._{device}",
-        sources=[f"{src}/{device}_pybind.cpp", f"{src}/{device}_device.cpp"],
+        sources=[f"{src}/{device}_pybind.cpp", f"{src}/{device}_device.cpp", *(f"{src}/{f}" for f in extra_sources)],
         include_dirs=[header_dir, shared, src],
         depends=[f"{src}/{device}_device.hpp", f"{header_dir}/{header}",
                  f"{shared}/hardware_wrapper.hpp", f"{shared}/hardware_numpy.hpp", f"{shared}/hardware_pybind.hpp",

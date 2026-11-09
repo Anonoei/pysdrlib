@@ -176,6 +176,23 @@ def _extio_configure(device):
     device.set_freq(7_100_000)
     device.set_sample_rate(8e6)
 
+def _uhd_configure(device):
+    device.set_rx_rate(10e6, 0)
+    device.set_rx_freq(100_000_000, 0)
+
+_uhd_rate = {"value": 10e6}   # the rate the fake radio is running at
+
+UHD_FAKE = {
+    "set_sample_rate": lambda rate: _uhd_rate.update(value=rate),
+    "get_rx_rate": lambda c=0: _uhd_rate["value"], "get_master_clock_rate": lambda: 40e6,
+    "num_rx_channels": lambda: 2, "num_tx_channels": lambda: 2,
+    "rx_bandwidth_range": lambda c=0: (200e3, 56e6), "tx_bandwidth_range": lambda c=0: (200e3, 56e6),
+    "set_rx_bandwidth": lambda bw, c=0: bw, "set_tx_bandwidth": lambda bw, c=0: bw,
+    "rx_antennas": lambda c=0: ["TX/RX", "RX2"], "tx_antennas": lambda c=0: ["TX/RX"],
+    "clock_sources": lambda: ["internal", "external", "gpsdo"], "info": lambda: {"mboard_serial": "ABC123"},
+    "get_time_source": lambda: "internal", "mboard_sensors": lambda: {}, "rx_sensors": lambda c=0: {}, "tx_sensors": lambda c=0: {},
+}
+
 RX888_RATES = [2e6, 4e6, 8e6, 16e6, 32e6]
 
 SPECS = [
@@ -184,6 +201,13 @@ SPECS = [
          rate=10e6,
          closed_calls=(("start_rx",), ("stop_rx",), ("set_freq", 100_000_000), ("set_lna_gain", 8)),
          present=_hackrf_present, configure=_hackrf_configure),
+    Spec("uhd", "B210", "uhd",
+         encode=lambda iq: (iq.view(np.float32) * 32768).clip(-32768, 32767).astype(np.int16),
+         rate=10e6, atol=1 / 32768,
+         fake_returns=UHD_FAKE,
+         closed_calls=(("start_rx",), ("stop_rx",), ("set_rx_freq", 100_000_000, 0), ("set_rx_gain", 10.0, 0),
+                       ("set_rx_agc", True, 0)),
+         present=lambda native: len(native.find()), configure=_uhd_configure),
     Spec("extio", "RX888", "rx888",
          encode=lambda iq: iq.view(np.float32),
          rate=8e6,

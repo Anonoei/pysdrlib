@@ -48,11 +48,23 @@ All packages are the build tools (`cmake`, a C++17 compiler, `pkg-config`) plus 
 - Alpine: `apk add build-base cmake pkgconf libusb-dev fftw-dev`
 - macOS (Homebrew): `brew install cmake pkg-config libusb fftw`
 
+**UHD (USRP B2xx, e.g. B210)** needs:
+- `libuhd`, or (building it takes several minutes; only the B200 family is built)
+- Debian/Ubuntu: `sudo apt install cmake libusb-1.0-0-dev libboost-all-dev`
+- Fedora/RHEL: `sudo dnf install gcc-c++ cmake pkgconf-pkg-config libusb1-devel boost-devel`
+- Arch: `sudo pacman -S base-devel cmake libusb boost`
+- openSUSE: `sudo zypper install gcc-c++ cmake pkg-config libusb-1_0-devel boost-devel`
+- Alpine: `apk add build-base cmake pkgconf libusb-dev boost-dev`
+- macOS (Homebrew): `brew install cmake pkg-config libusb boost`
+
+A B2xx also loads an FPGA image when opened: install UHD's images (`uhd_images_downloader -t b2xx`, or `apt install uhd-host`)
+or point `UHD_IMAGES_DIR` at yours (an image already in `/usr/share/uhd/images` is used as is; pysdrlib never downloads one itself).
+
 # Roadmap
 - [X] [RTL-SDR](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/rtl_sdr)
 - [X] [Hack RF](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/hackrf)
 - [ ] [Blade RF](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/bladerf)
-- [ ] [B210 (UHD)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/UHD)
+- [X] [B210 (UHD)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/uhd)
 - [X] [RX-888 (extio)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/extio)
 
 ## Usage

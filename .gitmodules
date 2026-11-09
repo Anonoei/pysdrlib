@@ -7,3 +7,6 @@
 [submodule "vendor/rtl-sdr"]
 	path = vendor/rtl-sdr
 	url = https://github.com/osmocom/rtl-sdr
+[submodule "vendor/uhd"]
+	path = vendor/uhd
+	url = https://github.com/EttusResearch/uhd
