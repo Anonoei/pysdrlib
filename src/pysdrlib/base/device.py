@@ -16,6 +16,7 @@ Every new control takes `channel=0` (the channel count is in `caps.channels`). A
 raises `err.NotSupported`. Values out of range are clamped with a warning, or raise `err.InvalidValue` with
 `strict = True`.
 """
+import itertools
 import time
 
 import numpy as np
@@ -38,6 +39,8 @@ class Device:
     RETUNE_SETTLE = 0.0  # seconds after a retune the hardware may still be settling
     RETUNE_SAMPLES = 0   # samples from before a retune that may still arrive after it (in-flight transfers)
     SETTINGS: dict = {}  # {name: caps.Setting}: the device's own controls, see `set_setting`
+    GAIN_RESERVE: dict = {}  # {"rx"/"tx": (stage, ...)}: stages a total gain uses only when the others can't reach it
+    GAIN_BALANCE = "range"   # how a total is shared: "range" (each stage the same fraction of its range) or "db" (equal dB)
 
     __slots__ = (
         "log",
@@ -264,6 +267,34 @@ class Device:
         if stage is not None:
             return values.get(str(stage).upper())
         return sum(values.values()) if values else None
+
+    def set_gain_relative(self, fraction, stage=None, direction="rx", channel=0, flush=False):
+        """Gain as a fraction of the device's range: 0.0 its least, 1.0 its most (linear in dB), of the total or of one
+        `stage`. The same fraction is the same place in the range on every device. Returns the fraction in effect"""
+        d = self._direction(direction, channel)
+        lo, hi = self._gain_span(stage, d)
+        if not 0.0 <= fraction <= 1.0:
+            self._invalid(f"Relative gain must be between 0 and 1, not {fraction}")
+            fraction = min(max(fraction, 0.0), 1.0)
+        self.set_gain(lo + fraction * (hi - lo), stage, d, channel, flush)
+        return self.get_gain_relative(stage, d, channel)
+    def get_gain_relative(self, stage=None, direction="rx", channel=0):
+        """`get_gain` as a fraction of the range (None before a gain was set)"""
+        d = self._direction(direction, channel)
+        gain = self.get_gain(stage, d, channel)
+        if gain is None:
+            return None
+        lo, hi = self._gain_span(stage, d)
+        return 0.0 if hi == lo else (gain - lo) / (hi - lo)
+
+    def _gain_span(self, stage, d):
+        if stage is None:
+            r = self.caps.gain_range(d)
+            return r.lo, r.hi
+        spec = self.caps.gains[d].get(str(stage).upper())
+        if spec is None:
+            raise err.NotSupported(f"{type(self).NAME} has no {d.upper()} gain stage {stage!r} (it has {list(self.caps.gains[d])})")
+        return spec.min, spec.max
 
     def gain_modes(self, direction="rx", channel=0):
         """["manual"] and, when the device can set its own gain, "auto\""""
@@ -645,10 +676,82 @@ class Device:
         ...
 
     def _set_rx_gain(self, gain):
-        raise NotImplementedError()
+        return self._set_total_gain("rx", gain)
 
     def _set_tx_gain(self, gain):
-        raise NotImplementedError()
+        return self._set_total_gain("tx", gain)
+
+    def _set_total_gain(self, direction, gain):
+        """Set every stage of a direction: their defaults ("default"), or `split_gain`'s share of a total.
+        Returns {stage (lower case): gain}"""
+        d = direction.lower()
+        stages = self.caps.gains[d]
+        if not stages:
+            raise NotImplementedError(f"{type(self).NAME} has no {d.upper()} gain stages")
+        shares = {n: s.default for n, s in stages.items()} if gain == "default" else self.split_gain(gain, d)
+        out = {}
+        for name, value in shares.items():
+            setter = getattr(self, f"_set_{d}_{name.lower()}_gain")
+            out[name.lower()] = self._set_gain_stage(d.upper(), name, value, setter)
+        return out
+
+    def split_gain(self, total, direction="rx"):
+        """How a total gain is shared between a direction's stages: {stage: gain}, chosen from every combination the
+        stages allow. Stages in GAIN_RESERVE stay at their least unless the others can't come within their finest
+        step of `total`. Then: the sum nearest `total` (not above it when there is a choice), and the stages as evenly
+        loaded as possible: each the same fraction of its range, or (GAIN_BALANCE = "db") the same number of dB.
+        A tie goes to the stage nearer the antenna (the first listed), which keeps the noise figure down"""
+        d = direction.lower()
+        stages = self.caps.gains[d]
+        reserve = {n for n in type(self).GAIN_RESERVE.get(d, ()) if n in stages}
+        names = list(stages)
+        options = [self._stage_values(stages[n]) for n in names]
+        if np.prod([len(o) for o in options], dtype=float) > 1e6:
+            raise NotImplementedError(f"{type(self).NAME}: too many gain combinations to search; split it in the driver")
+        by_db = type(self).GAIN_BALANCE == "db"
+
+        def load(n, v):
+            span = stages[n].max - stages[n].min
+            return v - stages[n].min if by_db else ((v - stages[n].min) / span if span else 0.0)
+
+        def best_of(combos):
+            best, best_key = None, None
+            for combo in combos:
+                total_db = sum(combo)
+                used = [load(n, v) for n, v in zip(names, combo) if n not in reserve]
+                key = (round(abs(total_db - total), 9), total_db > total,
+                       sum(v - stages[n].min for n, v in zip(names, combo) if n in reserve),
+                       (max(used) - min(used)) if used else 0.0,
+                       tuple(-v for v in combo))   # a tie: gain nearer the antenna (stages are listed in signal order)
+                if best_key is None or key < best_key:
+                    best, best_key = combo, key
+            return best, best_key
+
+        if reserve:   # first without the reserve stages
+            held = [o if n not in reserve else (stages[n].min,) for n, o in zip(names, options)]
+            combo, key = best_of(itertools.product(*held))
+            steps = [self._resolution(stages[n]) for n in names if n not in reserve]
+            if combo is not None and key[0] <= (min(steps) if steps else 0):
+                return dict(zip(names, combo))
+        combo, _ = best_of(itertools.product(*options))
+        return dict(zip(names, combo))
+
+    @classmethod
+    def _resolution(cls, spec):
+        """The finest change a stage can make"""
+        values = sorted(set(cls._stage_values(spec)))
+        gaps = [b - a for a, b in zip(values, values[1:])]
+        return min(gaps) if gaps else 0
+
+    @staticmethod
+    def _stage_values(spec):
+        """The gains a stage can be set to: its table, its steps, or (continuous) whole dB"""
+        if spec.values:
+            return tuple(spec.values)
+        step = spec.step or 1
+        if all(isinstance(v, int) for v in (spec.min, spec.max, step)):
+            return tuple(range(spec.min, spec.max + 1, step))
+        return tuple(np.arange(spec.min, spec.max + step / 2, step).tolist())
 
     def _set_bias_t(self, bias):
         raise NotImplementedError()

@@ -325,7 +325,11 @@ class RemoteDevice(Device):
     def caps(self):
         """The hosted device's capabilities (fetched once per connection)"""
         if self.__dict__.get("_remote_caps") is None:
-            self._remote_caps = _caps.from_json(self._call("get_caps"))
+            try:
+                self._remote_caps = _caps.from_json(self._call("get_caps"))
+            except AttributeError as exc:   # inside a property it would read as "no attribute 'caps'"
+                raise err.NotSupported(f"the server at {self.address} runs a pysdrlib without capabilities "
+                                       f"(update it): {exc}") from None
         return self._remote_caps
 
     def set_setting(self, name, value):
@@ -376,7 +380,7 @@ def _forwarder(name):
 for _name in ("initialize", "start_rx", "stop_rx", "start_tx", "stop_tx", "set_sample_rate", "set_freq",
               "set_rx_gain", "set_tx_gain", "set_bias_t"):
     setattr(RemoteDevice, _name, _forwarder(_name))
-for _name in ("set_gain", "set_gain_mode", "set_bandwidth", "set_antenna", "set_clock_source", "set_freq_correction",
+for _name in ("set_gain", "set_gain_relative", "get_gain_relative", "set_gain_mode", "set_bandwidth", "set_antenna", "set_clock_source", "set_freq_correction",
               "get_gain", "get_gain_mode", "get_bandwidth", "get_antenna", "get_clock_source", "get_setting",
               "get_freq_correction"):
     setattr(RemoteDevice, _name, _forwarder(_name))

@@ -76,8 +76,8 @@ class TestTotalGain:
         assert calls(sdr, "set_vga_gain") == [(config.DEFAULT_GAIN_RX_BB,)]
 
     def test_tx_uses_the_amp_only_when_the_txvga_cannot_supply_it(self, sdr):
-        sdr.set_tx_gain(45)   # the TXVGA reaches 47 dB on its own
-        assert not calls(sdr, "set_amp_enable") and calls(sdr, "set_txvga_gain")[-1] == (45,)
+        sdr.set_tx_gain(45)   # the TXVGA reaches 47 dB on its own: the amp is switched off, whatever it was
+        assert calls(sdr, "set_amp_enable") == [(False,)] and calls(sdr, "set_txvga_gain")[-1] == (45,)
         sdr.device.calls.clear()
         sdr.set_tx_gain(58)   # max: the 11 dB amp plus 47 dB of TXVGA
         assert calls(sdr, "set_amp_enable") == [(True,)] and calls(sdr, "set_txvga_gain") == [(47,)]

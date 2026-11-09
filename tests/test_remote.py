@@ -412,3 +412,6 @@ class TestGenericControlsRemotely:
     def test_reading_is_not_a_remote_call(self, dev):
         for name in ("read", "read_into", "stream", "flush"):
             assert name not in dev.capabilities["methods"]
+
+    def test_relative_gain_is_forwarded(self, dev):
+        assert dev.set_gain_relative(1.0) == pytest.approx(1.0) and dev.get_gain_relative() == pytest.approx(1.0)

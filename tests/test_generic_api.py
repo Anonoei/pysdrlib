@@ -266,3 +266,54 @@ def test_open_by_driver_name_and_serial(monkeypatch, spec):
 
 def test_ls_lists_drivers_only():
     assert "_native" not in pysdrlib.devices.ls() and "sim" in pysdrlib.devices.ls()
+
+# ---------------------------------------------------------------- splitting a total gain, relative gain
+def test_hackrf_total_gain_is_reached(monkeypatch):
+    spec = BY_NAME["hackrf"]
+    monkeypatch.setattr(spec.device_module, "lib", fake_lib(spec))
+    d = spec.device_class()
+    d.open()
+    for total in range(0, 114):
+        d.set_gain(total)
+        got = d.get_gain()
+        assert got <= total and total - got <= 2, (total, got, d.split_gain(total))  # within the 2 dB VGA step
+        # the 11 dB amp only when the LNA and VGA can't come within their 2 dB step (above 104 dB)
+        assert (d.get_gain("RF") == 11) == (total >= 105), (total, d.split_gain(total))
+        assert d.split_gain(total) == d.split_gain(total)   # deterministic
+    d.set_gain(30)
+    assert d.get_gain() == 30 and d.device.of("set_amp_enable")[-1] == (False,)
+    # the vendor's advice: IF and baseband about equal in dB (the LNA moves in 8 dB steps), the IF capped at 40
+    for total in range(0, 81, 2):
+        s = d.split_gain(total)
+        assert abs(s["IF"] - s["BB"]) <= 8, (total, s)             # within one LNA step
+    assert d.split_gain(32) == {"RF": 0, "IF": 16, "BB": 16}      # their starting point
+    assert d.split_gain(100) == {"RF": 0, "IF": 40, "BB": 60}
+
+@pytest.mark.parametrize("name", ["hackrf", "rtl_sdr", "extio"])
+def test_relative_gain(name, monkeypatch):
+    spec = BY_NAME[name]
+    monkeypatch.setattr(spec.device_module, "lib", fake_lib(spec))
+    d = spec.device_class()
+    d.open()
+    r = d.caps.gain_range("rx")
+    assert d.set_gain_relative(0.0) == pytest.approx(0.0, abs=0.02) and d.get_gain() == pytest.approx(r.lo, abs=1)
+    assert d.set_gain_relative(1.0) == pytest.approx(1.0, abs=0.02) and d.get_gain() == pytest.approx(r.hi, abs=1)
+    half = d.set_gain_relative(0.5)
+    assert abs(half - 0.5) < 0.06 and d.get_gain() == pytest.approx(r.lo + 0.5 * (r.hi - r.lo), abs=3)
+    stage = next(iter(d.gains()))
+    assert d.set_gain_relative(1.0, stage=stage) == pytest.approx(1.0)
+    with pytest.warns(Warning):
+        d.set_gain_relative(1.5)
+    d.strict = True
+    with pytest.raises(err.InvalidValue):
+        d.set_gain_relative(-0.1)
+
+def test_relative_gain_follows_a_tuner_table(monkeypatch):
+    spec = BY_NAME["rtl_sdr"]
+    monkeypatch.setattr(spec.device_module, "lib", fake_lib(spec))
+    d = spec.device_class()
+    d.open()
+    d.device._returns = {**d.device._returns, "gains": lambda: [0.0, 0.9, 1.4, 2.7, 29.7, 32.8, 49.6]}
+    d._caps = None
+    d.set_gain_relative(0.6)                              # 29.76 dB of 0-49.6: the table's 29.7
+    assert d.get_gain() == 29.7 and d.get_gain_relative() == pytest.approx(29.7 / 49.6)
