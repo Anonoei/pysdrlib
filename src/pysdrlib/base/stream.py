@@ -44,7 +44,8 @@ class RxMeta:
 class RxStream:
     """Fixed-size blocks from a device, receiving started on entry (if it wasn't) and stopped on exit
 
-    Iterate it for blocks (or (block, RxMeta) with meta=True); `read()` gets one. A `timeout` (seconds) bounds each
+    Iterate it for blocks (or (block, RxMeta) with meta=True); `read()` gets one. channel: one, or several (blocks are
+    then (channels, count), aligned; see Device.read). A `timeout` (seconds) bounds each
     block's wait; None waits as long as the device keeps delivering (a stalled device raises err.StreamStalled).
     """
     def __init__(self, device, count, timeout=None, meta=False, channel=0, flush=True):
@@ -54,10 +55,11 @@ class RxStream:
 
     def __enter__(self):
         if not self.device.state["rx"]:
-            self.device.start_rx()
+            chans = (self.channel,) if isinstance(self.channel, int) else tuple(self.channel)
+            self.device.start_rx(channels=chans if chans != (0,) else None)
             self._started = True
         elif self._flush:
-            self.device.flush(self.channel)
+            self.device.flush()
         return self
 
     def __exit__(self, *exc):

@@ -119,6 +119,8 @@ PYBIND11_MODULE(_samples, m) {
             RingStats st = r.stats();
             return st.seen ? py::object(py::float_(st.age)) : py::object(py::none());
         }, "Seconds since the last write (None: nothing written since reset_stats).")
+        .def("skip", [](Ring& r, size_t n) { r.skip(n); }, py::arg("count"),
+             "Record `count` samples lost before the ring: they take indices (a reader sees the jump) but no room.")
         .def_property_readonly("available", &Ring::available)
         .def_property_readonly("capacity", &Ring::capacity)
         .def_property_readonly("dropped", &Ring::dropped)

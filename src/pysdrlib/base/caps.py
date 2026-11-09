@@ -63,6 +63,10 @@ class Capabilities:
     """See the module docstring. Lists are empty when the device has no such control"""
     driver: str
     channels: dict = field(default_factory=lambda: {"rx": 1, "tx": 0})
+    # what one setting changes: "channel" (just that one), "direction" (every channel of its direction: one synthesizer
+    # or clock per direction), "device" (both directions: one for everything)
+    shared: dict = field(default_factory=lambda: {"freq": "device", "rate": "device", "gain": "channel",
+                                                  "bandwidth": "channel", "antenna": "channel"})
     freq: list = field(default_factory=list)            # [Range] Hz
     rates: list = field(default_factory=list)           # [Range] samples/s
     bandwidths: dict = field(default_factory=lambda: {"rx": [], "tx": []})   # [Range] Hz of analog filter
@@ -87,6 +91,7 @@ class Capabilities:
         return {
             "driver": self.driver,
             "channels": dict(self.channels),
+            "shared": dict(self.shared),
             "freq": ranges(self.freq),
             "rates": ranges(self.rates),
             "bandwidths": {d: ranges(v) for d, v in self.bandwidths.items()},
@@ -110,6 +115,7 @@ def from_json(obj) -> Capabilities:
     return Capabilities(
         driver=obj["driver"],
         channels=dict(obj["channels"]),
+        shared=dict(obj.get("shared", {})) or Capabilities(driver="").shared,
         freq=ranges(obj["freq"]),
         rates=ranges(obj["rates"]),
         bandwidths={d: ranges(v) for d, v in obj["bandwidths"].items()},
@@ -131,6 +137,8 @@ def from_config(cls) -> Capabilities:
     config = cls.CONFIG
     caps = Capabilities(driver=cls.NAME)
     caps.channels = {"rx": 1, "tx": 1 if cls.CAN_TRANSMIT else 0}
+    if cls.DUPLEX:   # separate receive and transmit synthesizers
+        caps.shared.update(freq="direction", rate="direction")
     if config is None:
         return caps
     if config.FREQ_MIN is not None:

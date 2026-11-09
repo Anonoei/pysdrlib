@@ -104,7 +104,8 @@ class TestControls:
 
     def test_caps_info_and_channels(self, sdr):
         assert sdr.caps.info["mboard_serial"] == "ABC123"
-        assert sdr.caps.channels == {"rx": 1, "tx": 1}   # the generic API drives channel 0
+        assert sdr.caps.channels == {"rx": 2, "tx": 2}   # frontends A and B, each way
+        assert sdr.caps.shared["freq"] == "direction"    # one synthesizer per direction
 
 
 class TestMasterClock:
@@ -115,6 +116,11 @@ class TestMasterClock:
     def test_choice(self, sdr, rate, mcr):
         sdr.device._returns["get_master_clock_rate"] = lambda: 7e6     # nothing suitable running
         assert sdr._master_clock_for(rate) == pytest.approx(mcr)
+
+    @pytest.mark.parametrize("rate, mcr", [(10e6, 20e6), (2e6, 16e6), (1e6, 16e6), (30.72e6, 30.72e6), (15.36e6, 30.72e6)])
+    def test_two_channels_keep_the_clock_under_30_72_mhz(self, sdr, rate, mcr):
+        sdr.device._returns["get_master_clock_rate"] = lambda: 40e6
+        assert sdr._master_clock_for(rate, channels=2) == pytest.approx(mcr)
 
     def test_keeps_a_running_clock_that_fits(self, sdr):
         sdr.device._returns["get_master_clock_rate"] = lambda: 40e6
@@ -148,7 +154,7 @@ class TestTransmit:
         assert sdr.device.names()[-1] == "stop_tx"
 
     def test_write_needs_start_tx(self, sdr):
-        with pytest.raises(err.NotSupported):
+        with pytest.raises(err.NotStreaming):    # as read() does without start_rx()
             sdr.write(np.zeros(4, np.complex64))
 
     def test_write_hands_over_complex64_whatever_it_was_given(self, sdr):

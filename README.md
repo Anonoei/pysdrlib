@@ -122,6 +122,22 @@ sdr.dc_correction = True                         # remove the DC offset from wha
 ```
 Every control takes `direction="rx"`/`"tx"` where it applies and `channel=0` (the count is in `sdr.caps.channels`).
 
+### Channels
+A device with several channels (`sdr.caps.channels`, e.g. a B210's 2 RX and 2 TX) streams any of them together:
+```python
+sdr.set_gain(40, channel=1)                       # every control takes the channel
+sdr.set_freq(915e6, direction="tx")               # tuning takes the direction too (None: both)
+sdr.caps.shared                                   # what one setting changes: "freq": "direction" means the channels
+                                                  # of a direction share one synthesizer
+sdr.start_rx(channels=(0, 1))
+x = sdr.read(65536, channel=(0, 1))               # (2, 65536), rows starting on the same sample
+x1 = sdr.read(65536, channel=1)                   # or one channel at a time
+sdr.start_tx(channels=(0, 1))
+sdr.write(np.stack((a, b)))                       # rows go out sample for sample together
+```
+Samples the hardware lost before they reached pysdrlib (an overflow) show as gaps in `read(..., meta=True)`, on every
+channel alike, so they stay aligned.
+
 ### Remote devices
 Host SDRs on one machine and use them from another (`pip install pysdrlib[remote]`, uses ZeroMQ).
 
@@ -135,7 +151,11 @@ sdr = pysdrlib.device("remote", "tcp://host:5555", "hackrf")  # same API as a lo
 sdr.open(); sdr.initialize(cf=100e6, Fs=10e6); sdr.start_rx()
 samples = sdr.read(65536)
 ```
-The controls above are forwarded to the hosted device and `sdr.caps` comes from it. One client controls a device; any number can attach as viewers (`pysdrlib.device("remote", addr, id="hackrf-0")`) to receive samples.
+The controls above are forwarded to the hosted device and `sdr.caps` comes from it. Channels work as they do locally:
+the server publishes every channel the device streams (`sdr.start_rx(channels=(0, 1))`, then `sdr.read(n, channel=(0, 1))`
+on the controller and on viewers alike, aligned, with gaps), and the controller can transmit at the same time
+(`sdr.start_tx(channels=...)`, `sdr.write(...)`: the server writes it to the device, and a full device queue holds the
+client back). Only the controller transmits. One client controls a device; any number can attach as viewers (`pysdrlib.device("remote", addr, id="hackrf-0")`) to receive samples.
 
 ### Reading and writing sample files
 ```python

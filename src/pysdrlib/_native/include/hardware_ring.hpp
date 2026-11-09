@@ -12,6 +12,8 @@
 //
 // Every sample has an index: its position in everything written since reset(). read() can report the index of
 // the first sample it returns, so a consumer sees exactly where samples were dropped (a jump in the index).
+// skip(n) records samples lost before the ring (the hardware overflowed): they take n indices but no room, and a
+// read never spans them, so the jump shows where they were.
 //
 // If the consumer falls behind by more than the capacity, the OLDEST pending samples are dropped, so a
 // read is always the most recent data; `dropped` counts them.
@@ -24,8 +26,10 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <mutex>
+#include <utility>
 
 namespace hw {
 
@@ -35,6 +39,7 @@ using cfloat = std::complex<float>;
 struct RingStats {
     uint64_t samples = 0;      // written since reset_stats()
     uint64_t total = 0;        // written since reset(): the index the next written sample gets
+    uint64_t skipped = 0;      // lost before the ring (skip()) since reset_stats()
     uint64_t dropped = 0;      // discarded because the consumer fell behind
     uint64_t pending = 0;      // waiting to be read
     uint64_t max_chunk = 0;    // samples in the largest write
@@ -59,12 +64,14 @@ public:
         head_ = pending_ = 0;
         dropped_ = 0;
         total_ = 0;
+        written_ = gap_offset_ = 0;
+        marks_.clear();
     }
 
     // Forget the counts (and `dropped`), keeping pending samples and the capacity
     void reset_stats() {
         std::lock_guard<std::mutex> lock(m_);
-        samples_ = max_chunk_ = calls_ = dropped_ = 0;
+        samples_ = max_chunk_ = calls_ = dropped_ = skipped_ = 0;
         busy_ = 0;
         seen_ = false;
     }
@@ -85,6 +92,16 @@ public:
         push(n, [samples](cfloat* dst, size_t first, size_t count) {
             if (count) std::memcpy(dst, samples + first, count * sizeof(cfloat));
         });
+    }
+
+    // Producer: `n` samples were lost before reaching the ring. They take indices (so the reader sees the jump) but
+    // no room
+    void skip(size_t n) {
+        if (n == 0) return;
+        std::lock_guard<std::mutex> lock(m_);
+        marks_.emplace_back(written_, n);
+        total_ += n;
+        skipped_ += n;
     }
 
     // Consumer: wait until at least `n` samples are pending (at most the capacity), for up to `timeout`
@@ -126,6 +143,7 @@ private:
         }
         samples_ += n;
         total_ += n;
+        written_ += n;
         max_chunk_ = std::max<uint64_t>(max_chunk_, n);
         ++calls_;
         seen_ = true;
@@ -159,8 +177,14 @@ public:
     // `first_index`: set to the index of the first sample returned (or of the next one to come, if none)
     size_t read(cfloat* dst, size_t max_count, uint64_t* first_index = nullptr) {
         std::lock_guard<std::mutex> lock(m_);
-        if (first_index) *first_index = total_ - pending_;
-        const size_t take = std::min(max_count, pending_);
+        const uint64_t at = written_ - pending_;    // write position of the oldest pending sample
+        while (!marks_.empty() && marks_.front().first <= at) {   // gaps before it: their indices are behind us
+            gap_offset_ += marks_.front().second;
+            marks_.pop_front();
+        }
+        if (first_index) *first_index = at + gap_offset_;
+        size_t take = std::min(max_count, pending_);
+        if (!marks_.empty()) take = std::min<uint64_t>(take, marks_.front().first - at);   // never across a gap
         if (take == 0) return 0;
         const size_t start = (head_ + cap_ - pending_) % cap_;
         const size_t first = std::min(take, cap_ - start);
@@ -175,6 +199,7 @@ public:
         RingStats s;
         s.samples = samples_;
         s.total = total_;
+        s.skipped = skipped_;
         s.dropped = dropped_;
         s.pending = pending_;
         s.max_chunk = max_chunk_;
@@ -192,7 +217,9 @@ private:
     std::condition_variable cv_;
     std::unique_ptr<float[]> buf_;   // 2 * cap_ floats: cap_ complex samples
     size_t cap_ = 0, head_ = 0, pending_ = 0;   // capacity; next write; unread
-    uint64_t dropped_ = 0, samples_ = 0, max_chunk_ = 0, calls_ = 0, total_ = 0;
+    uint64_t dropped_ = 0, samples_ = 0, max_chunk_ = 0, calls_ = 0, total_ = 0, skipped_ = 0;
+    uint64_t written_ = 0, gap_offset_ = 0;          // real samples written; gaps the reader has passed
+    std::deque<std::pair<uint64_t, uint64_t>> marks_; // (write position, samples lost there) not yet passed
     double busy_ = 0;
     bool seen_ = false;
     clock::time_point last_;

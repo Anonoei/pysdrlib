@@ -12,6 +12,7 @@
 `RemoteDevice` is a `Device`, so code written for a local device works unchanged. Any other public
 method of the hosted device (e.g. its per-stage gain setters) is reachable by name too.
 """
+import collections
 import threading
 import time
 
@@ -128,12 +129,15 @@ class RemoteDevice(Device):
         self._ctrl = None
         self._sub = None
         self._last_seq = None
-        self._leftover = np.empty(0, dtype=np.complex64)
+        self._bufs = {}             # channel -> deque of [index of first sample, samples] received, not yet read
+        self._rx_last = {}          # channel -> index after the last sample received
+        self._rx_time = None        # time.monotonic() of the last block
+        self._tx = None             # PUSH socket for TX blocks (the controller's)
+        self._tx_seq = 0
         self._beat = None
         self._beat_stop = threading.Event()
         self._init_generic()
         self._remote_caps = None
-        self._rx_index = 0
 
     def __str__(self):
         return f"{type(self).__name__}({self.id}@{self.address}): {self.state}"
@@ -186,6 +190,11 @@ class RemoteDevice(Device):
         self._sub.setsockopt(zmq.SUBSCRIBE, self.id.encode())
         self._sub.connect(self._endpoint(endpoints["rx"]))
         self._last_seq = None
+        if self.token and "tx" in endpoints:   # only the controller transmits
+            self._tx = zmq.Context.instance().socket(zmq.PUSH)
+            self._tx.setsockopt(zmq.LINGER, 0)
+            self._tx.setsockopt(zmq.SNDHWM, 4)
+            self._tx.connect(self._endpoint(endpoints["tx"]))
 
     def close(self):
         """Disconnect. The controller also closes the device on the server; a viewer just detaches."""
@@ -210,6 +219,9 @@ class RemoteDevice(Device):
         if self._sub is not None:
             self._sub.close(0)
             self._sub = None
+        if self._tx is not None:
+            self._tx.close(0)
+            self._tx = None
         self.token = None
         self._remote_caps = None
 
@@ -256,6 +268,8 @@ class RemoteDevice(Device):
     # --- remote calls --- #
     def _call(self, method, *args, **kwargs):
         self._ensure_open(method)
+        if method == "start_rx":   # what is still queued belongs to the last stream
+            self._drop_received()
         result = self._ctrl.request("call", method=method, args=list(args), kwargs=kwargs, token=self.token)
         if method in ("set_freq", "get_freq"):
             self._cf = result
@@ -263,8 +277,6 @@ class RemoteDevice(Device):
             self._Fs = result
         elif method in _SYNC_AFTER:
             self.refresh()
-        if method == "start_rx":
-            self._rx_index = 0
         return result
 
     def refresh(self):
@@ -275,6 +287,8 @@ class RemoteDevice(Device):
         self._cf = status["cf"]
         self._Fs = status["Fs"]
         self.wire = status["wire"]
+        self._rx_channels = tuple(status.get("rx_channels", (0,)))   # older servers: channel 0
+        self._tx_channels = tuple(status.get("tx_channels", (0,)))
         return status
 
     def set_wire(self, fmt="native"):
@@ -300,27 +314,6 @@ class RemoteDevice(Device):
         caps = self.__dict__.get("capabilities")
         return sorted(set(super().__dir__()) | set(caps["methods"] if caps else ()))
 
-    # --- samples --- #
-    def get_samples(self, timeout=0.0) -> np.ndarray:
-        """All samples received since the last call. Waits up to `timeout` seconds for the first block."""
-        self._ensure_open("get_samples")
-        blocks = [self._leftover] if self._leftover.size else []
-        self._leftover = np.empty(0, dtype=np.complex64)
-        deadline = time.monotonic() + timeout
-        while True:
-            wait = 0 if blocks else max(0, int((deadline - time.monotonic()) * 1000))
-            if not self._sub.poll(wait):
-                break
-            _, header, payload = self._sub.recv_multipart(copy=False)
-            seq, _, samples = protocol.unpack_block(header.bytes, payload.buffer)
-            if self._last_seq is not None and seq > self._last_seq + 1:
-                self.dropped_blocks += seq - self._last_seq - 1
-            self._last_seq = seq
-            blocks.append(samples)
-        if not blocks:
-            return np.empty(0, dtype=np.complex64)
-        return blocks[0] if len(blocks) == 1 else np.concatenate(blocks)
-
     @property
     def caps(self):
         """The hosted device's capabilities (fetched once per connection)"""
@@ -332,38 +325,106 @@ class RemoteDevice(Device):
                                        f"(update it): {exc}") from None
         return self._remote_caps
 
-    def set_setting(self, name, value):
+    def set_setting(self, name, value, channel=0):
         """Apply one of the hosted device's `settings()`"""
-        return self._call("set_setting", name, value)
+        return self._call("set_setting", name, value, channel)
 
-    def read(self, count, timeout=None, meta=False, channel=0):
-        """Exactly `count` samples, waiting for them (`TimeoutError` after `timeout` seconds).
-        meta=True also returns an RxMeta (index counted here: blocks lost on the network show in `dropped_blocks`)"""
-        self._check_channel("rx", channel)
-        first = self._rx_index
-        dropped = self.dropped_blocks
-        out = self._read(count, timeout)
-        self._rx_index += count
-        if not meta:
-            return out
-        gaps = ((0, -1),) if self.dropped_blocks != dropped else ()   # lost, size unknown
-        return out, RxMeta(index=first, count=count, freq=self._cf, rate=self._Fs, channel=channel, gaps=gaps)
+    # --- samples --- #
+    # The server publishes every channel it streams in blocks tagged with the channel and the index of their first
+    # sample. They are kept per channel here; Device.read (and read(channel=(0, 1)), stream(), gaps...) reads them
+    # through the receive hooks below, as it reads a local device's queues.
+    def _pull(self, timeout):
+        """Take the blocks that have arrived, waiting up to `timeout` seconds for the first"""
+        wait = max(0, int(timeout * 1000))
+        while self._sub.poll(wait):
+            wait = 0
+            _, header, payload = self._sub.recv_multipart(copy=False)
+            seq, _, samples, channel, index = protocol.unpack_block_ex(header.bytes, payload.buffer)
+            if self._last_seq is not None and seq > self._last_seq + 1:
+                self.dropped_blocks += seq - self._last_seq - 1
+            self._last_seq = seq
+            if index is None:   # an older server: count them here
+                index = self._rx_last.get(channel, 0)
+            self._bufs.setdefault(channel, collections.deque()).append([index, samples])
+            self._rx_last[channel] = index + len(samples)
+            self._rx_time = time.monotonic()
 
-    def _read(self, count, timeout=None) -> np.ndarray:
-        deadline = None if timeout is None else time.monotonic() + timeout
-        have = np.empty(0, dtype=np.complex64)
-        parts, size = [], 0
-        while size < count:
-            wait = 1.0 if deadline is None else deadline - time.monotonic()
-            if wait <= 0:
-                raise TimeoutError(f"only got {size} of {count} samples")
-            got = self.get_samples(timeout=min(wait, 1.0))
-            if got.size:
-                parts.append(got)
-                size += got.size
-        have = parts[0] if len(parts) == 1 else np.concatenate(parts)
-        self._leftover = have[count:]
-        return have[:count]
+    def _queued(self, channel):
+        return sum(len(x) for _, x in self._bufs.get(channel, ()))
+
+    def _drop_received(self):
+        if self._sub is not None:
+            self._pull(0)
+        self._bufs.clear()
+        self._rx_last.clear()
+
+    def _rx_wait(self, count, timeout, slot=0):
+        channel = self._rx_channels[slot]
+        deadline = time.monotonic() + timeout
+        self._pull(0)
+        while self._queued(channel) < count:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                break
+            self._pull(min(left, 0.1))
+        return self._queued(channel)
+
+    def _rx_read(self, count, slot=0):
+        channel = self._rx_channels[slot]
+        blocks = self._bufs.get(channel)
+        if not blocks:
+            return np.empty(0, dtype=np.complex64), self._rx_last.get(channel, 0)
+        index, x = blocks[0]   # one block at a time: a gap between blocks shows as the next index
+        if len(x) > count:
+            blocks[0] = [index + count, x[count:]]
+            return x[:count], index
+        blocks.popleft()
+        return x, index
+
+    def _rx_position(self, slot=0):
+        age = None if self._rx_time is None else time.monotonic() - self._rx_time
+        return self._rx_last.get(self._rx_channels[slot], 0), age
+
+    def _rx_flush(self, slot=0):
+        self._pull(0)
+        blocks = self._bufs.pop(self._rx_channels[slot], ())
+        return sum(len(x) for _, x in blocks)
+
+    def get_samples(self, timeout=0.0) -> np.ndarray:
+        """All samples of the first streaming channel received since the last call. Waits up to `timeout` seconds
+        for the first block. See `read` for exact counts, several channels and stream metadata"""
+        self._ensure_open("get_samples")
+        channel = self._rx_channels[0]
+        if not self._queued(channel):
+            self._pull(timeout)
+        self._pull(0)
+        blocks = self._bufs.pop(channel, ())
+        if not blocks:
+            return np.empty(0, dtype=np.complex64)
+        return blocks[0][1] if len(blocks) == 1 else np.concatenate([x for _, x in blocks])
+
+    # --- transmitting: Device.write sends the blocks to the server, which writes them to the device --- #
+    def _tx_write(self, samples, timeout, slot=0):
+        if self._tx is None:
+            if not self.token:
+                raise err.NotController("only the controller can transmit")
+            raise err.NotSupported(f"the server at {self.address} has no TX stream (update it)")
+        channel = self._tx_channels[slot]
+        self._tx.setsockopt(zmq.SNDTIMEO, -1 if timeout is None or timeout < 0 else int(timeout * 1000))
+        done = 0
+        for i in range(0, len(samples), protocol.MAX_BLOCK_SAMPLES):
+            part = samples[i:i + protocol.MAX_BLOCK_SAMPLES]
+            header, payload = protocol.pack_block(self._tx_seq, time.time(), part, channel=channel)
+            try:
+                self._tx.send_multipart([self.token.encode(), header, payload], copy=False)
+            except zmq.Again:   # the server (the device's queue) is full: timed out
+                break
+            self._tx_seq += 1
+            done += len(part)
+        return done
+
+    def _tx_stats(self, slot=0):
+        return self._call("get_tx_stats", self._tx_channels[slot])
 
 
 # Calls after which the local view of the server's state is out of date

@@ -33,18 +33,25 @@ class Sim(Device):
 
     BLOCK_SAMPLES = 131072  # samples per delivery: one HackRF USB transfer (256 KiB)
 
-    def __init__(self, realtime=True, block_samples=BLOCK_SAMPLES, tone=None, sample_format=convert.INT8):
+    def __init__(self, realtime=True, block_samples=BLOCK_SAMPLES, tone=None, sample_format=convert.INT8, channels=1,
+                 transmit=False):
         """
         realtime: pace delivery to the sample rate. False delivers as fast as the host allows.
         block_samples: complex samples per callback.
         tone: tone frequency in Hz relative to center (default Fs / 8).
         sample_format: layout of the raw stream the "driver" delivers (convert.SampleFormat).
+        channels: RX (and TX) channels, like a multi-channel radio: channel k is the same tone turned by k*90 degrees
+        transmit: accept start_tx/write; what is written is kept per channel in `transmitted`
         """
+        self.channels = int(channels)
+        self.transmit = bool(transmit)
+        self.transmitted = {ch: [] for ch in range(self.channels)}
         super().__init__()
         self.SAMPLE_FORMAT = sample_format
         self.realtime = realtime
         self.block_samples = int(block_samples)
         self.buffer = RotatingBuffer()
+        self.buffers = [self.buffer]   # one per channel of the stream (slot)
         self.blocks = 0         # blocks delivered since start_rx / reset_stats
         self.max_lag = 0.0      # worst seconds the producer ran behind real time
         self._tone = tone
@@ -88,7 +95,9 @@ class Sim(Device):
         cycles = (int(round(tone * n / self._Fs)) + n // 2) % n - n // 2  # wrap into [-n/2, n/2)
         self._actual_tone = cycles * self._Fs / n
         phase = 2j * np.pi * cycles * np.arange(n) / n
-        self._raw = self.SAMPLE_FORMAT.from_complex64((0.5 * np.exp(phase)).astype(np.complex64))
+        self._raws = [self.SAMPLE_FORMAT.from_complex64((0.5 * np.exp(phase + 0.5j * np.pi * ch)).astype(np.complex64))
+                      for ch in range(self.channels)]
+        self._raw = self._raws[0]
 
     def _rx_callback(self, buffer, valid_length, buffer_length):
         """Same shape as a driver's callback (see hackrf.rx_callback)"""
@@ -96,7 +105,9 @@ class Sim(Device):
         return 0
 
     def _deliver(self):
-        self._rx_callback(self._raw, self._raw.nbytes, self._raw.nbytes)
+        self._rx_callback(self._raws[self._rx_channels[0]], self._raw.nbytes, self._raw.nbytes)
+        for slot, ch in enumerate(self._rx_channels[1:], 1):
+            self.buffers[slot].update(self.SAMPLE_FORMAT.to_complex64(self._raws[ch], self._raw.nbytes))
         self.blocks += 1
 
     def _run(self):
@@ -134,17 +145,36 @@ class Sim(Device):
         return self.buffer.samples
 
     # the generic read path (Device.read) on the ring the "driver" fills
-    def _rx_wait(self, count, timeout):
-        return self.buffer.wait(int(count), float(timeout))
-    def _rx_read(self, count):
-        return self.buffer.read_indexed(int(count))
-    def _rx_position(self):
-        return self.buffer.total, self.buffer.age
-    def _rx_flush(self):
-        return len(self.buffer.read())
+    def _rx_wait(self, count, timeout, slot=0):
+        return self.buffers[slot].wait(int(count), float(timeout))
+    def _rx_read(self, count, slot=0):
+        return self.buffers[slot].read_indexed(int(count))
+    def _rx_position(self, slot=0):
+        return self.buffers[slot].total, self.buffers[slot].age
+    def _rx_flush(self, slot=0):
+        return len(self.buffers[slot].read())
+
+    def _capabilities(self, caps):
+        caps.channels = {"rx": self.channels, "tx": self.channels if self.transmit else 0}
+        return caps
+    def _set_rx_channels(self, channels):
+        if self.state["rx"]:
+            raise RuntimeError("stop_rx() before changing the channels")
+        self.buffers = [self.buffer] + [RotatingBuffer() for _ in channels[1:]]
+    def _set_tx_channels(self, channels):
+        pass
+
+    # the transmit side: a sink that keeps what was written
+    def _tx_write(self, samples, timeout, slot=0):
+        self.transmitted[self._tx_channels[slot]].append(np.array(samples, dtype=np.complex64))
+        return len(samples)
+    def _tx_stats(self, slot=0):
+        written = sum(len(x) for x in self.transmitted[self._tx_channels[slot]])
+        return {"written": written, "sent": written, "underruns": 0, "pending": 0}
 
     def _resize_buffer(self):
-        self.buffer.reset(min(int(0.5 * self._Fs), MAX_BUFFER_SAMPLES))
+        for buffer in self.buffers:
+            buffer.reset(min(int(0.5 * self._Fs), MAX_BUFFER_SAMPLES))
 
     def _set_sample_rate(self, Fs):
         self._make_block()

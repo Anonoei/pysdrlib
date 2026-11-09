@@ -109,8 +109,15 @@ PYBIND11_MODULE(_uhd, m) {
         .def("mboard_sensors", &UHDDevice::mboard_sensors, nogil)
         .def("info", &UHDDevice::info, nogil)
 
+        // which channels stream (the k-th listed goes to queue slot k)
+        .def("set_rx_channels", &UHDDevice::set_rx_channels, py::arg("channels"))
+        .def("get_rx_channels", &UHDDevice::rx_channels)
+        .def("set_tx_channels", &UHDDevice::set_tx_channels, py::arg("channels"))
+        .def("get_tx_channels", &UHDDevice::tx_channels)
+
         // stream health
         .def("rx_overflows", &UHDDevice::rx_overflows)
+        .def("rx_lost", &UHDDevice::rx_lost)
         .def("rx_error", &UHDDevice::rx_error)
 
         // transmit: complex64 in, the transmit thread encodes it
@@ -118,16 +125,18 @@ PYBIND11_MODULE(_uhd, m) {
         .def("start_tx", &UHDDevice::start_tx, nogil)
         .def("stop_tx", &UHDDevice::stop_tx, nogil)
         .def("is_transmitting", &UHDDevice::is_transmitting)
-        .def("write_tx", [](UHDDevice& d, py::array_t<hw::cfloat, py::array::c_style | py::array::forcecast> samples, double timeout) {
+        .def("write_tx", [](UHDDevice& d, py::array_t<hw::cfloat, py::array::c_style | py::array::forcecast> samples, double timeout,
+                            size_t slot) {
             py::buffer_info info = samples.request();
             const size_t n = static_cast<size_t>(info.size);
             const hw::cfloat* src = static_cast<const hw::cfloat*>(info.ptr);
             py::gil_scoped_release release;
-            return d.write_tx(src, n, timeout);
-        }, py::arg("samples"), py::arg("timeout") = -1.0,
-           "Queue complex64 samples, waiting up to `timeout` seconds (negative: no limit) for room; returns how many were queued.")
-        .def("tx_stats", [](UHDDevice& d) {
-            const auto s = d.tx_stats();
+            return d.write_tx(src, n, timeout, slot);
+        }, py::arg("samples"), py::arg("timeout") = -1.0, py::arg("slot") = 0,
+           "Queue complex64 samples for the `slot`-th transmit channel, waiting up to `timeout` seconds (negative: no "
+           "limit) for room; returns how many were queued.")
+        .def("tx_stats", [](UHDDevice& d, size_t slot) {
+            const auto s = d.tx_stats(slot);
             py::dict out;
             out["written"] = s.written;
             out["sent"] = s.sent;
@@ -135,7 +144,7 @@ PYBIND11_MODULE(_uhd, m) {
             out["pending"] = s.pending;
             out["async_errors"] = d.tx_async_errors();
             return out;
-        })
+        }, py::arg("slot") = 0)
         .def("tx_error", &UHDDevice::tx_error);
 
     // ---- module functions ---- //

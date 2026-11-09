@@ -54,17 +54,22 @@ class DeviceWorker:
         self._seq = 0
         self.wire = protocol.resolve_wire(wire, device)    # format RX blocks are published in
 
+        self.tx_refused = 0                     # TX blocks dropped: not from the controller, or not transmitting
         self.ctrl = server._socket(zmq.ROUTER)
         self.rx = server._socket(zmq.PUB)
         self.rx.setsockopt(zmq.SNDHWM, 64)
+        self.tx = server._socket(zmq.PULL)
+        self.tx.setsockopt(zmq.RCVHWM, 8)       # little queued here: a full device queue holds the sender back
         self.endpoints = {
             "ctrl": server._bind(self.ctrl, f"{dev_id}.ctrl"),
             "rx": server._bind(self.rx, f"{dev_id}.rx"),
+            "tx": server._bind(self.tx, f"{dev_id}.tx"),
         }
         self.capabilities = self._capabilities()
         self._threads = [
             threading.Thread(target=self._control_loop, name=f"pysdrlib-{dev_id}-ctrl", daemon=True),
             threading.Thread(target=self._pump_loop, name=f"pysdrlib-{dev_id}-rx", daemon=True),
+            threading.Thread(target=self._tx_loop, name=f"pysdrlib-{dev_id}-tx", daemon=True),
         ]
         for t in self._threads:
             t.start()
@@ -127,6 +132,8 @@ class DeviceWorker:
                 "cf": self.device.get_freq(), "Fs": self.device.get_sample_rate(),
                 "controlled": self.token is not None,
                 "wire": protocol.wire_name(self.wire),
+                "rx_channels": list(getattr(self.device, "rx_channels", (0,))),
+                "tx_channels": list(getattr(self.device, "tx_channels", (0,))),
             }
 
     # --- control socket --- #
@@ -183,33 +190,58 @@ class DeviceWorker:
 
     # --- RX stream --- #
     def _pump_loop(self):
+        """Publish every channel the device streams, each block tagged with its channel and the index of its first
+        sample, so clients keep the channels apart and aligned and see where samples were lost"""
         stalled = False   # log a stall once, not on every poll
         while not self._stop.is_set():
             if not self.streaming.wait(POLL_MS / 1000):
                 continue
+            sent = 0
             try:
-                samples = self.device.get_samples()
+                for ch in tuple(self.device.rx_channels):
+                    samples, index = self.device.read_available(ch)
+                    now = time.time()
+                    for i in range(0, len(samples), protocol.MAX_BLOCK_SAMPLES):
+                        header, payload = protocol.pack_block(
+                            self._seq, now, samples[i:i + protocol.MAX_BLOCK_SAMPLES], self.wire, channel=ch, index=index + i)
+                        self._seq += 1
+                        self.rx.send_multipart([self.id.encode(), header, payload], copy=False)
+                    sent += len(samples)
                 stalled = False
             except err.StreamStalled as exc:
                 if not stalled:
                     self.log.warning("%s", exc)
                     stalled = True
-                time.sleep(IDLE_SLEEP)
-                continue
             except Exception:
-                if not self._stop.is_set() and self.streaming.is_set():
-                    self.log.exception("get_samples failed")
+                if not self._stop.is_set() and self.streaming.is_set() and self.device.state.get("rx"):
+                    self.log.exception("reading the device failed")
+            if not sent:
                 time.sleep(IDLE_SLEEP)
+
+    def _tx_loop(self):
+        """Hand the controller's TX blocks to the device. Its write blocks while the device's queue is full, which
+        fills this socket's small queue and so holds the sender back (flow control end to end)"""
+        while not self._stop.is_set():
+            if not self.tx.poll(POLL_MS):
                 continue
-            if samples is None or len(samples) == 0:
-                time.sleep(IDLE_SLEEP)
+            try:
+                token, header, payload = self.tx.recv_multipart(copy=False)
+            except zmq.ZMQError:
                 continue
-            now = time.time()
-            for i in range(0, len(samples), protocol.MAX_BLOCK_SAMPLES):
-                header, payload = protocol.pack_block(
-                    self._seq, now, samples[i:i + protocol.MAX_BLOCK_SAMPLES], self.wire)
-                self._seq += 1
-                self.rx.send_multipart([self.id.encode(), header, payload], copy=False)
+            if self.token is None or token.bytes.decode(errors="replace") != self.token:
+                self.tx_refused += 1
+                if self.tx_refused == 1:
+                    self.log.warning("TX blocks from something other than the controller are dropped")
+                continue
+            try:
+                _, _, samples, channel, _ = protocol.unpack_block_ex(header.bytes, payload.buffer)
+                if not self.device.state.get("tx"):
+                    self.tx_refused += 1
+                    continue
+                self.device.write(samples, channel=channel)
+            except Exception:
+                if not self._stop.is_set():
+                    self.log.exception("transmitting failed")
 
     # --- teardown --- #
     def close(self):
@@ -220,6 +252,7 @@ class DeviceWorker:
             t.join()
         self.ctrl.close(0)
         self.rx.close(0)
+        self.tx.close(0)
         with self.lock:
             if self.device.state["open"]:
                 try:

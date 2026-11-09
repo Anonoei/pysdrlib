@@ -149,7 +149,7 @@ class TestCapabilities:
         closed = d.caps
         assert closed.driver == d.NAME and closed.freq and closed.rates and closed.gains["rx"]
         d.open()
-        assert d.caps is not closed and d.caps.channels["rx"] == 1
+        assert d.caps is not closed and d.caps.channels["rx"] >= 1
 
     def test_json_round_trip(self, driver):
         c = driver.caps
@@ -177,8 +177,8 @@ class TestCapabilities:
             driver.set_freq(spec.config.FREQ_MAX * 2)
 
     def test_channels(self, driver):
-        with pytest.raises(err.InvalidValue):
-            driver.set_freq(100e6, channel=1)
+        with pytest.raises(err.InvalidValue):   # one past the last channel
+            driver.set_freq(100e6, channel=driver.caps.channels["rx"])
         with pytest.raises(ValueError):
             driver.gains("sideways")
 
@@ -317,3 +317,30 @@ def test_relative_gain_follows_a_tuner_table(monkeypatch):
     d._caps = None
     d.set_gain_relative(0.6)                              # 29.76 dB of 0-49.6: the table's 29.7
     assert d.get_gain() == 29.7 and d.get_gain_relative() == pytest.approx(29.7 / 49.6)
+
+# ---------------------------------------------------------------- samples lost before the queue
+def test_ring_skip_marks_a_gap_reads_never_span():
+    from pysdrlib.base.buffer import RotatingBuffer
+    r = RotatingBuffer()
+    r.reset(100)
+    r.update(np.arange(5).astype(np.complex64))
+    r.skip(3)                                    # the hardware lost 3 here
+    r.update(np.arange(5, 9).astype(np.complex64))
+    assert r.total == 12 and r.available == 9
+    x, i = r.read_indexed(100)
+    assert i == 0 and len(x) == 5                # up to the gap
+    x, i = r.read_indexed(100)
+    assert i == 8 and list(x.real) == [5, 6, 7, 8]
+    r.skip(2)
+    assert r.read_indexed(10)[1] == 14           # a gap with nothing after it yet: the next index is past it
+
+def test_read_reports_samples_lost_before_the_queue():
+    s = sim()
+    s.start_rx()
+    try:
+        s.read(1000, timeout=2)
+        s.buffer.skip(777)                       # as a driver does when the hardware overflowed
+        _, m = s.read(200_000, timeout=2, meta=True)
+    finally:
+        s.stop_rx()
+    assert (0, 777) in m.gaps or any(n == 777 for _, n in m.gaps)

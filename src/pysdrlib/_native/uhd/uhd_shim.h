@@ -75,6 +75,8 @@ int ushim_rx_stop(ushim* s);
 /* one call; `bufs`: one int16 buffer (interleaved I/Q) per channel. Returns 0, USHIM_RX_TIMEOUT, USHIM_RX_OVERFLOW
    (samples were lost: the next call continues) or USHIM_RX_OTHER / a UHD error (message in ushim_error). */
 int ushim_rx_recv(ushim* s, void** bufs, size_t samps, double timeout, size_t* got);
+/* device time of the first sample of the last ushim_rx_recv: 0 and *seconds, or 1 if it had none */
+int ushim_rx_time(ushim* s, double* seconds);
 
 int ushim_tx_open(ushim* s, const size_t* channels, size_t n, size_t* max_samps);
 void ushim_tx_close(ushim* s);

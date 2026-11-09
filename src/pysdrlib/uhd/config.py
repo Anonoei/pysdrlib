@@ -34,6 +34,7 @@ class _ConfigB210(ConfigDevice):
         self.BANDWIDTH_MAX = 56_000_000
         self.MASTER_CLOCK_MIN = 5_000_000
         self.MASTER_CLOCK_MAX = 61_440_000
+        self.MASTER_CLOCK_MAX_DUAL = 30_720_000   # with two channels in a stream (UHD refuses more)
         self.MASTER_CLOCK_GOOD_MIN = 25_000_000   # below this the AD9361's converters are outside their best range
         self.DEFAULT_MASTER_CLOCK = None   # None: UHD picks one for the sample rate ("automatic")
         self.CLOCK_SOURCES = ("internal", "external", "gpsdo")

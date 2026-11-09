@@ -249,12 +249,12 @@ class TestServer:
         with Server("tcp://127.0.0.1:0", devices=["sim"]) as s:
             worker, _ = s.open_device("sim")
             worker.log.addHandler(Collect())
-            sim, stalled, real = worker.device, [True], worker.device._get_samples
-            def get_samples():
+            sim, stalled, real = worker.device, [True], worker.device._rx_wait
+            def rx_wait(*args, **kwargs):   # where a hardware device raises it
                 if stalled[0]:
                     raise err.StreamStalled("sim stopped delivering")
-                return real()
-            sim._get_samples = get_samples
+                return real(*args, **kwargs)
+            sim._rx_wait = rx_wait
             with RemoteDevice(s.endpoint, id=worker.id) as d:
                 d.claim()
                 d.initialize(cf=100e6, Fs=1e6)
@@ -415,3 +415,109 @@ class TestGenericControlsRemotely:
 
     def test_relative_gain_is_forwarded(self, dev):
         assert dev.set_gain_relative(1.0) == pytest.approx(1.0) and dev.get_gain_relative() == pytest.approx(1.0)
+
+
+@pytest.fixture
+def dual(server):
+    """A two-channel sim that can transmit, hosted by `server`; the client is its controller"""
+    d = pysdrlib.device("remote", server.endpoint, "sim", init_kwargs={"channels": 2, "transmit": True})
+    d.open()
+    d.initialize(cf=100e6, Fs=1e6)
+    yield d, server.workers[d.id].device
+    for flag, stop in (("rx", d.stop_rx), ("tx", d.stop_tx)):
+        if d.state["open"] and d.state[flag]:
+            stop()
+    if d.state["open"]:
+        d.close()
+
+
+class TestChannelsRemotely:
+    def test_the_server_streams_the_channels_chosen(self, dual):
+        d, sim = dual
+        assert d.caps.channels == {"rx": 2, "tx": 2}
+        d.start_rx(channels=(0, 1))
+        assert d.rx_channels == (0, 1) and sim.rx_channels == (0, 1)
+        x, metas = d.read(4096, timeout=5, meta=True, channel=(0, 1))
+        assert x.shape == (2, 4096) and len({m.index for m in metas}) == 1
+        turn = np.degrees(np.angle(np.vdot(x[0], x[1])))
+        assert turn == pytest.approx(90, abs=3)        # the sim's channel 1 is channel 0 turned by 90 degrees
+
+    def test_one_of_them(self, dual):
+        d, _ = dual
+        d.start_rx(channels=(1,))
+        assert len(d.read(1000, timeout=5, channel=1)) == 1000
+        with pytest.raises(err.InvalidValue):
+            d.read(10, timeout=0.5, channel=0)
+
+    def test_stream_object_and_switching_channels(self, dual):
+        d, _ = dual
+        with d.stream(2048, timeout=5, channel=(0, 1)) as s:
+            assert s.read().shape == (2, 2048)
+        with d.stream(2048, timeout=5) as s:       # back to channel 0 only... still streaming both is fine
+            assert len(s.read()) == 2048
+
+    def test_viewers_see_the_channels(self, server, dual):
+        d, _ = dual
+        d.start_rx(channels=(0, 1))
+        with RemoteDevice(server.endpoint, id=d.id) as viewer:
+            assert viewer.rx_channels == (0, 1)
+            assert viewer.read(1000, timeout=5, channel=(0, 1)).shape == (2, 1000)
+
+
+class TestTransmitRemotely:
+    def test_rows_reach_their_channels(self, dual):
+        d, sim = dual
+        d.start_tx(channels=(0, 1))
+        a = np.exp(2j * np.pi * 0.01 * np.arange(50_000)).astype(np.complex64)
+        assert d.write(np.stack((a, -a))) == 50_000
+        deadline = time.time() + 5
+        while time.time() < deadline and sum(len(x) for x in sim.transmitted[1]) < 50_000:
+            time.sleep(0.02)
+        got0, got1 = np.concatenate(sim.transmitted[0]), np.concatenate(sim.transmitted[1])
+        assert np.allclose(got0, a) and np.allclose(got1, -a)
+        assert d.get_tx_stats(1)["written"] == 50_000
+
+    def test_transmit_while_receiving(self, dual):
+        d, sim = dual
+        d.start_rx(channels=(0, 1))
+        d.start_tx(channels=(0,))
+        sent = 0
+        for _ in range(5):
+            assert d.read(2000, timeout=5, channel=(0, 1)).shape == (2, 2000)
+            sent += d.write(np.ones(3000, np.complex64))
+        deadline = time.time() + 5
+        while time.time() < deadline and sum(len(x) for x in sim.transmitted[0]) < sent:
+            time.sleep(0.02)
+        assert sent == 15_000 and sum(len(x) for x in sim.transmitted[0]) == 15_000
+        assert d.state["rx"] and d.state["tx"]
+
+    def test_only_the_controller_transmits(self, server, dual):
+        d, sim = dual
+        d.start_tx()
+        with RemoteDevice(server.endpoint, id=d.id) as viewer:
+            with pytest.raises(err.NotController):
+                viewer.write(np.zeros(10, np.complex64))
+        # a block on the TX socket without the controller's token is dropped
+        worker = server.workers[d.id]
+        push = zmq.Context.instance().socket(zmq.PUSH)
+        push.connect(d._endpoint(worker.endpoints["tx"]))
+        header, payload = protocol.pack_block(0, 0.0, np.ones(10, np.complex64))
+        push.send_multipart([b"not-the-token", header, payload])
+        deadline = time.time() + 2
+        while time.time() < deadline and worker.tx_refused == 0:
+            time.sleep(0.02)
+        push.close(0)
+        assert worker.tx_refused == 1 and not sim.transmitted[0]
+
+    def test_receive_only_devices(self, dev):
+        with pytest.raises(err.NotSupported):
+            dev.start_tx()
+
+
+def test_blocks_carry_the_channel_and_index_and_older_ones_still_read():
+    header, payload = protocol.pack_block(7, 1.5, np.ones(4, np.complex64), channel=1, index=1234)
+    seq, t, x, channel, index = protocol.unpack_block_ex(header, payload)
+    assert (seq, channel, index, len(x)) == (7, 1, 1234, 4)
+    old = protocol.HEADER_V2.pack(2, 2, 32, 32, 0, 0, 3, 0.0, 4)   # a version 2 server's block
+    seq, _, x, channel, index = protocol.unpack_block_ex(old, payload)
+    assert (seq, channel, index, len(x)) == (3, 0, None, 4)

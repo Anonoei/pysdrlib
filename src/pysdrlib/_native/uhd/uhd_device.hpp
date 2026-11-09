@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <map>
@@ -39,20 +40,28 @@ public:
     // UHD delivers (and takes) sc16: interleaved signed 16-bit I/Q
     SampleFormat rx_sample_format() const override { return {SampleKind::Int, 16, 16, false}; }
 
-    // Receive (channel 0)
+    // Receive: the stream carries `rx_channels` (default channel 0); channel k of the list goes to queue slot k
+    // (set_rx_buffer(samples, slots) first). All of them are sampled together: their indices line up
+    void set_rx_channels(const std::vector<size_t>& channels);
+    std::vector<size_t> rx_channels() const { return rx_channels_; }
     void start_rx() override;
     void stop_rx() override;
     bool is_streaming() const override { return rx_running_.load(); }
     uint64_t rx_overflows() const { return rx_overflows_.load(); }
+    uint64_t rx_lost() const { return rx_lost_.load(); }   // samples the overflows lost (from the packets' timestamps)
     std::string rx_error() const;
 
-    // Transmit (channel 0): write complex64, the transmit thread encodes it
-    void set_tx_buffer(size_t samples) { tx_.configure(samples); }
-    size_t write_tx(const hw::cfloat* src, size_t n, double timeout) { return tx_.write(src, n, timeout); }
+    // Transmit: write complex64 per channel slot, the transmit thread encodes it. Several channels go out sample
+    // for sample together: the thread sends only what every channel's queue has (silence for all when none has any)
+    static constexpr size_t MAX_TX_SLOTS = 4;
+    void set_tx_channels(const std::vector<size_t>& channels);
+    std::vector<size_t> tx_channels() const { return tx_channels_; }
+    void set_tx_buffer(size_t samples) { for (auto& q : tx_) q.configure(samples); }
+    size_t write_tx(const hw::cfloat* src, size_t n, double timeout, size_t slot = 0) { return tx_.at(slot).write(src, n, timeout); }
     void start_tx();
     void stop_tx();
     bool is_transmitting() const { return tx_running_.load(); }
-    hw::TxQueue::Stats tx_stats() const { return tx_.stats(); }
+    hw::TxQueue::Stats tx_stats(size_t slot = 0) const { return tx_.at(slot).stats(); }
     uint64_t tx_async_errors() const { return tx_async_errors_.load(); }
     std::string tx_error() const;
 
@@ -102,10 +111,13 @@ private:
 
     std::thread rx_thread_, tx_thread_;
     std::atomic<bool> rx_running_{false}, rx_stop_{false}, tx_running_{false}, tx_stop_{false};
-    std::atomic<uint64_t> rx_overflows_{0}, tx_async_errors_{0};
+    std::atomic<uint64_t> rx_overflows_{0}, rx_lost_{0}, tx_async_errors_{0};
+    std::atomic<double> rx_rate_{0.0};        // what the receive timestamps are counted in
+    std::atomic<bool> rx_clock_moved_{false}; // the rate or the device time changed: don't compare timestamps across it
     mutable std::mutex err_m_;
     std::string rx_error_, tx_error_;
-    hw::TxQueue tx_;
+    std::array<hw::TxQueue, MAX_TX_SLOTS> tx_;
+    std::vector<size_t> rx_channels_{0}, tx_channels_{0};
     // Serialises control calls with the streaming threads' use of the same handle during open/close
     mutable std::mutex ctl_;
 };

@@ -91,6 +91,7 @@ class FakeDevice:
         self.format = fmt
         self.clock = time.monotonic        # a test may replace it, with the watchdog's
         self._ring = RotatingBuffer()
+        self._rings = [self._ring]          # one per slot (channel of a multi-channel stream), fed together
         self._reset_counts()
 
     def _reset_counts(self):
@@ -112,32 +113,38 @@ class FakeDevice:
         self.calls.append(("set_rx_callback",))
 
     # --- the buffered receive path --- #
-    def set_rx_buffer(self, samples):
-        self.calls.append(("set_rx_buffer", samples))
-        self._ring.reset(samples)
+    def set_rx_buffer(self, samples, slots=1):
+        self.calls.append(("set_rx_buffer", samples) if slots == 1 else ("set_rx_buffer", samples, slots))
+        self._rings = [self._ring] + [RotatingBuffer() for _ in range(slots - 1)]
+        for ring in self._rings:
+            ring.reset(samples)
 
     def reset_rx_stats(self):
         self.calls.append(("reset_rx_stats",))
         self._reset_counts()
 
-    def read_rx(self, count=None):
-        return self._ring.read(count)
+    def read_rx(self, count=None, slot=0):
+        return self._rings[slot].read(count)
 
-    def read_rx_indexed(self, count):
-        return self._ring.read_indexed(count)
+    def read_rx_indexed(self, count, slot=0):
+        return self._rings[slot].read_indexed(count)
 
-    def wait_rx(self, samples, timeout):
-        return self._ring.wait(samples, timeout)
+    def wait_rx(self, samples, timeout, slot=0):
+        return self._rings[slot].wait(samples, timeout)
 
-    def rx_stats(self):
-        return {"samples": self._samples, "total": self._ring.total, "dropped": self._ring.dropped, "pending": self._ring.available,
+    def rx_stats(self, slot=0):
+        ring = self._rings[slot]
+        return {"samples": self._samples, "total": ring.total, "dropped": ring.dropped, "pending": ring.available,
                 "max_chunk": self._max_chunk, "calls": self._calls, "busy": 0.0,
                 "age": None if self._last is None else self.clock() - self._last}
 
-    def deliver(self, raw, valid=None):
-        """The driver delivering one transfer of raw bytes (`valid` of them are good)"""
+    def deliver(self, raw, valid=None, slot=None):
+        """The driver delivering one transfer of raw bytes (`valid` of them are good), to one slot or (None) to every
+        slot, as a multi-channel driver does (each channel's own samples: here the same ones)"""
         samples = self.format.to_complex64(raw, valid)
-        self._ring.update(samples)
+        for k, ring in enumerate(self._rings):
+            if slot is None or k == slot:
+                ring.update(samples)
         self._samples += len(samples)
         self._max_chunk = max(self._max_chunk, len(samples))
         self._calls += 1

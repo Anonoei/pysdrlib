@@ -4,6 +4,7 @@ src/pysdrlib/_ext/cache
 
 *.c
 !vendor
+!src/pysdrlib/_native/**/*.c
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

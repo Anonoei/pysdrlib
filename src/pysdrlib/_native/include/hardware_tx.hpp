@@ -105,6 +105,10 @@ public:
         std::lock_guard<std::mutex> lock(m_);
         return cap_;
     }
+    size_t available() const {
+        std::lock_guard<std::mutex> lock(m_);
+        return pending_;
+    }
 
 private:
     using clock = std::chrono::steady_clock;

@@ -21,7 +21,8 @@ class Queue:
     """The extension's device with its USB side stubbed out. The receive path (`set_rx_buffer`, `read_rx`,
     `rx_stats`...) is the extension's own: conversion, queue and counters in C++. `feed` plays the driver
     delivering a transfer, on a native thread. Tuning, gain and streaming calls go to a fake driver."""
-    RECEIVE_PATH = ("set_rx_buffer", "reset_rx_stats", "read_rx", "rx_stats", "rx_available")
+    RECEIVE_PATH = ("set_rx_buffer", "reset_rx_stats", "read_rx", "read_rx_indexed", "wait_rx", "rx_stats", "rx_available",
+                    "rx_slots")
 
     def __init__(self, spec):
         self._native = spec.native.device()

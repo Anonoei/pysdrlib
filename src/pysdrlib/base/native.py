@@ -53,7 +53,7 @@ class NativeDevice(Device):
         if self.state["rx"]:   # resizing the queue discards it and restarts its count: keep the stream's indices going
             self._rx_base += self.device.rx_stats()["total"]
             self._rx_discard = max(self._rx_discard, self._rx_base)
-        self.device.set_rx_buffer(int(type(self).BUFFER_SECONDS * self._Fs))
+        self.device.set_rx_buffer(int(type(self).BUFFER_SECONDS * self._Fs), len(self._rx_channels))   # a queue per channel
         self._dropped_reported = 0
         self._watchdog.set_rate(self._Fs)
 
@@ -76,18 +76,19 @@ class NativeDevice(Device):
         return samples
 
     # --- the generic read path (Device.read) on the native queue --- #
-    def _rx_wait(self, count, timeout):
-        ready = self.device.wait_rx(int(count), float(timeout))
+    # slot: the k-th of rx_channels (all queues are fed together, so their indices line up)
+    def _rx_wait(self, count, timeout, slot=0):
+        ready = self.device.wait_rx(int(count), float(timeout), slot)
         self._check_stream(have_samples=ready > 0)
         return ready
-    def _rx_read(self, count):
-        x, first = self.device.read_rx_indexed(int(count))
+    def _rx_read(self, count, slot=0):
+        x, first = self.device.read_rx_indexed(int(count), slot)
         return x, self._rx_base + first
-    def _rx_position(self):
-        native = self.device.rx_stats()
+    def _rx_position(self, slot=0):
+        native = self.device.rx_stats(slot)
         return self._rx_base + native["total"], native["age"]
-    def _rx_flush(self):
-        return len(self.device.read_rx())
+    def _rx_flush(self, slot=0):
+        return len(self.device.read_rx(None, slot))
 
     def _report_drop(self, count, message):
         policy = self.on_drop

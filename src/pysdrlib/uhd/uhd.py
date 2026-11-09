@@ -9,11 +9,15 @@ from .config import ConfigB210 as config
 from . import images, lib
 
 class B210(NativeDevice):
-    """Ettus USRP B200/B210 (and compatible) through UHD. Controls act on channel 0 (RX/TX of frontend A); `device`
-    methods take a `channel` for the B210's second frontend.
+    """Ettus USRP B200/B210 (and compatible) through UHD. Two channels each way on a B210 (frontends A and B), one on a
+    B200: every control takes `channel`, and `start_rx(channels=(0, 1))` / `start_tx(channels=(0, 1))` stream both
+    together (coherent: one clock, one LO per direction).
+
+    The AD9361 has one receive and one transmit synthesizer, so a frequency is shared by a direction's channels, and
+    the streams need one rate per direction (caps.shared). Gain, filter and antenna are per channel.
 
     The gain is the AD9361's single programmable gain (PGA): `set_rx_pga_gain`/`set_tx_pga_gain`, or the generic
-    `set_rx_gain`/`set_tx_gain`.
+    `set_gain`/`set_rx_gain`/`set_tx_gain`.
     """
     NAME = "UHD B210"
     CONFIG = config
@@ -55,19 +59,42 @@ class B210(NativeDevice):
             raise
 
     # --- tuning --- #
-    def _master_clock_for(self, Fs):
+    def _master_clock_for(self, Fs, channels=None):
         """The master clock to run at for sample rate `Fs`: the current one if it already gives Fs with an even
         (or no) decimation, else the smallest power-of-two multiple of Fs the AD9361 runs well at (25-61.44 MHz).
+        With two channels in a stream (`channels`, default the streams' own) the clock may be at most 30.72 MHz: then
+        the largest power-of-two multiple under that, even below 25 MHz.
         UHD's own choice fails when RX and TX rates are set one after the other, and picks odd decimations."""
         cfg = type(self).CONFIG
+        if channels is None:
+            channels = max(len(self._rx_channels), len(self._tx_channels))
+        top = cfg.MASTER_CLOCK_MAX_DUAL if channels > 1 else cfg.MASTER_CLOCK_MAX
         current = self.device.get_master_clock_rate()
         ratio = current / Fs
-        if ratio >= 1 and abs(ratio - round(ratio)) < 1e-6 and (round(ratio) == 1 or round(ratio) % 2 == 0):
+        if current <= top + 1 and ratio >= 1 - 1e-6 and abs(ratio - round(ratio)) < 1e-6 and (round(ratio) == 1 or round(ratio) % 2 == 0):
             return current
         mcr = float(Fs)
-        while mcr < cfg.MASTER_CLOCK_GOOD_MIN:
+        while mcr < cfg.MASTER_CLOCK_GOOD_MIN and mcr * 2 <= top + 1:
             mcr *= 2
-        return mcr if mcr <= cfg.MASTER_CLOCK_MAX else None
+        return mcr if cfg.MASTER_CLOCK_MIN - 1 <= mcr <= top + 1 else None   # 1 Hz: rates read back are not exact
+
+    def _fit_clock(self, channels):
+        """Before streaming `channels` channels: a master clock they allow at the current rates (rates re-applied)"""
+        if self._mcr_pinned:
+            return
+        mcr = self._master_clock_for(self._Fs, channels)
+        if mcr is None:
+            self._invalid(f"{channels} channels at {self._Fs:,.0f} S/s: no master clock fits "
+                          f"(at most {type(self).CONFIG.MASTER_CLOCK_MAX_DUAL:,} Hz with two channels)")
+            return
+        if mcr != self.device.get_master_clock_rate():
+            self._change_master_clock(mcr)
+            for d in ("rx", "tx"):
+                rate = self._Fs if d == "rx" else self._tuning.get(("rate", "tx", 0))
+                if rate:
+                    for ch in self._channels(d):
+                        (self.device.set_rx_rate if d == "rx" else self.device.set_tx_rate)(float(rate), ch)
+            self._Fs = self.device.get_rx_rate(0) or self._Fs
 
     def _change_master_clock(self, mcr):
         """Streams cannot run across a master clock change (the radio stops answering): pause them around it"""
@@ -84,16 +111,44 @@ class B210(NativeDevice):
             if tx:
                 self.device.start_tx()
 
-    def _set_sample_rate(self, Fs):
+    def _channels(self, direction):
+        return range(self.device.num_rx_channels() if direction == "rx" else self.device.num_tx_channels())
+
+    def _set_sample_rate(self, Fs, direction=None, channel=0):
+        """Every channel of the direction(s) at `Fs` (a stream's channels run at one rate). Returns the rate set"""
+        dirs = ("rx", "tx") if direction is None else (direction,)
         if not self._mcr_pinned:
             mcr = self._master_clock_for(Fs)
             if mcr is not None and mcr != self.device.get_master_clock_rate():
                 self._change_master_clock(mcr)
-        self.device.set_sample_rate(float(Fs))   # RX and TX: the AD9361 runs both directions from one clock
-        self._Fs = self.device.get_rx_rate(0)
-        self._rate_changed()
-    def _set_freq(self, freq):
-        self.device.set_freq(int(freq))   # RX and TX of channel 0
+                for other in {"rx", "tx"} - set(dirs):   # the clock moved under the other direction: put it back
+                    rate = self._tuning.get(("rate", other, 0))
+                    if rate:
+                        for ch in self._channels(other):
+                            (self.device.set_rx_rate if other == "rx" else self.device.set_tx_rate)(float(rate), ch)
+        if direction is None:
+            self.device.set_sample_rate(float(Fs))   # RX and TX of channel 0 together
+        for d in dirs:
+            for ch in self._channels(d):
+                if direction is not None or ch:
+                    (self.device.set_rx_rate if d == "rx" else self.device.set_tx_rate)(float(Fs), ch)
+        if "rx" in dirs:
+            self._Fs = self.device.get_rx_rate(0)
+            if len(self._rx_channels) > 1 and self._Fs > type(self).CONFIG.SAMPLE_RATE_MAX_DUAL:
+                self._invalid(f"{self._Fs:,.0f} S/s on {len(self._rx_channels)} channels is more than USB carries "
+                              f"(at most {type(self).CONFIG.SAMPLE_RATE_MAX_DUAL:,})")
+            self._rate_changed()
+            return self._Fs
+        return self.device.get_tx_rate(0)
+    def _set_freq(self, freq, direction=None, channel=0):
+        """Every channel of the direction(s): they share the synthesizer, but each has its own DSP tuning, and two
+        channels tuned apart by a fraction of a hertz drift in phase (not coherent)"""
+        if direction is None:
+            self.device.set_freq(int(freq))   # RX and TX of channel 0
+        for d in (("rx", "tx") if direction is None else (direction,)):
+            for ch in self._channels(d):
+                if direction is not None or ch:
+                    (self.device.set_rx_freq if d == "rx" else self.device.set_tx_freq)(float(freq), ch)
 
     # --- gain: one stage per direction --- #
     def set_rx_pga_gain(self, gain=None):
@@ -103,18 +158,10 @@ class B210(NativeDevice):
         """Transmit PGA, 0-89.75 dB in 0.25 dB steps"""
         return self._set_gain_stage("TX", "PGA", gain, self._set_tx_pga_gain)
 
-    def _set_rx_gain(self, gain):
-        if gain == "default":
-            gain = type(self).CONFIG.DEFAULT_GAIN_RX_PGA
-        return {"pga": self.set_rx_pga_gain(gain)}
-    def _set_tx_gain(self, gain):
-        if gain == "default":
-            gain = type(self).CONFIG.DEFAULT_GAIN_TX_PGA
-        return {"pga": self.set_tx_pga_gain(gain)}
-    def _set_rx_pga_gain(self, gain):
-        self.device.set_rx_gain(float(gain), 0)
-    def _set_tx_pga_gain(self, gain):
-        self.device.set_tx_gain(float(gain), 0)
+    def _set_rx_pga_gain(self, gain, channel=0):
+        self.device.set_rx_gain(float(gain), channel)
+    def _set_tx_pga_gain(self, gain, channel=0):
+        self.device.set_tx_gain(float(gain), channel)
 
     def _set_bias_t(self, bias):
         raise err.NotSupported(f"{type(self).NAME} has no bias tee")
@@ -123,8 +170,9 @@ class B210(NativeDevice):
     def _capabilities(self, caps):
         d = self.device
         caps.settings.pop("bias_t", None)
-        # caps.channels stays 1/1: the generic API drives channel 0. The second frontend is reachable through `device`
-        # (its methods take a `channel`) until the base Device grows channels
+        caps.channels = {"rx": d.num_rx_channels(), "tx": d.num_tx_channels()}
+        # one synthesizer per direction; a stream's channels share its rate; the rest is per channel
+        caps.shared = {"freq": "direction", "rate": "direction", "gain": "channel", "bandwidth": "channel", "antenna": "channel"}
         # Frequency and rates stay CONFIG's: UHD's own ranges include the DSP's reach beyond the frontend, and the
         # rates it lists are only those the current master clock gives
         caps.bandwidths = {"rx": [Range(*d.rx_bandwidth_range(0))], "tx": [Range(*d.tx_bandwidth_range(0))]}
@@ -134,27 +182,38 @@ class B210(NativeDevice):
         caps.info.update({k: v for k, v in d.info().items() if v})
         return caps
 
-    def _set_gain_mode(self, direction, mode):
+    def _set_gain_mode(self, direction, mode, channel=0):
         if direction == "tx":
             raise err.NotSupported(f"{type(self).NAME} has no TX gain modes")
-        self.device.set_rx_agc(mode == "auto", 0)
-    def _set_bandwidth(self, direction, bandwidth):
+        self.device.set_rx_agc(mode == "auto", channel)
+    def _set_bandwidth(self, direction, bandwidth, channel=0):
         if direction == "rx":
-            return self.device.set_rx_bandwidth(float(bandwidth), 0)
-        return self.device.set_tx_bandwidth(float(bandwidth), 0)
-    def _set_antenna(self, direction, name):
+            return self.device.set_rx_bandwidth(float(bandwidth), channel)
+        return self.device.set_tx_bandwidth(float(bandwidth), channel)
+    def _set_antenna(self, direction, name, channel=0):
         if direction == "rx":
-            self.device.set_rx_antenna(name, 0)
+            self.device.set_rx_antenna(name, channel)
         else:
-            self.device.set_tx_antenna(name, 0)
+            self.device.set_tx_antenna(name, channel)
+
+    # --- which channels stream --- #
+    def _set_rx_channels(self, channels):
+        if len(channels) > 1 and self._Fs > type(self).CONFIG.SAMPLE_RATE_MAX_DUAL:
+            self._invalid(f"{len(channels)} channels at {self._Fs:,.0f} S/s is more than USB carries "
+                          f"(at most {type(self).CONFIG.SAMPLE_RATE_MAX_DUAL:,} each)")
+        self._fit_clock(max(len(channels), len(self._tx_channels)))
+        self.device.set_rx_channels(list(channels))
+    def _set_tx_channels(self, channels):
+        self._fit_clock(max(len(channels), len(self._rx_channels)))
+        self.device.set_tx_channels(list(channels))
     def _set_clock_source(self, name):
         self.device.set_clock_source(name)
 
     # --- settings --- #
-    def _set_dc_offset_auto(self, enable):
-        self.device.set_rx_dc_offset(bool(enable), 0)
-    def _set_iq_balance_auto(self, enable):
-        self.device.set_rx_iq_balance(bool(enable), 0)
+    def _set_dc_offset_auto(self, enable, channel=0):
+        self.device.set_rx_dc_offset(bool(enable), channel)
+    def _set_iq_balance_auto(self, enable, channel=0):
+        self.device.set_rx_iq_balance(bool(enable), channel)
     def _set_time_source(self, name):
         self.device.set_time_source(name)
     def _get_time_source(self):
@@ -178,38 +237,31 @@ class B210(NativeDevice):
     def _stop_tx(self):
         self.device.stop_tx()
 
-    def write(self, samples, timeout=None):
-        """Queue complex samples (full scale is +-1) for transmission; blocks while the queue is full, up to `timeout`
-        seconds (None: until all are queued). Transmitting starts with `start_tx()`. Returns how many were queued"""
-        self._ensure_open("write")
-        if not self.state["tx"]:
-            raise err.NotSupported("write() needs start_tx() first")
-        x = np.ascontiguousarray(samples, dtype=np.complex64).ravel()
-        limit = -1.0 if timeout is None else float(timeout)
-        done = 0
-        while done < len(x):
-            n = self.device.write_tx(x[done:], limit)
-            done += n
-            if n == 0 and limit >= 0:
-                break
-            tx_error = self.device.tx_error()
-            if tx_error:
-                raise err.StreamStalled(f"{type(self).NAME} stopped transmitting: {tx_error}")
-        return done
+    # the generic write() (Device.write) on the native transmit queues, one per channel of the stream
+    def _tx_write(self, samples, timeout, slot=0):
+        return self.device.write_tx(samples, timeout, slot) if slot else self.device.write_tx(samples, timeout)
+    def _tx_check(self):
+        tx_error = self.device.tx_error()
+        if tx_error:
+            raise err.StreamStalled(f"{type(self).NAME} stopped transmitting: {tx_error}")
+    def _tx_stats(self, slot=0):
+        return self.device.tx_stats(slot) if slot else self.device.tx_stats()
 
     @property
     def tx_stats(self):
         """{"written", "sent", "underruns", "pending", "async_errors"} samples counted since start_tx (underruns: samples of
-        silence sent because `write` was not keeping up)"""
-        return self.device.tx_stats()
+        silence sent because `write` was not keeping up), for the first transmit channel; `get_tx_stats(channel)` for others"""
+        return self._tx_stats(0)
 
     # --- sensors and time --- #
-    def sensors(self):
-        """{name: value} of the motherboard's and the frontends' sensors (ref_locked, lo_locked, temp, rssi...), keyed "mboard.", "rx." or "tx." + name"""
+    def sensors(self, channel=0):
+        """{name: value} of the motherboard's and a channel's frontend sensors (ref_locked, lo_locked, temp, rssi...),
+        keyed "mboard.", "rx." or "tx." + name"""
         self._ensure_open("sensors")
+        self._check_channel("rx", channel)
         out = {f"mboard.{k}": v for k, v in self.device.mboard_sensors().items()}
-        out.update({f"rx.{k}": v for k, v in self.device.rx_sensors(0).items()})
-        out.update({f"tx.{k}": v for k, v in self.device.tx_sensors(0).items()})
+        out.update({f"rx.{k}": v for k, v in self.device.rx_sensors(channel).items()})
+        out.update({f"tx.{k}": v for k, v in self.device.tx_sensors(channel).items()})
         return out
     def time(self):
         """The device's time [s]"""

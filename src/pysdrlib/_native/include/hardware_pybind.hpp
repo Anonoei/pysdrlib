@@ -113,26 +113,29 @@ py::class_<Device> bind_device(py::module_& m, const char* name) {
         })
 
         // ---- buffered receive: the driver's thread converts to complex64 and queues, no Python involved ---- //
-        .def("set_rx_buffer", [](Device& d, size_t samples) { d.set_rx_buffer(samples); },
-             "Queue up to `samples` complex samples (the oldest are dropped past that); discards pending ones.")
+        .def("set_rx_buffer", [](Device& d, size_t samples, size_t slots) { d.set_rx_buffer(samples, slots); },
+             py::arg("samples"), py::arg("slots") = 1,
+             "Queue up to `samples` complex samples (the oldest are dropped past that) in each of `slots` queues (one per "
+             "channel of a multi-channel stream); discards pending ones.")
+        .def_property_readonly("rx_slots", &Device::rx_slots)
         .def("reset_rx_stats", [](Device& d) { d.reset_rx_stats(); })
-        .def_property_readonly("rx_available", &Device::rx_available)
-        .def("read_rx", [](Device& d, py::object count) {
+        .def_property_readonly("rx_available", [](const Device& d) { return d.rx_available(); })
+        .def("read_rx", [](Device& d, py::object count, size_t slot) {
             // Oldest pending samples first (all if `count` is None); removes what it returns
-            size_t want = d.rx_available();
+            size_t want = d.rx_available(slot);
             if (!count.is_none()) want = std::min(want, count.cast<size_t>());
             py::array_t<cfloat> out(want);
             size_t got = 0;
             if (want) {
                 py::gil_scoped_release release;
-                got = d.read_rx(out.mutable_data(), want);
+                got = d.read_rx(out.mutable_data(), want, nullptr, slot);
             }
             if (got == want) return out;
             py::array_t<cfloat> trimmed(got);   // another reader got there first
             if (got) std::memcpy(trimmed.mutable_data(), out.data(), got * sizeof(cfloat));
             return trimmed;
-        }, py::arg("count") = py::none())
-        .def("read_rx_indexed", [](Device& d, size_t count) {
+        }, py::arg("count") = py::none(), py::arg("slot") = 0)
+        .def("read_rx_indexed", [](Device& d, size_t count, size_t slot) {
             // (samples, index of the first): up to `count` of the oldest pending samples. A jump in the index from
             // the end of the previous read is the number of samples dropped in between.
             py::array_t<cfloat> out(count);
@@ -140,7 +143,7 @@ py::class_<Device> bind_device(py::module_& m, const char* name) {
             uint64_t first = 0;
             {
                 py::gil_scoped_release release;
-                got = d.read_rx(out.mutable_data(), count, &first);
+                got = d.read_rx(out.mutable_data(), count, &first, slot);
             }
             if (got != count) {
                 py::array_t<cfloat> trimmed(got);
@@ -148,18 +151,19 @@ py::class_<Device> bind_device(py::module_& m, const char* name) {
                 return py::make_tuple(trimmed, first);
             }
             return py::make_tuple(out, first);
-        }, py::arg("count"))
-        .def("wait_rx", [](Device& d, size_t samples, double timeout) {
+        }, py::arg("count"), py::arg("slot") = 0)
+        .def("wait_rx", [](Device& d, size_t samples, double timeout, size_t slot) {
             py::gil_scoped_release release;
-            return d.wait_rx(samples, timeout);
-        }, py::arg("samples"), py::arg("timeout"),
+            return d.wait_rx(samples, timeout, slot);
+        }, py::arg("samples"), py::arg("timeout"), py::arg("slot") = 0,
            "Wait until `samples` are queued (at most the queue's size) or `timeout` seconds pass (negative: no limit); "
            "returns how many are queued.")
-        .def("rx_stats", [](const Device& d) {
-            RingStats s = d.rx_stats();
+        .def("rx_stats", [](const Device& d, size_t slot) {
+            RingStats s = d.rx_stats(slot);
             py::dict out;
             out["samples"] = s.samples;
             out["total"] = s.total;
+            out["skipped"] = s.skipped;
             out["dropped"] = s.dropped;
             out["pending"] = s.pending;
             out["max_chunk"] = s.max_chunk;
@@ -167,7 +171,7 @@ py::class_<Device> bind_device(py::module_& m, const char* name) {
             out["busy"] = s.busy;
             out["age"] = s.seen ? py::object(py::float_(s.age)) : py::none();   // None: nothing delivered yet
             return out;
-        })
+        }, py::arg("slot") = 0)
 
         // Test/bench hook: hand `data` to the receive path on the calling thread
         .def("_dispatch_rx", [](Device& d, py::buffer data) {
