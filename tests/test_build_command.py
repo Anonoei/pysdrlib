@@ -37,7 +37,7 @@ def test_with_nothing_asked_it_says_where_each_stands_and_builds_nothing(libs, c
 
 def test_a_driver_named_is_built(libs, capsys):
     assert build.run(args("hackrf")) == 0
-    assert list(libs) == ["hackrf"] and "hackrf: built /built" in capsys.readouterr().out
+    assert list(libs) == ["hackrf"] and "hackrf: built /built" in capsys.readouterr().out.replace("\\", "/")
 
 
 def test_all_builds_what_is_missing_and_leaves_what_is_there(libs, monkeypatch, capsys):

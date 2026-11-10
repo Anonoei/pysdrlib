@@ -584,6 +584,7 @@ def test_blocks_carry_the_channel_and_index_and_older_ones_still_read():
 
 
 class TestOverload:
+    @pytest.mark.skipif(sys.platform == "win32", reason="ZeroMQ has no ipc:// transport on Windows")
     def test_a_server_faster_than_the_client_can_decode_does_not_stall_it(self, tmp_path):
         """A device flooding the server (not paced to real time) in the device's own wire layout, which costs the
         client a conversion per block: reads still return (with the lost blocks counted), instead of the client

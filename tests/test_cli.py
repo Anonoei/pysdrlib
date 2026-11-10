@@ -53,6 +53,7 @@ def test_an_unknown_command_is_refused(capsys):
     assert exit.value.code == 2
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="ZeroMQ has no ipc:// transport on Windows")
 def test_the_remote_commands_can_still_be_run_on_their_own(tmp_path, capsys):
     from pysdrlib.remote import cli as remote_cli
     with Server(f"ipc://{tmp_path}/c2", devices=["sim"], lease=0) as server:

@@ -70,7 +70,12 @@ class ShmWriter:
 
     def close_stream(self):
         """No more samples are coming (readers can still read what is there)"""
-        self.ring.close()
+        if self.shm is None:    # already destroyed (a new stream replaced this ring)
+            return
+        try:
+            self.ring.close()
+        except ValueError:      # destroyed on another thread between the check and here
+            pass
 
     def destroy(self):
         """Remove the segment. Readers that have it mapped keep it until they let go"""
