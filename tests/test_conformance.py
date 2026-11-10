@@ -49,6 +49,13 @@ def test_driver_package_conforms(name):
 
 
 # ---------------------------------------------------------------- the checker catches mistakes
+def _import_or_skip(name):
+    """Import a driver module; skip when its extension isn't built (importing no longer builds it)"""
+    try:
+        return importlib.import_module(name)
+    except ImportError as exc:
+        pytest.skip(f"{name} unavailable: {exc}")
+
 def _driver(**attrs):
     """A copy of the simulated device (complete) with attributes changed"""
     from pysdrlib.sim import Sim
@@ -83,7 +90,7 @@ def test_native_device_needs_a_sample_format():
     assert any("SAMPLE_FORMAT" in m for m in _messages(Raw))
 
 def test_a_misspelled_gain_setter_is_found():
-    caps = importlib.import_module("pysdrlib.hackrf").Device.CAPS   # the HackRF's stages on a class without them all
+    caps = _import_or_skip("pysdrlib.hackrf").Device.CAPS   # the HackRF's stages on a class without them all
     msgs = _messages(_driver(CAPS=caps))
     assert any("_set_rx_rf_gain" in m for m in msgs)
 
@@ -198,7 +205,7 @@ def test_command_line(tmp_path, capsys):
 # ---------------------------------------------------------------- generated error classes
 @pytest.mark.parametrize("name", ["hackrf", "rtl_sdr", "uhd", "extio"])
 def test_driver_errors_are_classes_of_their_base(name):
-    lib_err = importlib.import_module(f"pysdrlib.{name}.lib.err")
+    lib_err = _import_or_skip(f"pysdrlib.{name}.lib.err")
     codes = [v for k, v in vars(lib_err).items() if k.isupper()]
     assert codes and all(issubclass(c, Exception) and c.__module__ == lib_err.__name__ for c in codes)
     assert len({c.__mro__[1] for c in codes}) == 1   # one base for all
@@ -222,13 +229,13 @@ def test_a_written_setter_is_kept():
     assert not getattr(RTLSDR.set_rx_rf_gain, "_generated", False) and "automatic gain" in RTLSDR.set_rx_rf_gain.__doc__.lower()
 
 def test_transmit_stages_only_for_transmitters():
-    hackrf = importlib.import_module("pysdrlib.hackrf").Device.CAPS
+    hackrf = _import_or_skip("pysdrlib.hackrf").Device.CAPS
     assert not hasattr(_driver(CAPS=hackrf), "set_tx_if_gain")
     tx = _driver(CAPS=hackrf, CAN_TRANSMIT=True)
     assert hasattr(tx, "set_tx_if_gain") and "0-47" in tx.set_tx_if_gain.__doc__
 
 def test_a_stage_without_its_hook_says_so():
-    hackrf = importlib.import_module("pysdrlib.hackrf").Device.CAPS
+    hackrf = _import_or_skip("pysdrlib.hackrf").Device.CAPS
     sdr = _driver(CAPS=hackrf)()
     sdr.open()
     with pytest.raises(NotImplementedError, match="_set_rx_rf_gain"):
