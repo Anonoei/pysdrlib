@@ -38,3 +38,6 @@ logs/
 
 # Built documentation
 docs/
+
+# Generated at build time (see _ext/uhd.py)
+src/pysdrlib/_native/uhd/generated/

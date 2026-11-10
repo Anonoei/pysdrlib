@@ -171,10 +171,11 @@ NATIVE = "src/pysdrlib/_native"
 # FP traps, which nothing uses and which stop the encoder's clamps from being vectorised.
 FP_FLAGS = [] if sys.platform == "win32" else ["-ffp-contract=off", "-fno-trapping-math"]
 
-def pybind_extension(device: str, header_dir: str, header: str, extra_sources=()):
+def pybind_extension(device: str, header_dir: str, header: str, extra_sources=(), include_dirs=()):
     """The pybind11 Extension for `pysdrlib.<device>.lib._<device>` (setup.py). Does no building and
     does not link the vendor library: its symbols stay undefined and are resolved when the library is
-    loaded at import time. `extra_sources`: more files in the device's folder (a C shim, say). Sources are `<device>_pybind.cpp` and `<device>_device.{cpp,hpp}` in
+    loaded at import time. `extra_sources`: more files in the device's folder (a C shim). `include_dirs`: more header directories
+    (generated headers). Sources are `<device>_pybind.cpp` and `<device>_device.{cpp,hpp}` in
     `src/pysdrlib/_native/<device>`, compiled against the vendor's `header` in `header_dir` (repo-relative)."""
     from pybind11.setup_helpers import Pybind11Extension
 
@@ -182,7 +183,7 @@ def pybind_extension(device: str, header_dir: str, header: str, extra_sources=()
     return Pybind11Extension(
         name=f"pysdrlib.{device}.lib._{device}",
         sources=[f"{src}/{device}_pybind.cpp", f"{src}/{device}_device.cpp", *(f"{src}/{f}" for f in extra_sources)],
-        include_dirs=[header_dir, shared, src],
+        include_dirs=[header_dir, *include_dirs, shared, src],
         depends=[f"{src}/{device}_device.hpp", f"{header_dir}/{header}",
                  f"{shared}/hardware_wrapper.hpp", f"{shared}/hardware_numpy.hpp", f"{shared}/hardware_pybind.hpp",
                  f"{shared}/hardware_format.hpp", f"{shared}/hardware_convert.hpp", f"{shared}/hardware_rx.hpp"],
