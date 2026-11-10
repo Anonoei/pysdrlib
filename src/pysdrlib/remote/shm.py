@@ -1,7 +1,7 @@
 """Samples in shared memory, for a client on the server's machine
 
 The server writes each streaming channel into a ring (`ShmWriter`); clients map it and read at their own pace (`ShmReader`).
-The ring itself is C++ (`_native/include/hardware_shm.hpp`, `pysdrlib.base.lib._samples.ShmRing`), correct across
+The ring itself is C++ (`_native/include/hardware_shm.hpp`, the ShmRing class in `pysdrlib/base/lib/_samples`), correct across
 processes; this maps the memory and cleans up. See `protocol` for how a client learns the segment's name.
 
     writer = ShmWriter(capacity=1 << 20, stream_id=1)       # the server

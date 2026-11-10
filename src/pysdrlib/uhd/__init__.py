@@ -1,5 +1,7 @@
 from .._ext import uhd as ext, utils
 
+__doc__ = utils.readme(__file__)
+
 B210 = utils.import_device(__name__, ".uhd", "B210", ext.LIB)
 Device = B210
 

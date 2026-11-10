@@ -1,5 +1,7 @@
 from .._ext import rtl_sdr as ext, utils
 
+__doc__ = utils.readme(__file__)
+
 RTLSDR = utils.import_device(__name__, ".rtlsdr", "RTLSDR", ext.LIB)
 Device = RTLSDR
 

@@ -56,7 +56,7 @@ print(out.count, out.clipped)
   the sink open (`open()`, `open=True` or `with`).
 - A value outside the format's range (including NaN or infinity in an integer format) raises `ValueError`; nothing
   wraps. With `clip=True` values saturate instead (each I/Q component on its own), NaN is stored as 0, and one warning,
-  "N samples clipped", is logged when the sink closes. `sink.clipped` holds the running count.
+  "N samples clipped", is logged when the sink closes. `FileSink.clipped` holds the running count.
 
 ## Errors
 

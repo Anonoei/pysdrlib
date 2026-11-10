@@ -113,7 +113,7 @@ def connect(address: str, device: str, *, claim=False, reuse=False, **kwargs) ->
     device: a device type the server can open, or the id of a device it hosts (`pysdrlib client ADDRESS list` shows both).
     claim: for a hosted device, take control of it (`err.Busy` if someone has it).
     reuse: for a type, take over a hosted device of that type nobody controls (one a client left open) before opening a new one.
-    kwargs: the rest go to `pysdrlib.remote.RemoteDevice` (`transport`, `timeout`, `wire`, `init_kwargs`...).
+    kwargs: the rest go to `pysdrlib.remote.client.RemoteDevice` (`transport`, `timeout`, `wire`, `init_kwargs`...).
     Raises `err.NoDevice`, naming what the server has, for a device it neither hosts nor can open.
     """
     try:

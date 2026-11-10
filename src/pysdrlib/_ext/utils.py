@@ -20,6 +20,14 @@ def rmdir(path: Path):
         file.unlink()
     path.rmdir()
 
+def readme(init_file: str) -> str:
+    """Text of the README.md beside a package's __init__.py, for its module docstring (pdoc shows it as the
+    package's page). Empty if the file isn't shipped, so a missing README never breaks an import."""
+    try:
+        return (Path(init_file).parent / "README.md").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
 def is_installed(lib_name):
     libc_path = ctypes.util.find_library(lib_name)
     if libc_path is None:

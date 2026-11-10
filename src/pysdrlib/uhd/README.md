@@ -45,7 +45,7 @@ On the unit this was tested with, two-channel streams sometimes stop with UHD's 
 and reopen the device. Single-channel streams were not affected.
 
 ## Libraries
-`pysdrlib/_native/uhd/uhd_shim.c` is a plain-C face on UHD's C API: `uhd.h` pulls in UHD's C++ headers and Boost when
+`pysdrlib/_native/uhd/uhd_shim.c` is a plain-C face on UHD's C API: `<uhd/uhd.h>` pulls in UHD's C++ headers and Boost when
 included from C++, so only the shim sees UHD and the extension builds without Boost. libuhd itself is the system one if
 installed, else built from the `vendor/uhd` submodule (B200 family only, see `vendor/CMakeLists.txt`) on first import.
 

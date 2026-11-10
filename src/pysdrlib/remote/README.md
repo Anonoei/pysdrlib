@@ -186,12 +186,12 @@ server.serve_forever()          # or server.start() ... server.stop()
 
 | File | Contents |
 | --- | --- |
-| `server.py` | `Server` (the C2 socket: lifecycle and ownership) and `DeviceWorker` (one hosted device's sockets) |
-| `client.py` | `Client` (discovery) and `RemoteDevice` (a `Device` backed by a server) |
-| `server.py` also has | `RelayWorker`, a device of another server hosted here (`Server.relay`) |
-| `shm.py` | `ShmWriter` (the server's ring in shared memory) and `ShmReader` (a client's view of it); the ring is C++ in `_native/include/hardware_shm.hpp` |
-| `protocol.py` | Wire format: message framing, sample block headers, wire formats. The file documents the sockets |
-| `cli.py` | The `pysdrlib` command |
+| `remote/server.py` | `Server` (the C2 socket: lifecycle and ownership) and `DeviceWorker` (one hosted device's sockets) |
+| `remote/client.py` | `Client` (discovery) and `RemoteDevice` (a `Device` backed by a server) |
+| `remote/server.py` also has | `RelayWorker`, a device of another server hosted here (`Server.relay`) |
+| `remote/shm.py` | `ShmWriter` (the server's ring in shared memory) and `ShmReader` (a client's view of it); the ring is C++ in `_native/include/hardware_shm.hpp` |
+| `remote/protocol.py` | Wire format: message framing, sample block headers, wire formats. The file documents the sockets |
+| `remote/cli.py` | The `pysdrlib` command |
 
 Per hosted device the server runs a control socket (`ROUTER`), an RX stream (`PUB`) and a TX stream (`PUSH`);
-see `protocol.py` for the details. Tests are in `tests/test_remote.py`.
+see `remote/protocol.py` for the details. Tests are in `tests/test_remote.py`.

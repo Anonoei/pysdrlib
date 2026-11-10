@@ -1,5 +1,7 @@
 from .._ext import hackrf as ext, utils
 
+__doc__ = utils.readme(__file__)
+
 HackRF = utils.import_device(__name__, ".hackrf", "HackRF", ext.LIB)
 Device = HackRF
 

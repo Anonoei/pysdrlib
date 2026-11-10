@@ -1,5 +1,7 @@
 from .._ext import extio as ext, utils
 
+__doc__ = utils.readme(__file__)
+
 RX888 = utils.import_device(__name__, ".rx888", "RX888", ext.LIB)
 Device = RX888
 
