@@ -3,7 +3,7 @@
 `pysdrlib.File` and `pysdrlib.FileSink` read and write these. Pick one by name:
 
     File("capture.cfile", "cf64")        # a GNU Radio .cfile: float32 I, float32 Q, repeating
-    FileSink("out.bin", "ci16t")         # int8 I, int8 Q, repeating (what hackrf_transfer records)
+    FileSink("out.bin", "ci16t")         # int8 I, int8 Q, repeating
 
 ## Reading the names
 

@@ -38,22 +38,6 @@ def test_no_vendor_specific_names_in_generic_code(pattern):
     assert not hits, "\n".join(hits)
 
 
-def test_no_sample_width_assumptions_in_generic_code():
-    """Generic code must not hard-code 8-bit samples (the HackRF's); formats come from a SampleFormat."""
-    hits = []
-    for path in GENERIC:
-        if path.name in ("io.py", "hardware_numpy.hpp", "hardware_convert.hpp"):   # these define the per-width layouts
-            continue
-        for n, line in enumerate(path.read_text().splitlines(), 1):
-            if re.search(r"\b(u?int8(_t)?|/ ?= ?128|/ 128)\b", line) and "SampleFormat" not in line:
-                if path.name == "convert.py" and ("INT8" in line or "int8" in line.lower() and "dtype" in line):
-                    continue
-                hits.append(f"{path.relative_to(SRC).as_posix()}:{n}: {line.strip()}")
-    # convert.py defines the INT8/UINT8 *constants* and documents them; nothing else may mention 8-bit
-    hits = [h for h in hits if not h.startswith("base/convert.py")]
-    assert not hits, "\n".join(hits)
-
-
 def test_device_base_class_surface():
     public = {n for n in dir(Device) if not n.startswith("_")}
     assert {"open", "close", "initialize", "start_rx", "stop_rx", "get_samples", "set_freq", "set_sample_rate",

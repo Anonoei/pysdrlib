@@ -14,7 +14,7 @@ PyPI: https://pypi.org/project/pysdrlib/
     for info in pysdrlib.find():                  # radios attached, for every driver whose library is available
         print(info.driver, info.label, info.serial)
 
-    sdr = pysdrlib.open(pysdrlib.find()[0])       # opened; or pysdrlib.open("hackrf")
+    sdr = pysdrlib.open(pysdrlib.find()[0])       # opened; or pysdrlib.open("<driver name>")
     sdr.initialize(cf=100e6, Fs=2e6)
     sdr.start_rx()
     samples = sdr.read(65536, timeout=1.0)        # exactly 65536 samples
@@ -28,7 +28,7 @@ PyPI: https://pypi.org/project/pysdrlib/
 | `pysdrlib.devices` | Finding and opening devices: `pysdrlib.find`, `pysdrlib.open`, `pysdrlib.device` |
 | `pysdrlib.base.device` | `pysdrlib.Device`, the API every driver implements (start here for method docs) |
 | `pysdrlib.base.caps` | `pysdrlib.Capabilities`, `pysdrlib.Range` and `pysdrlib.Setting`: what a radio can do |
-| `pysdrlib.rtl_sdr`, `pysdrlib.hackrf`, `pysdrlib.uhd`, `pysdrlib.extio` | The hardware drivers |
+| `pysdrlib.<driver>`, one subpackage per supported radio | The hardware drivers |
 | `pysdrlib.sim` | A simulated radio that needs no hardware |
 | `pysdrlib.remote` | Use a radio on another machine over ZeroMQ (`pip install pysdrlib[remote]`) |
 | `pysdrlib.file` | `pysdrlib.File` and `pysdrlib.FileSink`: read and write sample files |

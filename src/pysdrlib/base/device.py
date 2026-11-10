@@ -679,10 +679,27 @@ class Device:
             later.append(change)
         self._rx_events = later
         total, age = _call(self._rx_position, slot=self._slot(channel))
+        when = self._stream_time(channel, self._Fs, sample_time(self._Fs, total, age, first), first)
         return RxMeta(index=first, count=count, channel=channel,
                       freq=self._rx_now.get(("freq", channel), self._cf), rate=self._rx_now.get(("rate", channel), self._Fs),
-                      gaps=tuple(gaps), discarded=discarded, time=sample_time(self._Fs, total, age, first),
+                      gaps=tuple(gaps), discarded=discarded, time=when,
                       events=tuple(events))
+
+    def _stream_time(self, channel, rate, estimate, index):
+        """Time of sample `index`. Each delivery estimate is jittery (by a block or more, worse on coarse clocks), so
+        it only nudges the stream's start time (t0), and the time is t0 + index / rate: consecutive blocks are
+        spaced by their samples, never out of order. t0 follows the clock slowly, so a rate that is not exactly
+        nominal still can't drift far from the wall clock"""
+        if estimate is None or not rate:
+            return estimate
+        t0 = estimate - index / rate
+        clock = self._rx_clock.get(channel)
+        if clock is None or clock[0] != rate or abs(clock[1] - t0) > 1.0:   # first block, a retune, or a jump
+            clock = self._rx_clock[channel] = [rate, t0, -float("inf") if clock is None else clock[2]]
+        else:
+            clock[1] += 0.05 * (t0 - clock[1])
+        clock[2] = max(clock[2], clock[1] + index / rate)
+        return clock[2]
 
     def _remove_dc(self, out, channel):
         mean = complex(out.mean())
@@ -700,6 +717,7 @@ class Device:
         self._rx_events = []        # (index, kind, value, channel) changes not yet past
         self._rx_now = {}           # (kind, channel) -> value at the last block's start
         self._rx_dc = {}
+        self._rx_clock = {}         # channel -> [rate, t0, last time]: the stream's time of sample 0, smoothed
         self._rx_buf = np.empty(0, dtype=np.complex64)
         self._rx_buf_index = 0
 

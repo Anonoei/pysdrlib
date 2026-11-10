@@ -156,7 +156,10 @@ def _load_generated(tmp_path, name, native):
     pkg.__package__ = f"pysdrlib.{name}"
     sys.modules[pkg.__name__] = pkg
     if native:
-        from pysdrlib.rtl_sdr import lib as real
+        try:
+            from pysdrlib.rtl_sdr import lib as real
+        except ImportError as exc:   # the extension isn't built on this platform
+            pytest.skip(f"rtl_sdr unavailable: {exc}")
         fake = types.ModuleType(f"pysdrlib.{name}.lib")
         fake.err = real.err
         setattr(fake, name, types.SimpleNamespace(device=None))
@@ -186,7 +189,7 @@ def test_generated_python_driver_passes_the_checker(tmp_path):
 
 def test_command_line(tmp_path, capsys):
     assert scaffold.main(["cli_probe", "--python-only", "--root", str(tmp_path)]) == 0
-    out = capsys.readouterr().out
+    out = capsys.readouterr().out.replace("\\", "/")
     assert "created cli_probe/config.py" in out and "check_package" in out
     assert scaffold.main(["cli_probe", "--python-only", "--root", str(tmp_path)]) == 1   # exists
     assert "already exists" in capsys.readouterr().err
@@ -223,7 +226,10 @@ def test_stage_setters_are_made_from_the_config():
     assert sdr.set_rx_bb_gain() == sdr.CONFIG.stage("RX", "BB").default      # None: the default
 
 def test_a_written_setter_is_kept():
-    from pysdrlib.rtl_sdr.rtlsdr import RTLSDR
+    try:
+        from pysdrlib.rtl_sdr.rtlsdr import RTLSDR
+    except ImportError as exc:   # the extension isn't built on this platform
+        pytest.skip(f"rtl_sdr unavailable: {exc}")
     assert not getattr(RTLSDR.set_rx_rf_gain, "_generated", False) and "automatic gain" in RTLSDR.set_rx_rf_gain.__doc__.lower()
 
 def test_transmit_stages_only_for_transmitters():

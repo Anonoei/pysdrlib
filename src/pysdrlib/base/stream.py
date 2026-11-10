@@ -23,7 +23,7 @@ class RxMeta:
     """index: position of the block's first sample in the stream (samples since start_rx, dropped ones counted)
     gaps: (offset in the block, samples missing just before it), for every place samples were lost
     discarded: samples skipped on purpose (settling after a retune with flush=True) before this block
-    time: time.monotonic() at which the first sample was received (estimated from the last delivery), or None
+    time: time.monotonic() at which the first sample was received (estimated from the deliveries, smoothed so it never goes backwards), or None
     freq / rate: what the device was set to for the first sample; events: changes inside the block
     """
     index: int
