@@ -52,10 +52,11 @@ class B210(NativeDevice):
                                      "_set_master_clock_rate", getter="_get_master_clock_rate", default=0.0),
     }
 
+    device: lib.uhd.device   # the extension's device (None until `open`)
+
     def __init__(self):
         super().__init__()
-        lib.uhd.init() # pyright: ignore[reportAttributeAccessIssue]
-        self.device: lib.uhd.device = None # pyright: ignore[reportAttributeAccessIssue]
+        lib.uhd.init()
         self._mcr_pinned = False   # the user chose a master clock rate: don't pick one per sample rate
 
     def _open(self, serial_number=None, args=""):
@@ -65,7 +66,7 @@ class B210(NativeDevice):
         if serial_number is not None:
             args = ",".join(x for x in (f"serial={serial_number}", args) if x)
         try:
-            return lib.uhd.open(args) # pyright: ignore[reportAttributeAccessIssue]
+            return lib.uhd.open(args)
         except lib.err.NOT_FOUND as exc:
             raise err.NoDevice("No USRP devices found!") from exc
         except lib.err.UHDError as exc:

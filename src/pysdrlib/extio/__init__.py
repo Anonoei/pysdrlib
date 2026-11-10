@@ -1,6 +1,6 @@
 from .._ext import extio as ext, utils
 
-RX888 = utils.import_device(__package__, ".rx888", "RX888", ext.LIB)
+RX888 = utils.import_device(__name__, ".rx888", "RX888", ext.LIB)
 Device = RX888
 
 __pdoc__ = {"vendor": False}  # vendored third-party sources are not API

@@ -27,6 +27,7 @@ import atexit
 import itertools
 import time
 import weakref
+from typing import Any
 
 import numpy as np
 
@@ -114,7 +115,7 @@ class Device:
 
     def __init__(self):
         self.log = logger.new(f"device.{type(self).__name__}")
-        self.device = None
+        self.device: Any = None   # the driver's handle (an extension's device), None until `open`
         self.state = {
             "open": False,
             "rx": False,
@@ -1054,11 +1055,11 @@ class Device:
 
     def _initialize(self, cf, Fs, rx_gain, tx_gain):
         pass
-    def _set_rx_sample_rate(self, Fs, channel=0):
+    def _set_rx_sample_rate(self, Fs, channel=0) -> "float | None":
         """Set the receive sample rate; return the rate the hardware chose (None: the one asked for, or what the hook
         left in `self._Fs`). Where rx and tx share one clock it sets both"""
         ...
-    def _set_tx_sample_rate(self, Fs, channel=0):
+    def _set_tx_sample_rate(self, Fs, channel=0) -> "float | None":
         """Set the transmit sample rate. By default, where rx and tx share one clock, the receive hook's"""
         if self.caps.shared.get("rate") == "device":
             return self._set_rx_sample_rate(Fs, channel)

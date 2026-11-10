@@ -1,6 +1,6 @@
 from .._ext import hackrf as ext, utils
 
-HackRF = utils.import_device(__package__, ".hackrf", "HackRF", ext.LIB)
+HackRF = utils.import_device(__name__, ".hackrf", "HackRF", ext.LIB)
 Device = HackRF
 
 __pdoc__ = {"vendor": False}  # vendored third-party sources are not API

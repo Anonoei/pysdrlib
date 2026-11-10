@@ -27,13 +27,14 @@ class RX888(NativeDevice):
         "pga": Setting(bool, "ADC programmable gain amplifier (+3.5 dB)", "set_pga", default=False),
     }
 
+    device: lib.extio.device   # the extension's device (None until `open`)
+
     def __init__(self):
         super().__init__()
-        self.device: lib.extio.device = None # pyright: ignore[reportAttributeAccessIssue]
 
     def _open(self):
         try:
-            return lib.extio.open() # pyright: ignore[reportAttributeAccessIssue]
+            return lib.extio.open()
         except lib.err.NOT_FOUND as exc:
             raise err.NoDevice("No RX888 found, or no permission to access it (check your udev rules)") from exc
 

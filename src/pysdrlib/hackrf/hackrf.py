@@ -42,17 +42,18 @@ class HackRF(NativeDevice):
     GAIN_RESERVE = {"rx": ("RF",), "tx": ("RF",)}
     GAIN_BALANCE = "db"
 
+    device: lib.hackrf.device   # the extension's device (None until `open`)
+
     def __init__(self):
         super().__init__()
-        lib.hackrf.init() # pyright: ignore[reportAttributeAccessIssue]
-        self.device: lib.hackrf.device = None # pyright: ignore[reportAttributeAccessIssue]
+        lib.hackrf.init()
 
     def _open(self, serial_number=None):
         try:
             if serial_number is None:
-                device = lib.hackrf.open() # pyright: ignore[reportAttributeAccessIssue]
+                device = lib.hackrf.open()
             else:
-                device = lib.hackrf.open_by_serial(serial_number) # pyright: ignore[reportAttributeAccessIssue]
+                device = lib.hackrf.open_by_serial(serial_number)
         except lib.err.NOT_FOUND as exc:
                 raise err.NoDevice("No HackRF devices found!") from exc
         return device

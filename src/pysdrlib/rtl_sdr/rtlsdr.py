@@ -30,17 +30,18 @@ class RTLSDR(NativeDevice):
     RETUNE_SAMPLES = 2 * 131072
     RETUNE_SETTLE = 0.005
 
+    device: lib.rtl_sdr.device   # the extension's device (None until `open`)
+
     def __init__(self):
         super().__init__()
-        self.device: lib.rtl_sdr.device = None # pyright: ignore[reportAttributeAccessIssue]
         self._ppm_hw = 0   # whole ppm the hardware corrects (see set_freq_correction)
 
     def _open(self, serial_number=None, index=0):
         """Open the dongle with this serial number, or else the `index`th one attached"""
         try:
             if serial_number is None:
-                return lib.rtl_sdr.open(index) # pyright: ignore[reportAttributeAccessIssue]
-            return lib.rtl_sdr.open_by_serial(serial_number) # pyright: ignore[reportAttributeAccessIssue]
+                return lib.rtl_sdr.open(index)
+            return lib.rtl_sdr.open_by_serial(serial_number)
         except lib.err.NOT_FOUND as exc:
             raise err.NoDevice("No RTL-SDR devices found!") from exc
         except lib.err.OPEN_FAILED as exc:
@@ -68,7 +69,7 @@ class RTLSDR(NativeDevice):
 
     def _set_rx_gain(self, gain, channel=0):
         if gain == "default":
-            gain = self.caps.stage("rx", "RF").default
+            gain = self.caps.gains["rx"]["RF"].default
         return {"rf": self.set_rx_rf_gain(gain)}
     def _set_rx_rf_gain(self, gain, channel=0):
         self.device.set_rx_rf_gain(float(gain))

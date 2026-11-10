@@ -27,7 +27,7 @@ def _fill(text, names):
 # --------------------------------------------------------------------------- Python templates
 INIT = '''from .._ext import @NAME@ as ext, utils
 
-@CLASS@ = utils.import_device(__package__, ".@NAME@", "@CLASS@", ext.LIB)
+@CLASS@ = utils.import_device(__name__, ".@NAME@", "@CLASS@", ext.LIB)
 Device = @CLASS@
 
 def find():
@@ -75,16 +75,17 @@ class @CLASS@(NativeDevice):
     RETUNE_SAMPLES = 0
     RETUNE_SETTLE = 0.0
 
+    device: lib.@NAME@.device   # the extension's device (None until `open`)
+
     def __init__(self):
         super().__init__()
-        self.device: lib.@NAME@.device = None # pyright: ignore[reportAttributeAccessIssue]
 
     def _open(self, serial_number=None, index=0):
         """Open the unit with this serial number, or else the `index`th one attached"""
         try:
             if serial_number is None:
-                return lib.@NAME@.open(index) # pyright: ignore[reportAttributeAccessIssue]
-            return lib.@NAME@.open_by_serial(serial_number) # pyright: ignore[reportAttributeAccessIssue]
+                return lib.@NAME@.open(index)
+            return lib.@NAME@.open_by_serial(serial_number)
         except lib.err.NOT_FOUND as exc:
             raise err.NoDevice("No @CLASS@ devices found!") from exc
 
@@ -163,7 +164,7 @@ class @CLASS@(_Device):
 '''
 
 LIB_INIT = '''from . import _@NAME@ as @NAME@
-from . import err   # registered by the extension (it holds the error table)
+from . import err  # pyright: ignore[reportMissingModuleSource]   # made by the extension when it is imported; err.pyi types it
 '''
 
 EXT = '''"""Build and load helpers for the @CLASS@ extension.

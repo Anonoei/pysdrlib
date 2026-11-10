@@ -1,2 +1,2 @@
 from . import _rtl_sdr as rtl_sdr
-from . import err   # registered by the extension (it holds the error table)
+from . import err  # pyright: ignore[reportMissingModuleSource]   # made by the extension when it is imported; err.pyi types it

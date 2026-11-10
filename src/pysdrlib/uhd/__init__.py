@@ -1,6 +1,6 @@
 from .._ext import uhd as ext, utils
 
-B210 = utils.import_device(__package__, ".uhd", "B210", ext.LIB)
+B210 = utils.import_device(__name__, ".uhd", "B210", ext.LIB)
 Device = B210
 
 __pdoc__ = {"vendor": False}  # vendored third-party sources are not API
