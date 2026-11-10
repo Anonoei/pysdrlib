@@ -126,14 +126,14 @@ class TestTransmit:
 
     def test_write_hands_over_complex64_whatever_it_was_given(self, sdr):
         got = []
-        sdr.device._returns["write_tx"] = lambda x, timeout: got.append(x) or len(x)
+        sdr.device._returns["write_tx"] = lambda x, timeout, slot=0: got.append(x) or len(x)
         sdr.device._returns["tx_error"] = lambda: ""
         sdr.start_tx()
         assert sdr.write(np.ones(8, np.complex128)) == 8
         assert got[0].dtype == np.complex64 and got[0].flags.c_contiguous
 
     def test_write_reports_a_dead_transmitter(self, sdr):
-        sdr.device._returns["write_tx"] = lambda x, timeout: 0
+        sdr.device._returns["write_tx"] = lambda x, timeout, slot=0: 0
         sdr.device._returns["tx_error"] = lambda: "STREAMING_STOPPED"
         sdr.start_tx()
         with pytest.raises(err.StreamStalled):

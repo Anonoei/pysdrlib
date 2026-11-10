@@ -53,17 +53,13 @@ public:
 
     // Transmit: write complex64 per channel slot, the transmit thread encodes it. Several channels go out sample
     // for sample together: the thread sends only what every channel's queue has (silence for all when none has any)
-    static constexpr size_t MAX_TX_SLOTS = 4;
     void set_tx_channels(const std::vector<size_t>& channels);
     std::vector<size_t> tx_channels() const { return tx_channels_; }
-    void set_tx_buffer(size_t samples) { for (auto& q : tx_) q.configure(samples); }
-    size_t write_tx(const hw::cfloat* src, size_t n, double timeout, size_t slot = 0) { return tx_.at(slot).write(src, n, timeout); }
-    void start_tx();
-    void stop_tx();
-    bool is_transmitting() const { return tx_running_.load(); }
-    hw::TxQueue::Stats tx_stats(size_t slot = 0) const { return tx_.at(slot).stats(); }
-    uint64_t tx_async_errors() const { return tx_async_errors_.load(); }
-    std::string tx_error() const;
+    void start_tx() override;
+    void stop_tx() override;
+    bool is_transmitting() const override { return tx_running_.load(); }
+    uint64_t tx_async_errors() const override { return tx_async_errors_.load(); }
+    std::string tx_error() const override;
 
     // Tuning and gain, per channel
     void set_rate(Dir d, double rate, size_t chan);
@@ -116,7 +112,6 @@ private:
     std::atomic<bool> rx_clock_moved_{false}; // the rate or the device time changed: don't compare timestamps across it
     mutable std::mutex err_m_;
     std::string rx_error_, tx_error_;
-    std::array<hw::TxQueue, MAX_TX_SLOTS> tx_;
     std::vector<size_t> rx_channels_{0}, tx_channels_{0};
     // Serialises control calls with the streaming threads' use of the same handle during open/close
     mutable std::mutex ctl_;

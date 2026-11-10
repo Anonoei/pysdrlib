@@ -14,7 +14,7 @@ then fill in each `TODO`, checking as you go with `pysdrlib.testing`.
 | --- | --- |
 | `<name>/<name>.py` | The `Device` subclass: the hooks below |
 | `<name>/__init__.py` | `Device = <class>` and `find()` |
-| `<name>/lib/__init__.py`, `lib/err.py` | The compiled extension's import, and its error classes (`make_errors`, from `pysdrlib.base.errors`) |
+| `<name>/lib/__init__.py` | The compiled extension's import (its error classes, `lib.err`, come from the extension) |
 | `<name>/README.md` | What the radio is, its specs, what to install |
 | `_ext/<name>.py` | `LIB` (how the vendor library is found or built) and `get()` (the extension, for setup.py) |
 | `_native/<name>/` | `<name>_device.hpp/.cpp` (the wrapper) and `<name>_pybind.cpp` (its Python binding) |
@@ -87,7 +87,7 @@ statistics. Your code:
   the hardware says it lost with `skip_rx(count)` so readers see the gap;
 - exposes the device's controls (`set_freq`, `set_sample_rate`...) as methods, bound in `<name>_pybind.cpp`.
 
-The error codes you throw are mapped by name to the classes in `lib/err.py`, which `make_errors` defines from a list of names. `_native/rtl_sdr/` (a vendor callback) and
+The error codes you throw are listed once, in `<name>_pybind.cpp`'s `hw::register_errors(m, "MyRadioError", {{code, "NAME", "doc"}, ...})`: it makes the Python classes (`lib.err.NAME`, all subclasses of `MyRadioError`) and raises the right one for each code. `_native/rtl_sdr/` (a vendor callback) and
 `_native/uhd/` (several channels, transmit) are complete examples.
 
 The extension is built **without linking** the vendor library: its symbols resolve when `_ext/<name>.py`'s `LIB` loads

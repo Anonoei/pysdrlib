@@ -25,6 +25,7 @@ class NativeDevice(Device):
     """
     BUFFER_SECONDS = 0.5   # how much stream `get_samples` may fall behind by before dropping the oldest
     STALL_TIMEOUT = 1.0    # seconds without samples before the stream is considered stalled; None: never
+    TX_BUFFER_SECONDS = 0.25   # how much stream `write` may queue ahead of the radio before it blocks
 
     def __init__(self):
         super().__init__()
@@ -89,6 +90,29 @@ class NativeDevice(Device):
         return self._rx_base + native["total"], native["age"]
     def _rx_flush(self, slot=0):
         return len(self.device.read_rx(None, slot))
+
+    # --- transmitting (Device.write) on the native transmit queues, one per channel of the stream --- #
+    # The extension's transmit thread (or callback) encodes complex64 to the hardware's format without the GIL
+    def _start_tx(self):
+        self.device.set_tx_buffer(int(self.TX_BUFFER_SECONDS * self._Fs))
+        self.device.start_tx()
+    def _stop_tx(self):
+        self.device.stop_tx()
+    def _tx_write(self, samples, timeout, slot=0):
+        return self.device.write_tx(samples, timeout, slot)
+    def _tx_check(self):
+        tx_error = self.device.tx_error()
+        if tx_error:
+            raise err.StreamStalled(f"{type(self).NAME} stopped transmitting: {tx_error}")
+    def _tx_stats(self, slot=0):
+        return self.device.tx_stats(slot)
+
+    @property
+    def tx_stats(self):
+        """{"written", "sent", "underruns", "pending", "async_errors"} samples counted since start_tx, for the first
+        transmit channel (`get_tx_stats(channel)` for others). underruns: samples of silence sent because `write` was
+        not keeping up"""
+        return self._tx_stats(0)
 
     def _report_drop(self, count, message):
         policy = self.on_drop

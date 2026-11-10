@@ -201,7 +201,7 @@ def check_package(name) -> list:
             ext = importlib.import_module(f"pysdrlib._ext.{name}")
             if getattr(ext, "LIB", None) is None:
                 add(ERROR, f"_ext/{name}.py defines no LIB (a utils.VendorLibrary)")
-        for needed in ("lib/__init__.py", "lib/err.py"):
+        for needed in ("lib/__init__.py",):
             if not (folder / needed).is_file():
                 add(ERROR, f"has no {needed} (the compiled extension's import and its error classes)")
     return problems

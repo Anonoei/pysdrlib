@@ -186,7 +186,8 @@ def pybind_extension(device: str, header_dir: str, header: str, extra_sources=()
         include_dirs=[header_dir, *include_dirs, shared, src],
         depends=[f"{src}/{device}_device.hpp", f"{header_dir}/{header}",
                  f"{shared}/hardware_wrapper.hpp", f"{shared}/hardware_numpy.hpp", f"{shared}/hardware_pybind.hpp",
-                 f"{shared}/hardware_format.hpp", f"{shared}/hardware_convert.hpp", f"{shared}/hardware_rx.hpp"],
+                 f"{shared}/hardware_format.hpp", f"{shared}/hardware_convert.hpp", f"{shared}/hardware_rx.hpp",
+                 f"{shared}/hardware_tx.hpp"],
         # macOS leaves them undefined with a flag; Windows can't at all: skip the extension there rather
         # than fail the whole build (importing the device then explains it). Elsewhere errors are fatal.
         extra_link_args=["-undefined", "dynamic_lookup"] if sys.platform == "darwin" else [],

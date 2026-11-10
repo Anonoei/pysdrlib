@@ -126,7 +126,7 @@ def test_scaffold_writes_the_listed_files_and_never_overwrites(tmp_path):
     written = scaffold.new_driver("probe_radio", root=tmp_path)
     rel = {p.relative_to(tmp_path).as_posix() for p in written}
     assert rel == {"probe_radio/__init__.py", "probe_radio/probe_radio.py",
-                   "probe_radio/README.md", "probe_radio/lib/__init__.py", "probe_radio/lib/err.py",
+                   "probe_radio/README.md", "probe_radio/lib/__init__.py",
                    "_ext/probe_radio.py", "_native/probe_radio/probe_radio_device.hpp",
                    "_native/probe_radio/probe_radio_device.cpp", "_native/probe_radio/probe_radio_pybind.cpp"}
     for path in written:
@@ -196,17 +196,6 @@ def test_command_line(tmp_path, capsys):
 
 
 # ---------------------------------------------------------------- generated error classes
-def test_make_errors():
-    from pysdrlib.base.errors import make_errors
-    ns = {"__name__": "pysdrlib.probe.lib.err"}
-    root = make_errors(ns, "ProbeError", {"NOT_FOUND": "No unit", "BUSY": ""})
-    assert ns["ProbeError"] is root and issubclass(root, Exception)
-    assert issubclass(ns["NOT_FOUND"], root) and ns["NOT_FOUND"].__doc__ == "No unit" and ns["BUSY"].__doc__ is None
-    assert ns["BUSY"].__module__ == "pysdrlib.probe.lib.err" and ns["BUSY"].__name__ == "BUSY"
-    assert issubclass(make_errors({}, "E", ["A", "B"]), Exception)
-    with pytest.raises(ns["NOT_FOUND"]):
-        raise ns["NOT_FOUND"]("x")
-
 @pytest.mark.parametrize("name", ["hackrf", "rtl_sdr", "uhd", "extio"])
 def test_driver_errors_are_classes_of_their_base(name):
     lib_err = importlib.import_module(f"pysdrlib.{name}.lib.err")

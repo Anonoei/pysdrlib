@@ -59,7 +59,7 @@ def main():
 
         for rate in a.rates:
             section(f"both RX channels at {rate/1e6:g} MS/s for {a.seconds:g} s")
-            sdr.set_rx_sample_rate(rate, direction="rx")
+            sdr.set_rx_sample_rate(rate)
             block = int(min(1 << 18, rate * 0.05))
             with sdr.stream(block, timeout=2, meta=True, channel=(0, 1)) as s:
                 n, lost, misaligned, t0 = 0, 0, 0, time.monotonic()
@@ -75,7 +75,7 @@ def main():
 
         section("coherence: both channels on one signal")
         rate = 2e6
-        sdr.set_rx_sample_rate(rate, direction="rx")
+        sdr.set_rx_sample_rate(rate)
         sdr.start_rx(channels=(0, 1))
         if a.station:
             station = a.station

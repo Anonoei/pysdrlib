@@ -245,31 +245,6 @@ class B210(NativeDevice):
     def _get_master_clock_rate(self):
         return self.device.get_master_clock_rate()
 
-    # --- transmit --- #
-    TX_BUFFER_SECONDS = 0.25   # how much stream `write` may queue ahead of the radio before it blocks
-
-    def _start_tx(self):
-        self.device.set_tx_buffer(int(type(self).TX_BUFFER_SECONDS * self._Fs))
-        self.device.start_tx()
-    def _stop_tx(self):
-        self.device.stop_tx()
-
-    # the generic write() (Device.write) on the native transmit queues, one per channel of the stream
-    def _tx_write(self, samples, timeout, slot=0):
-        return self.device.write_tx(samples, timeout, slot) if slot else self.device.write_tx(samples, timeout)
-    def _tx_check(self):
-        tx_error = self.device.tx_error()
-        if tx_error:
-            raise err.StreamStalled(f"{type(self).NAME} stopped transmitting: {tx_error}")
-    def _tx_stats(self, slot=0):
-        return self.device.tx_stats(slot) if slot else self.device.tx_stats()
-
-    @property
-    def tx_stats(self):
-        """{"written", "sent", "underruns", "pending", "async_errors"} samples counted since start_tx (underruns: samples of
-        silence sent because `write` was not keeping up), for the first transmit channel; `get_tx_stats(channel)` for others"""
-        return self._tx_stats(0)
-
     # --- sensors and time --- #
     def sensors(self, channel=0):
         """{name: value} of the motherboard's and a channel's frontend sensors (ref_locked, lo_locked, temp, rssi...),

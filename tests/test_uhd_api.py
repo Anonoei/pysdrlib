@@ -161,7 +161,7 @@ class TestTransmit:
 
     def test_write_hands_over_complex64_whatever_it_was_given(self, sdr):
         got = []
-        sdr.device._returns["write_tx"] = lambda x, timeout: got.append(x) or len(x)
+        sdr.device._returns["write_tx"] = lambda x, timeout, slot=0: got.append(x) or len(x)
         sdr.device._returns["tx_error"] = lambda: ""
         sdr.start_tx()
         assert sdr.write(np.ones(8, np.complex128)) == 8
@@ -169,13 +169,13 @@ class TestTransmit:
 
     def test_write_keeps_going_until_everything_is_queued(self, sdr):
         sizes = []
-        sdr.device._returns["write_tx"] = lambda x, timeout: sizes.append(len(x)) or min(len(x), 3)
+        sdr.device._returns["write_tx"] = lambda x, timeout, slot=0: sizes.append(len(x)) or min(len(x), 3)
         sdr.device._returns["tx_error"] = lambda: ""
         sdr.start_tx()
         assert sdr.write(np.zeros(8, np.complex64)) == 8 and sizes == [8, 5, 2]
 
     def test_write_reports_a_dead_transmitter(self, sdr):
-        sdr.device._returns["write_tx"] = lambda x, timeout: 0
+        sdr.device._returns["write_tx"] = lambda x, timeout, slot=0: 0
         sdr.device._returns["tx_error"] = lambda: "LIBUSB_ERROR_IO"
         sdr.start_tx()
         with pytest.raises(err.StreamStalled):

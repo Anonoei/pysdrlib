@@ -7,7 +7,6 @@
 #include <vector>
 
 #include "hackrf.h"
-#include "hardware_tx.hpp"
 #include "hardware_wrapper.hpp"
 
 // libhackrf crashes if used before hackrf_init(). These track init state so every
@@ -40,13 +39,10 @@ public:
 
     // Transmit: complex64 in; the libhackrf transmit callback encodes to int8 without the GIL.
     // Half-duplex: start_tx() refuses while receiving and start_rx() while transmitting.
-    void set_tx_buffer(size_t samples) { tx_.configure(samples); }
-    size_t write_tx(const hw::cfloat* src, size_t n, double timeout) { return tx_.write(src, n, timeout); }
-    void start_tx();
-    void stop_tx();
-    bool is_transmitting() const { return tx_active_.load(); }
-    hw::TxQueue::Stats tx_stats() const { return tx_.stats(); }
-    std::string tx_error() const;   // non-empty if the transmit stream died under us
+    void start_tx() override;
+    void stop_tx() override;
+    bool is_transmitting() const override { return tx_active_.load(); }
+    std::string tx_error() const override;
 
     // Tuning
     void set_freq(uint64_t freq_hz);
@@ -81,7 +77,6 @@ private:
     static int rx_trampoline(hackrf_transfer* transfer);
     static int tx_trampoline(hackrf_transfer* transfer);
 
-    hw::TxQueue tx_;
     std::atomic<bool> tx_active_{false};
     std::vector<hw::cfloat> tx_scratch_;   // complex64 staging for one USB transfer
 };

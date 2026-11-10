@@ -8,51 +8,24 @@
 
 namespace py = pybind11;
 
-namespace {
-
-struct Errors {
-    static constexpr const char* module = "pysdrlib.hackrf.lib.err";
-    static const char* class_for(int code) {
-        switch (code) {
-            case HACKRF_ERROR_INVALID_PARAM:        return "INVALID_PARAM";
-            case HACKRF_ERROR_NOT_FOUND:            return "NOT_FOUND";
-            case HACKRF_ERROR_BUSY:                 return "BUSY";
-            case HACKRF_ERROR_NO_MEM:               return "NO_MEM";
-            case HACKRF_ERROR_LIBUSB:               return "LIBUSB";
-            case HACKRF_ERROR_THREAD:               return "THREAD";
-            case HACKRF_ERROR_STREAMING_THREAD_ERR: return "STREAMING_THREAD_ERR";
-            case HACKRF_ERROR_STREAMING_STOPPED:    return "STREAMING_STOPPED";
-            case HACKRF_ERROR_STREAMING_EXIT_CALLED:return "STREAMING_EXIT_CALLED";
-            case HACKRF_ERROR_USB_API_VERSION:      return "USB_API_VERSION";
-            case HACKRF_ERROR_NOT_LAST_DEVICE:      return "NOT_LAST_DEVICE";
-            default:                                return "OTHER";
-        }
-    }
-};
-
-}  // namespace
-
 PYBIND11_MODULE(_hackrf, m) {
     m.doc() = "HackRF bindings (pybind11)";
 
-    // libhackrf errors -> the pysdrlib.hackrf.lib.err hierarchy
-    hw::register_errors<Errors>();
-
-    py::enum_<hackrf_error>(m, "ERR")
-        .value("SUCCESS", HACKRF_SUCCESS)
-        .value("TRUE", HACKRF_TRUE)
-        .value("INVALID_PARAM", HACKRF_ERROR_INVALID_PARAM)
-        .value("NOT_FOUND", HACKRF_ERROR_NOT_FOUND)
-        .value("BUSY", HACKRF_ERROR_BUSY)
-        .value("NO_MEM", HACKRF_ERROR_NO_MEM)
-        .value("LIBUSB", HACKRF_ERROR_LIBUSB)
-        .value("THREAD", HACKRF_ERROR_THREAD)
-        .value("STREAMING_THREAD_ERR", HACKRF_ERROR_STREAMING_THREAD_ERR)
-        .value("STREAMING_STOPPED", HACKRF_ERROR_STREAMING_STOPPED)
-        .value("STREAMING_EXIT_CALLED", HACKRF_ERROR_STREAMING_EXIT_CALLED)
-        .value("USB_API_VERSION", HACKRF_ERROR_USB_API_VERSION)
-        .value("NOT_LAST_DEVICE", HACKRF_ERROR_NOT_LAST_DEVICE)
-        .value("OTHER", HACKRF_ERROR_OTHER);
+    // libhackrf errors -> classes in pysdrlib.hackrf.lib.err
+    hw::register_errors(m, "HackRFError", {
+        {HACKRF_ERROR_INVALID_PARAM, "INVALID_PARAM", ""},
+        {HACKRF_ERROR_NOT_FOUND, "NOT_FOUND", ""},
+        {HACKRF_ERROR_BUSY, "BUSY", ""},
+        {HACKRF_ERROR_NO_MEM, "NO_MEM", ""},
+        {HACKRF_ERROR_LIBUSB, "LIBUSB", ""},
+        {HACKRF_ERROR_THREAD, "THREAD", ""},
+        {HACKRF_ERROR_STREAMING_THREAD_ERR, "STREAMING_THREAD_ERR", ""},
+        {HACKRF_ERROR_STREAMING_STOPPED, "STREAMING_STOPPED", ""},
+        {HACKRF_ERROR_STREAMING_EXIT_CALLED, "STREAMING_EXIT_CALLED", ""},
+        {HACKRF_ERROR_USB_API_VERSION, "USB_API_VERSION", ""},
+        {HACKRF_ERROR_NOT_LAST_DEVICE, "NOT_LAST_DEVICE", ""},
+        {HACKRF_ERROR_OTHER, "OTHER", ""},
+    });
 
     py::enum_<rf_path_filter>(m, "RF_PATH_FILTER")
         .value("BYPASS", RF_PATH_FILTER_BYPASS)
@@ -73,7 +46,8 @@ PYBIND11_MODULE(_hackrf, m) {
         .def_property_readonly("usb_board_ids", &HackRFDeviceList::usb_board_ids);
 
     // ---- device ---- //
-    hw::bind_device<HackRFDevice>(m, "device")
+    auto device = hw::bind_device<HackRFDevice>(m, "device");
+    device
         // tuning
         .def("set_freq", &HackRFDevice::set_freq)
         .def("set_sample_rate", &HackRFDevice::set_sample_rate)
@@ -93,36 +67,12 @@ PYBIND11_MODULE(_hackrf, m) {
         .def("set_txvga_gain", &HackRFDevice::set_txvga_gain)
         .def("set_antenna_enable", &HackRFDevice::set_antenna_enable)
 
-        // transmit: complex64 in, the libhackrf transmit callback encodes it to int8
-        .def("set_tx_buffer", &HackRFDevice::set_tx_buffer, py::arg("samples"))
-        .def("start_tx", &HackRFDevice::start_tx, py::call_guard<py::gil_scoped_release>())
-        .def("stop_tx", &HackRFDevice::stop_tx, py::call_guard<py::gil_scoped_release>())
-        .def("is_transmitting", &HackRFDevice::is_transmitting)
-        .def("write_tx", [](HackRFDevice& d, py::array_t<hw::cfloat, py::array::c_style | py::array::forcecast> samples,
-                            double timeout) {
-            py::buffer_info info = samples.request();
-            const size_t n = static_cast<size_t>(info.size);
-            const hw::cfloat* src = static_cast<const hw::cfloat*>(info.ptr);
-            py::gil_scoped_release release;
-            return d.write_tx(src, n, timeout);
-        }, py::arg("samples"), py::arg("timeout") = -1.0,
-           "Queue complex64 samples, waiting up to `timeout` seconds (negative: no limit) for room; returns how many were queued.")
-        .def("tx_stats", [](HackRFDevice& d) {
-            const auto s = d.tx_stats();
-            py::dict out;
-            out["written"] = s.written;
-            out["sent"] = s.sent;
-            out["underruns"] = s.underruns;
-            out["pending"] = s.pending;
-            return out;
-        })
-        .def("tx_error", &HackRFDevice::tx_error)
-
         // queries
         .def("board_id_read", &HackRFDevice::board_id_read)
         .def("version_string_read", &HackRFDevice::version_string_read)
         .def("usb_api_version_read", &HackRFDevice::usb_api_version_read)
         .def("board_partid_serialno_read", &HackRFDevice::board_partid_serialno_read);
+    hw::bind_tx(device);   // transmit: complex64 in, the libhackrf transmit callback encodes it to int8
 
     // ---- module functions ---- //
     m.def("init", &hackrf_init_checked);   // idempotent; also done on demand

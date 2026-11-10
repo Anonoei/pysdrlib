@@ -8,27 +8,15 @@
 
 namespace py = pybind11;
 
-namespace {
-
-struct Errors {
-    static constexpr const char* module = "pysdrlib.extio.lib.err";
-    static const char* class_for(int code) {
-        switch (code) {
-            case EXTIO_ERROR_INVALID_PARAM: return "INVALID_PARAM";
-            case EXTIO_ERROR_NOT_FOUND:     return "NOT_FOUND";
-            case EXTIO_ERROR_NOT_OPEN:      return "NOT_OPEN";
-            default:                        return "ExtIOError";
-        }
-    }
-};
-
-}  // namespace
-
 PYBIND11_MODULE(_extio, m) {
     m.doc() = "RX888 (ExtIO_sddc) bindings (pybind11)";
 
     // Driver errors -> the pysdrlib.extio.lib.err hierarchy
-    hw::register_errors<Errors>();
+    hw::register_errors(m, "ExtIOError", {
+        {EXTIO_ERROR_INVALID_PARAM, "INVALID_PARAM", ""},
+        {EXTIO_ERROR_NOT_FOUND, "NOT_FOUND", ""},
+        {EXTIO_ERROR_NOT_OPEN, "NOT_OPEN", ""},
+    });
 
     hw::bind_device<ExtIODevice>(m, "device")
         // tuning

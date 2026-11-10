@@ -9,48 +9,38 @@
 
 namespace py = pybind11;
 
-namespace {
-
-struct Errors {
-    static constexpr const char* module = "pysdrlib.uhd.lib.err";
-    static const char* class_for(int code) {
-        switch (code) {
-            case 1:    return "INVALID_DEVICE";
-            case 10:   return "INDEX";
-            case 11:   return "KEY";
-            case 20:   return "NOT_IMPLEMENTED";
-            case 21:   return "USB";
-            case 30:   return "IO";
-            case 31:   return "OS";
-            case 40:   return "ASSERTION";
-            case 41:   return "LOOKUP";
-            case 42:   return "TYPE";
-            case 43:   return "VALUE";
-            case 44:   return "RUNTIME";
-            case 45:   return "ENVIRONMENT";
-            case 46:   return "SYSTEM";
-            case USHIM_RX_TIMEOUT:  return "TIMEOUT";
-            case USHIM_RX_OVERFLOW: return "OVERFLOW";
-            case UHD_PY_NOT_FOUND:  return "NOT_FOUND";
-            case UHD_PY_NOT_OPEN:   return "NOT_OPEN";
-            case UHD_PY_INVALID:    return "VALUE";
-            default:   return "OTHER";
-        }
-    }
-};
-
-}  // namespace
-
 PYBIND11_MODULE(_uhd, m) {
     m.doc() = "UHD (USRP) bindings (pybind11)";
 
-    hw::register_errors<Errors>();
+    hw::register_errors(m, "UHDError", {
+        {1, "INVALID_DEVICE", ""},
+        {10, "INDEX", ""},
+        {11, "KEY", ""},
+        {20, "NOT_IMPLEMENTED", ""},
+        {21, "USB", ""},
+        {30, "IO", ""},
+        {31, "OS", ""},
+        {40, "ASSERTION", ""},
+        {41, "LOOKUP", ""},
+        {42, "TYPE", ""},
+        {43, "VALUE", ""},
+        {44, "RUNTIME", ""},
+        {45, "ENVIRONMENT", ""},
+        {46, "SYSTEM", ""},
+        {USHIM_RX_TIMEOUT, "TIMEOUT", ""},
+        {USHIM_RX_OVERFLOW, "OVERFLOW", ""},
+        {UHD_PY_NOT_FOUND, "NOT_FOUND", "No USRP matched (none attached, or it could not be found at the address)"},
+        {UHD_PY_NOT_OPEN, "NOT_OPEN", ""},
+        {UHD_PY_INVALID, "VALUE", ""},
+        {-1, "OTHER", ""},
+    });
 
     py::enum_<Dir>(m, "DIR").value("RX", Dir::RX).value("TX", Dir::TX);
 
     const auto nogil = py::call_guard<py::gil_scoped_release>();
 
-    hw::bind_device<UHDDevice>(m, "device")
+    auto device = hw::bind_device<UHDDevice>(m, "device");
+    device
         // device-wide (channel 0, both directions): what the generic API uses
         .def("set_freq", [](UHDDevice& d, double v) { d.set_freq(Dir::RX, v, 0); d.set_freq(Dir::TX, v, 0); }, py::arg("freq"), nogil)
         .def("set_sample_rate", [](UHDDevice& d, double v) { d.set_rate(Dir::RX, v, 0); d.set_rate(Dir::TX, v, 0); },
@@ -118,34 +108,9 @@ PYBIND11_MODULE(_uhd, m) {
         // stream health
         .def("rx_overflows", &UHDDevice::rx_overflows)
         .def("rx_lost", &UHDDevice::rx_lost)
-        .def("rx_error", &UHDDevice::rx_error)
+        .def("rx_error", &UHDDevice::rx_error);
+    hw::bind_tx(device);   // transmit: complex64 in, the transmit thread encodes it
 
-        // transmit: complex64 in, the transmit thread encodes it
-        .def("set_tx_buffer", &UHDDevice::set_tx_buffer, py::arg("samples"))
-        .def("start_tx", &UHDDevice::start_tx, nogil)
-        .def("stop_tx", &UHDDevice::stop_tx, nogil)
-        .def("is_transmitting", &UHDDevice::is_transmitting)
-        .def("write_tx", [](UHDDevice& d, py::array_t<hw::cfloat, py::array::c_style | py::array::forcecast> samples, double timeout,
-                            size_t slot) {
-            py::buffer_info info = samples.request();
-            const size_t n = static_cast<size_t>(info.size);
-            const hw::cfloat* src = static_cast<const hw::cfloat*>(info.ptr);
-            py::gil_scoped_release release;
-            return d.write_tx(src, n, timeout, slot);
-        }, py::arg("samples"), py::arg("timeout") = -1.0, py::arg("slot") = 0,
-           "Queue complex64 samples for the `slot`-th transmit channel, waiting up to `timeout` seconds (negative: no "
-           "limit) for room; returns how many were queued.")
-        .def("tx_stats", [](UHDDevice& d, size_t slot) {
-            const auto s = d.tx_stats(slot);
-            py::dict out;
-            out["written"] = s.written;
-            out["sent"] = s.sent;
-            out["underruns"] = s.underruns;
-            out["pending"] = s.pending;
-            out["async_errors"] = d.tx_async_errors();
-            return out;
-        }, py::arg("slot") = 0)
-        .def("tx_error", &UHDDevice::tx_error);
 
     // ---- module functions ---- //
     m.def("init", [] {});   // nothing to initialise: UHD needs no global setup (kept so devices call init() like the others)

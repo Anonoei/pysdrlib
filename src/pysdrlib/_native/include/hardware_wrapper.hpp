@@ -12,6 +12,7 @@
 
 #include "hardware_format.hpp"
 #include "hardware_rx.hpp"
+#include "hardware_tx.hpp"
 
 // Error carrying the vendor library's numeric error code.
 class HardwareError : public std::runtime_error {
@@ -75,6 +76,19 @@ public:
     virtual void stop_rx() = 0;
     virtual bool is_streaming() const = 0;
 
+    // Transmit (a transmitter overrides start_tx/stop_tx/is_transmitting/tx_error; see hw::bind_tx). Python writes
+    // complex64 into a queue per channel slot; the driver's transmit thread or callback reads it and encodes to the
+    // hardware's format without the GIL. Several channels go out sample for sample together (slot k: the k-th channel).
+    static constexpr size_t MAX_TX_SLOTS = 4;
+    void set_tx_buffer(size_t samples) { for (auto& q : tx_) q.configure(samples); }
+    size_t write_tx(const hw::cfloat* src, size_t n, double timeout, size_t slot = 0) { return tx_.at(slot).write(src, n, timeout); }
+    hw::TxQueue::Stats tx_stats(size_t slot = 0) const { return tx_.at(slot).stats(); }
+    virtual void start_tx() { throw std::logic_error("this device cannot transmit"); }
+    virtual void stop_tx() {}
+    virtual bool is_transmitting() const { return false; }
+    virtual std::string tx_error() const { return ""; }              // non-empty if the transmit stream died under us
+    virtual uint64_t tx_async_errors() const { return 0; }           // transmit problems the hardware reported
+
     // What a driver's streaming thread calls with each buffer: hands it to the callback if there is one,
     // else queues it (see set_rx_buffer), else returns -1 (stop streaming). Public so tests can drive the
     // real path without hardware.
@@ -99,5 +113,6 @@ protected:
     // Only safe to drop once no streaming thread can call it, i.e. after the driver has stopped
     RxCallbackFn rx_callback_;
     mutable std::array<hw::RxPipeline, MAX_RX_SLOTS> rx_;
+    std::array<hw::TxQueue, MAX_TX_SLOTS> tx_;
     size_t rx_slots_ = 1;
 };

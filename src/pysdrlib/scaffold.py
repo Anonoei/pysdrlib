@@ -162,20 +162,8 @@ class @CLASS@(_Device):
         raise err.NotSupported(f"{type(self).NAME} has no bias tee")
 '''
 
-LIB_INIT = '''from . import err
-from . import _@NAME@ as @NAME@
-'''
-
-LIB_ERR = '''from ...base.errors import make_errors
-
-# One class per error code the extension raises (_native/@NAME@/@NAME@_pybind.cpp maps the codes to these names)
-make_errors(globals(), "@CLASS@Error", {
-    "INVALID_PARAM": "",
-    "NOT_FOUND": "",
-    "NOT_OPEN": "",
-    "OPEN_FAILED": "The unit is there but could not be opened: no permission, or something else has it",
-    "BUSY": "",
-})
+LIB_INIT = '''from . import _@NAME@ as @NAME@
+from . import err   # registered by the extension (it holds the error table)
 '''
 
 EXT = '''"""Build and load helpers for the @CLASS@ extension.
@@ -235,7 +223,7 @@ HPP = '''#pragma once
 #include "@NAME@.h"   // TODO: the vendor's header
 #include "hardware_wrapper.hpp"
 
-// The vendor library's errors are its own; these are pysdrlib's, mapped to lib/err.py by the binding.
+// The vendor library's errors are its own; these are pysdrlib's, mapped to the classes of lib/err by the binding.
 enum @CLASS@ErrorCode {
     @UPPER@_ERROR_FAILED = -1001,        // a vendor call failed; the message says which
     @UPPER@_ERROR_INVALID_PARAM = -1002,
@@ -337,29 +325,17 @@ PYBIND = '''#include <pybind11/pybind11.h>
 
 namespace py = pybind11;
 
-namespace {
-
-// Error codes -> the classes in pysdrlib/@NAME@/lib/err.py
-struct Errors {
-    static constexpr const char* module = "pysdrlib.@NAME@.lib.err";
-    static const char* class_for(int code) {
-        switch (code) {
-            case @UPPER@_ERROR_INVALID_PARAM: return "INVALID_PARAM";
-            case @UPPER@_ERROR_NOT_FOUND:     return "NOT_FOUND";
-            case @UPPER@_ERROR_NOT_OPEN:      return "NOT_OPEN";
-            case @UPPER@_ERROR_OPEN_FAILED:   return "OPEN_FAILED";
-            case @UPPER@_ERROR_BUSY:          return "BUSY";
-            default:                          return "@CLASS@Error";
-        }
-    }
-};
-
-}  // namespace
-
 PYBIND11_MODULE(_@NAME@, m) {
     m.doc() = "@CLASS@ bindings (pybind11)";
 
-    hw::register_errors<Errors>();
+    // Error codes -> classes in pysdrlib.@NAME@.lib.err: the one place they are listed (name, docstring)
+    hw::register_errors(m, "@CLASS@Error", {
+        {@UPPER@_ERROR_INVALID_PARAM, "INVALID_PARAM", ""},
+        {@UPPER@_ERROR_NOT_FOUND, "NOT_FOUND", ""},
+        {@UPPER@_ERROR_NOT_OPEN, "NOT_OPEN", ""},
+        {@UPPER@_ERROR_OPEN_FAILED, "OPEN_FAILED", "The unit is there but could not be opened: no permission, or something else has it"},
+        {@UPPER@_ERROR_BUSY, "BUSY", ""},
+    });
 
     // bind_device adds what every device shares (close, start_rx, the receive queue...); add the device's own controls
     hw::bind_device<@CLASS@Device>(m, "device")
@@ -389,7 +365,6 @@ def files(name, cls, native=True):
     if native:
         out.update({
             f"{name}/lib/__init__.py": LIB_INIT,
-            f"{name}/lib/err.py": LIB_ERR,
             f"_ext/{name}.py": EXT,
             f"_native/{name}/{name}_device.hpp": HPP,
             f"_native/{name}/{name}_device.cpp": CPP,

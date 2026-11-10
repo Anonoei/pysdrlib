@@ -70,21 +70,21 @@ class TestHardware:
         assert dev.set_rx_rf_gain(1000.0) == max(steps)
 
     def test_sample_rate(self, dev):
-        assert dev.set_rx_sample_rate(config.default_rate) == config.default_rate
+        assert dev.set_sample_rate(config.default_rate) == config.default_rate
         with pytest.raises(lib_err.INVALID_PARAM):
-            dev.set_rx_sample_rate(500_000)
+            dev.set_sample_rate(500_000)
 
     def test_stream_is_uint8_pairs(self, dev):
-        dev.set_rx_freq(100_000_000)
-        dev.set_rx_sample_rate(2_400_000)
+        dev.set_freq(100_000_000)
+        dev.set_sample_rate(2_400_000)
         got = self.stream(dev)
         assert got, "no data within the capture window"
         assert all(a.dtype == np.uint8 and len(a) % 2 == 0 for a in got)
         assert not dev.is_streaming()
 
     def test_stream_runs_at_the_requested_rate(self, dev):
-        dev.set_rx_freq(100_000_000)
-        dev.set_rx_sample_rate(2_400_000)
+        dev.set_freq(100_000_000)
+        dev.set_sample_rate(2_400_000)
         start = time.perf_counter()
         got = self.stream(dev, 0.5)
         elapsed = time.perf_counter() - start
@@ -92,7 +92,7 @@ class TestHardware:
         assert 0.5 * 2.4e6 * 0.5 < samples < 1.5 * 2.4e6 * elapsed
 
     def test_restart_and_reopen(self, dev):
-        dev.set_rx_sample_rate(2_400_000)
+        dev.set_sample_rate(2_400_000)
         assert self.stream(dev, 0.2) and self.stream(dev, 0.2)
         dev.close()
         d = rtl.open()
