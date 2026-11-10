@@ -85,9 +85,16 @@ class NativeDevice(Device):
     def _rx_read(self, count, slot=0):
         x, first = self.device.read_rx_indexed(int(count), slot)
         return x, self._rx_base + first
+    def _rx_read_into(self, out, timeout, slot=0):
+        # one native call: wait, read straight into `out`, and the counters the watchdog needs
+        n, first, *counters = self.device.read_rx_into(out, float(timeout), slot)
+        if slot:   # the stream is judged by its first queue (all are fed together)
+            counters = self.device.rx_counters()
+        self._check_counters(*counters, have_samples=n > 0)
+        return n, self._rx_base + first
     def _rx_position(self, slot=0):
-        native = self.device.rx_stats(slot)
-        return self._rx_base + native["total"], native["age"]
+        _, total, _, _, age = self.device.rx_counters(slot)
+        return self._rx_base + total, None if age < 0 else age
     def _rx_flush(self, slot=0):
         return len(self.device.read_rx(None, slot))
 
@@ -126,10 +133,12 @@ class NativeDevice(Device):
             raise ValueError(f"on_drop is 'warn', 'raise', 'ignore' or a function, not {policy!r}")
 
     def _check_stream(self, have_samples):
-        native = self.device.rx_stats()
-        self._watchdog.observe(native["samples"], native["age"], native["max_chunk"])
+        self._check_counters(*self.device.rx_counters(), have_samples=have_samples)
+
+    def _check_counters(self, samples, total, dropped, max_chunk, age, have_samples):
+        """Judge the stream by the extension's counters (`rx_counters`): report drops and shortfalls, raise on a stall"""
+        self._watchdog.observe(samples, None if age < 0 else age, max_chunk)
         report = self._watchdog.poll()
-        dropped = native["dropped"]
         if dropped > self._dropped_reported:
             count, self._dropped_reported = dropped - self._dropped_reported, dropped
             self._report_drop(count, f"{type(self).NAME}: {count:,} samples dropped because they were not read "

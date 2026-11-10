@@ -28,6 +28,7 @@ from ..base.stream import RxMeta
 from . import protocol
 
 DEFAULT_TIMEOUT = 5.0
+PULL_LIMIT = 256   # blocks taken from the socket per call (its receive high-water mark)
 
 
 def _host_of(address: str):
@@ -363,9 +364,12 @@ class RemoteDevice(Device):
     # sample. They are kept per channel here; Device.read (and read(channel=(0, 1)), stream(), gaps...) reads them
     # through the receive hooks below, as it reads a local device's queues.
     def _pull(self, timeout):
-        """Take the blocks that have arrived, waiting up to `timeout` seconds for the first"""
+        """Take the blocks that have arrived, waiting up to `timeout` seconds for the first. At most as many as the
+        socket queues (RCVHWM): a server producing faster than they can be decoded must not keep this from returning"""
         wait = max(0, int(timeout * 1000))
-        while self._sub.poll(wait):
+        for _ in range(PULL_LIMIT):
+            if not self._sub.poll(wait):
+                break
             wait = 0
             _, header, payload = self._sub.recv_multipart(copy=False)
             seq, _, samples, channel, index = protocol.unpack_block_ex(header.bytes, payload.buffer)
@@ -390,7 +394,6 @@ class RemoteDevice(Device):
     def _rx_wait(self, count, timeout, slot=0):
         channel = self._rx_channels[slot]
         deadline = time.monotonic() + timeout
-        self._pull(0)
         while self._queued(channel) < count:
             left = deadline - time.monotonic()
             if left <= 0:

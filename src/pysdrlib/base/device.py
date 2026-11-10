@@ -603,6 +603,13 @@ class Device:
         x, idx = self._rx_read(ready, slot=slot)
         return x, int(idx)
 
+    def wait_available(self, timeout, channel=0, count=1):
+        """Wait up to `timeout` seconds until a channel has `count` samples queued; returns how many are queued (fewer
+        than `count`: the time ran out). For relaying a stream (the remote server) without polling; `read` is the
+        way to read one"""
+        self._ensure_open("wait_available")
+        return self._rx_wait(count, timeout, slot=self._slot(channel))
+
     def flush(self, channel=None):
         """Discard the samples waiting to be read (of every streaming channel: they stay aligned); returns how many"""
         self._ensure_open("flush")
@@ -630,9 +637,7 @@ class Device:
             if not self.state["rx"]:
                 raise err.NotStreaming(f"{type(self).NAME} isn't receiving (call start_rx(), or use stream())")
             left = None if deadline is None else deadline - time.monotonic()
-            self._rx_wait(count - got, READ_SLICE if left is None else max(0.0, min(READ_SLICE, left)), slot=slot)
-            x, idx = self._rx_read(count - got, slot=slot)
-            n = len(x)
+            n, idx = self._rx_read_into(out[got:], READ_SLICE if left is None else max(0.0, min(READ_SLICE, left)), slot)
             if n == 0:
                 if deadline is not None and time.monotonic() >= deadline:
                     raise err.Timeout(f"{type(self).NAME}: got {got} of {count} samples in {timeout}s")
@@ -645,7 +650,9 @@ class Device:
             if idx < self._rx_discard:             # ... nor are the ones still settling
                 cut = min(n, self._rx_discard - idx)
                 discarded += cut
-                x, idx, n = x[cut:], idx + cut, n - cut
+                if cut < n:
+                    out[got:got + n - cut] = out[got + cut:got + n]
+                idx, n = idx + cut, n - cut
                 expect = max(expect, idx)
                 if n == 0:
                     self._rx_next[channel] = idx
@@ -654,7 +661,6 @@ class Device:
                 gaps.append((got, idx - expect))
             if first is None:
                 first = idx
-            out[got:got + n] = x
             got += n
             self._rx_next[channel] = idx + n
         if self.dc_correction and count:
@@ -814,6 +820,13 @@ class Device:
 
     # --- receive hooks: a driver with its own queue overrides these (see NativeDevice); the defaults use get_samples.
     # `slot` is the k-th of rx_channels; the defaults serve channel 0 only
+    def _rx_read_into(self, out, timeout, slot=0):
+        """Wait up to `timeout` seconds for len(out) samples, then move up to that many into `out`:
+        (how many, index of the first). A driver with a queue of its own does this in one call (see NativeDevice)"""
+        self._rx_wait(len(out), timeout, slot=slot)
+        x, idx = self._rx_read(len(out), slot=slot)
+        out[:len(x)] = x
+        return len(x), idx
     def _rx_wait(self, count, timeout, slot=0):
         """Wait up to `timeout` seconds for `count` samples; returns how many are ready"""
         deadline = time.monotonic() + timeout

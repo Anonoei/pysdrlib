@@ -24,7 +24,10 @@ from .. import logger
 from . import protocol
 
 POLL_MS = 100
-IDLE_SLEEP = 0.002
+IDLE_SLEEP = 0.002   # a pause after an error, so a failing device is not retried in a tight loop
+BATCH_SECONDS = 0.002   # the stream is published in blocks of about this long (the latency a client sees, and no less)
+MIN_BATCH = 1024        # ... but not smaller than this many samples
+MAX_WAIT = 0.01         # a block that has not filled by then is published as it is
 
 def _parse_bind(bind: str):
     """-> (scheme, host_or_path, port or None)"""
@@ -199,9 +202,14 @@ class DeviceWorker:
         while not self._stop.is_set():
             if not self.streaming.wait(POLL_MS / 1000):
                 continue
-            sent = 0
+            failed = True
             try:
-                for ch in tuple(self.device.rx_channels):
+                channels = tuple(self.device.rx_channels)
+                # Until a block's worth has arrived (the GIL is free meanwhile): publishing each USB packet as it comes
+                # costs several times the CPU of publishing a couple of milliseconds at once
+                batch = min(protocol.MAX_BLOCK_SAMPLES, max(MIN_BATCH, int(BATCH_SECONDS * self.device.get_rx_sample_rate())))
+                self.device.wait_available(MAX_WAIT, channels[0], batch)
+                for ch in channels:
                     samples, index = self.device.read_available(ch)
                     now = time.time()
                     for i in range(0, len(samples), protocol.MAX_BLOCK_SAMPLES):
@@ -209,8 +217,8 @@ class DeviceWorker:
                             self._seq, now, samples[i:i + protocol.MAX_BLOCK_SAMPLES], self.wire, channel=ch, index=index + i)
                         self._seq += 1
                         self.rx.send_multipart([self.id.encode(), header, payload], copy=False)
-                    sent += len(samples)
                 stalled = False
+                failed = False
             except err.StreamStalled as exc:
                 if not stalled:
                     self.log.warning("%s", exc)
@@ -218,7 +226,7 @@ class DeviceWorker:
             except Exception:
                 if not self._stop.is_set() and self.streaming.is_set() and self.device.state.get("rx"):
                     self.log.exception("reading the device failed")
-            if not sent:
+            if failed:
                 time.sleep(IDLE_SLEEP)
 
     def _tx_loop(self):

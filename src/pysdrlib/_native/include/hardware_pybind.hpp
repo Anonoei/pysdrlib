@@ -188,6 +188,30 @@ py::class_<Device> bind_device(py::module_& m, const char* name) {
             }
             return py::make_tuple(out, first);
         }, py::arg("count"), py::arg("slot") = 0)
+        .def("read_rx_into", [](Device& d, py::array_t<cfloat, py::array::c_style> out, double timeout, size_t slot) {
+            // The whole of a read in one call, GIL released: wait up to `timeout` seconds for len(out) samples (or all the
+            // queue holds), move up to that many into `out` (no copy in between; a read never spans a gap), and read the
+            // counters. Returns (count, index of the first sample, then rx_counters()'s five).
+            py::buffer_info info = out.request(true);
+            const size_t want = static_cast<size_t>(info.size);
+            cfloat* dst = static_cast<cfloat*>(info.ptr);
+            size_t got = 0;
+            uint64_t first = 0;
+            RingStats s;
+            {
+                py::gil_scoped_release release;
+                d.wait_rx(want, timeout, slot);
+                got = d.read_rx(dst, want, &first, slot);
+                s = d.rx_stats(slot);
+            }
+            return py::make_tuple(got, first, s.samples, s.total, s.dropped, s.max_chunk, s.seen ? s.age : -1.0);
+        }, py::arg("out"), py::arg("timeout"), py::arg("slot") = 0)
+        .def("rx_counters", [](const Device& d, size_t slot) {
+            // (samples, total, dropped, max_chunk, age): what the stream watchdog needs, without rx_stats()'s dict.
+            // age is -1 until something has been delivered.
+            RingStats s = d.rx_stats(slot);
+            return py::make_tuple(s.samples, s.total, s.dropped, s.max_chunk, s.seen ? s.age : -1.0);
+        }, py::arg("slot") = 0)
         .def("wait_rx", [](Device& d, size_t samples, double timeout, size_t slot) {
             py::gil_scoped_release release;
             return d.wait_rx(samples, timeout, slot);

@@ -142,6 +142,17 @@ class FakeDevice:
     def wait_rx(self, samples, timeout, slot=0):
         return self._rings[slot].wait(samples, timeout)
 
+    def read_rx_into(self, out, timeout, slot=0):
+        ring = self._rings[slot]
+        ring.wait(len(out), timeout)
+        x, first = ring.read_indexed(len(out))
+        out[:len(x)] = x
+        return (len(x), first, *self.rx_counters(slot))
+
+    def rx_counters(self, slot=0):
+        s = self.rx_stats(slot)
+        return (s["samples"], s["total"], s["dropped"], s["max_chunk"], -1.0 if s["age"] is None else s["age"])
+
     def rx_stats(self, slot=0):
         ring = self._rings[slot]
         return {"samples": self._samples, "total": ring.total, "dropped": ring.dropped, "pending": ring.available,

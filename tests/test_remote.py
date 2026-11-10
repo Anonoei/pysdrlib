@@ -581,3 +581,23 @@ def test_blocks_carry_the_channel_and_index_and_older_ones_still_read():
     old = protocol.HEADER_V2.pack(2, 2, 32, 32, 0, 0, 3, 0.0, 4)   # a version 2 server's block
     seq, _, x, channel, index = protocol.unpack_block_ex(old, payload)
     assert (seq, channel, index, len(x)) == (3, 0, None, 4)
+
+
+class TestOverload:
+    def test_a_server_faster_than_the_client_can_decode_does_not_stall_it(self, tmp_path):
+        """A device flooding the server (not paced to real time) in the device's own wire layout, which costs the
+        client a conversion per block: reads still return (with the lost blocks counted), instead of the client
+        pulling blocks for as long as the server produces them"""
+        with Server(f"ipc://{tmp_path}/c2", devices=["sim"], lease=0, wire="native") as server:
+            dev = pysdrlib.device("remote", server.endpoint, "sim", init_kwargs={"realtime": False})
+            dev.open()
+            try:
+                dev.initialize(cf=100e6, Fs=60e6)
+                dev.start_rx()
+                t0 = time.monotonic()
+                for _ in range(5):
+                    x, m = dev.read(65536, timeout=2, meta=True)
+                    assert len(x) == 65536
+                assert time.monotonic() - t0 < 2.0
+            finally:
+                dev.close()
