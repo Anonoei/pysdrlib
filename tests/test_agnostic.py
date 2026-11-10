@@ -66,7 +66,7 @@ class Odd(Device):
     def _start_rx(self): pass
     def _stop_rx(self): pass
     def _get_samples(self): return np.zeros(0, np.complex64)
-    def _set_rx_gain(self, gain):
+    def _set_rx_gain(self, gain, channel=0):
         self.calls.append(("total", gain))
         return gain
 
@@ -133,9 +133,9 @@ class TestGenericDevice:
 
     def test_generic_total_uses_overall_limits(self, odd):
         with pytest.warns(Warning):
-            odd.set_rx_gain(99)
+            odd.set_rx_gain_db(99)
         assert odd.calls[-1] == ("total", 40)
-        odd.set_rx_gain()
+        odd.set_rx_gain_db()
         assert odd.calls[-1] == ("total", "default")
 
     def test_receive_only_initialize(self, odd):

@@ -194,11 +194,12 @@ class TestRealtime:
 
 class TestGain:
     def test_generic_gain_splits_across_stages(self, sim):
-        assert sim.set_rx_gain(60) == {"if": 40, "bb": 20}
+        assert sim.set_rx_gain_db(60) == 60 and sim.get_rx_gains_db() == {"IF": 40, "BB": 20}   # the total back; the stages by name
         assert sim._gain == {"if": 40, "bb": 20}
 
     def test_generic_default(self, sim):
-        assert sim.set_rx_gain() == {"if": ConfigSim.stage("rx", "IF").default, "bb": ConfigSim.stage("rx", "BB").default}
+        want = {"IF": ConfigSim.stage("rx", "IF").default, "BB": ConfigSim.stage("rx", "BB").default}
+        assert sim.set_rx_gain_db() == sum(want.values()) and sim.get_rx_gains_db() == want
 
     def test_device_specific_stages(self, sim):
         assert sim.set_rx_if_gain(12) == 12

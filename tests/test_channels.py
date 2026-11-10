@@ -73,25 +73,25 @@ class TestTuning:
 
 class TestPerChannelControls:
     def test_gain(self, b210):
-        assert b210.set_gain(20, channel=1) == 20
+        assert b210.set_rx_gain_db(20, channel=1) == 20
         assert calls(b210, "set_rx_gain")[-1] == (20.0, 1)
-        assert b210.get_gain(channel=1) == 20 and b210.get_gain(channel=0) != 20
-        b210.set_gain_relative(1.0, channel=1, direction="tx")
+        assert b210.get_rx_gain_db(channel=1) == 20 and b210.get_rx_gain_db(channel=0) != 20
+        b210.set_tx_gain(1.0, channel=1)
         assert calls(b210, "set_tx_gain")[-1] == (89.75, 1)
 
     def test_bandwidth_antenna_agc_settings(self, b210):
-        b210.set_bandwidth(1e6, channel=1)
-        b210.set_antenna("TX/RX", channel=1)
-        b210.set_gain_mode("auto", channel=1)
+        b210.set_rx_bandwidth(1e6, channel=1)
+        b210.set_rx_antenna("TX/RX", channel=1)
+        b210.set_rx_gain_mode("auto", channel=1)
         b210.set_setting("dc_offset_auto", False, channel=1)
-        assert calls(b210, "set_rx_bandwidth")[-1] == (1e6, 1) and b210.get_bandwidth(channel=1) == 1e6
-        assert calls(b210, "set_rx_antenna")[-1] == ("TX/RX", 1) and b210.get_antenna(channel=1) == "TX/RX"
-        assert calls(b210, "set_rx_agc")[-1] == (True, 1) and b210.get_gain_mode(channel=1) == "auto"
+        assert calls(b210, "set_rx_bandwidth")[-1] == (1e6, 1) and b210.get_rx_bandwidth(channel=1) == 1e6
+        assert calls(b210, "set_rx_antenna")[-1] == ("TX/RX", 1) and b210.get_rx_antenna(channel=1) == "TX/RX"
+        assert calls(b210, "set_rx_agc")[-1] == (True, 1) and b210.get_rx_gain_mode(channel=1) == "auto"
         assert calls(b210, "set_rx_dc_offset")[-1] == (False, 1) and b210.get_setting("dc_offset_auto", channel=1) is False
-        assert b210.get_antenna(channel=0) is None and b210.get_gain_mode(channel=0) == "manual"
+        assert b210.get_rx_antenna(channel=0) is None and b210.get_rx_gain_mode(channel=0) == "manual"
 
     def test_no_third_channel(self, b210):
-        for call in (lambda: b210.set_gain(10, channel=2), lambda: b210.set_rx_freq(1e9, channel=2),
+        for call in (lambda: b210.set_rx_gain_db(10, channel=2), lambda: b210.set_rx_freq(1e9, channel=2),
                      lambda: b210.start_rx(channels=(0, 2))):
             with pytest.raises(err.InvalidValue):
                 call()
@@ -105,7 +105,7 @@ class TestPerChannelControls:
         with pytest.raises(err.InvalidValue):
             d.start_rx(channels=(0, 1))
         with pytest.raises(err.InvalidValue):
-            d.set_gain(10, channel=1)
+            d.set_rx_gain_db(10, channel=1)
 
 class TestStreams:
     def test_both_channels_together(self, b210, spec=BY_NAME["uhd"]):

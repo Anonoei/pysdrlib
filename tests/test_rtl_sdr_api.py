@@ -57,8 +57,8 @@ class TestGain:
         assert calls(sdr, "set_rx_rf_gain")[-1] == (float(config.stage("rx", "RF").max),)
 
     def test_total_gain_is_the_tuner_gain(self, sdr):
-        assert sdr.set_rx_gain() == {"rf": config.stage("rx", "RF").default}
-        assert sdr.set_rx_gain(40) == {"rf": 40}
+        assert sdr.set_rx_gain_db() == config.stage("rx", "RF").default and sdr.get_rx_gains_db() == {"RF": config.stage("rx", "RF").default}
+        assert sdr.set_rx_gain_db(40) == 40 and sdr.get_rx_gains_db() == {"RF": 40}
         assert calls(sdr, "set_rx_rf_gain")[-1] == (40.0,)
 
     def test_agc(self, sdr):

@@ -25,7 +25,7 @@ def main():
     ap.add_argument("--rates", type=float, nargs="+", help="sample rates to test (default: low, middle, high of caps.rates)")
     ap.add_argument("--trials", type=int, default=25, help="retunes per rate")
     ap.add_argument("--away", type=float, default=5e6, help="tune this far from the signal first [Hz]")
-    ap.add_argument("--gain", type=float, default=0.55, help="relative gain (0-1, set_gain_relative)")
+    ap.add_argument("--gain", type=float, default=0.55, help="relative gain (0-1, set_rx_gain)")
     ap.add_argument("--seed", type=int, default=1)
     a = ap.parse_args()
     random.seed(a.seed)
@@ -37,7 +37,7 @@ def main():
     sdr.on_drop = "ignore"
     try:
         sdr.initialize(cf=a.station or a.band[0], Fs=rates[0])
-        sdr.set_gain_relative(a.gain)
+        sdr.set_rx_gain(a.gain)
         print(f"{caps.driver}: gain {describe_gain(sdr)}; skip now {caps.retune_samples} samples + {caps.retune_settle} s")
         sdr.start_rx()
         if a.station:
@@ -51,7 +51,7 @@ def main():
         for Fs in rates:
             sdr.set_rx_sample_rate(Fs)
             if caps.bandwidths["rx"]:
-                sdr.set_bandwidth(min(Fs, 2e6))
+                sdr.set_rx_bandwidth(min(Fs, 2e6))
             win = max(64, int(Fs / 1e4))    # 0.1 ms
             sdr.start_rx()
             levels = []

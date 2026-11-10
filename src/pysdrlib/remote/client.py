@@ -27,6 +27,7 @@ from ..base import caps as _caps
 from ..base import convert
 from ..base.device import Device
 from ..base.stream import RxMeta
+from ..base.watchdog import StreamStats
 from . import protocol
 from . import shm
 
@@ -153,6 +154,7 @@ class RemoteDevice(Device):
             raise ValueError(f"transport is 'auto', 'zmq' or 'shm', not {transport!r}")
         self.transport = transport
         self._endpoints = None      # the sockets the server handed out (kept for a later claim)
+        self._lost = {}             # channel -> samples lost between the server and here since start_rx
         self._rx_lock = threading.RLock()   # guards the receive state below (see `_rx_synced`)
         self._shm_mode = False      # samples come from shared memory (see `_subscribe`)
         self._rings = {}            # channel -> shm.ShmReader of the stream's ring
@@ -461,6 +463,8 @@ class RemoteDevice(Device):
             self._last_seq = seq
             if index is None:   # an older server: count them here
                 index = self._rx_last.get(channel, 0)
+            if index > self._rx_last.get(channel, index):   # blocks the socket dropped on the way
+                self._lost[channel] = self._lost.get(channel, 0) + index - self._rx_last[channel]
             self._bufs.setdefault(channel, collections.deque()).append([index, samples])
             self._rx_last[channel] = index + len(samples)
             self._rx_time = time.monotonic()
@@ -496,6 +500,7 @@ class RemoteDevice(Device):
             self._pull(0)
         self._bufs.clear()
         self._rx_last.clear()
+        self._lost.clear()
         self._close_rings()   # the old stream's; the new one has rings of its own
         self._from_start = self.is_controller
 
@@ -522,6 +527,7 @@ class RemoteDevice(Device):
                 pos = self._pos[channel]
                 n, first = reader.read(out, pos)
                 if n or first > pos:   # data, or the reader was lapped or in a gap: go on from there
+                    self._lost[channel] = self._lost.get(channel, 0) + first - pos
                     self._pos[channel] = first + n
                     if n:
                         return n, first
@@ -569,6 +575,17 @@ class RemoteDevice(Device):
             return skipped
         blocks = self._bufs.pop(self._rx_channels[slot], ())
         return sum(len(x) for _, x in blocks)
+
+    @property
+    def stats(self) -> StreamStats:
+        """What this client has received of the first channel since `start_rx`: `samples`, `dropped` (lost between the
+        server and here: blocks the socket dropped, or samples a slow reader was lapped for in shared memory) and `age` (since
+        the server last wrote). `missing` and `stalls` are counted by the server's own device, not here"""
+        channel = self._rx_channels[0]
+        age = None if self._rx_time is None else time.monotonic() - self._rx_time
+        seen = self._pos.get(channel, 0) if self._shm_mode else self._rx_last.get(channel, 0)
+        lost = self._lost.get(channel, 0)
+        return StreamStats(max(0, seen - lost), lost, 0, 0, age)
 
     @_rx_synced
     def get_samples(self, timeout=0.0) -> np.ndarray:
@@ -639,10 +656,13 @@ def _forwarder(name):
 
 # Everything Device implements locally (against CAPS a remote device doesn't have) runs on the server instead
 for _name in ("initialize", "start_rx", "stop_rx", "start_tx", "stop_tx", "set_rx_sample_rate", "set_tx_sample_rate",
-              "set_rx_freq", "set_tx_freq", "set_rx_gain", "set_tx_gain", "set_bias_t"):
+              "set_rx_freq", "set_tx_freq", "set_rx_gain", "set_tx_gain", "set_rx_gain_db", "set_tx_gain_db", "set_bias_t"):
     setattr(RemoteDevice, _name, _forwarder(_name))
-for _name in ("set_gain", "set_gain_relative", "get_gain_relative", "set_gain_mode", "set_bandwidth", "set_antenna", "set_clock_source", "set_freq_correction",
-              "get_gain", "get_gain_mode", "get_bandwidth", "get_antenna", "get_clock_source", "get_setting",
+for _name in ("set_rx_gain_mode", "set_tx_gain_mode", "set_rx_bandwidth", "set_tx_bandwidth", "set_rx_antenna", "set_tx_antenna",
+              "set_clock_source", "set_freq_correction",
+              "get_rx_gain", "get_tx_gain", "get_rx_gain_db", "get_tx_gain_db", "get_rx_gains_db", "get_tx_gains_db",
+              "get_rx_gain_mode", "get_tx_gain_mode", "get_rx_bandwidth", "get_tx_bandwidth", "get_rx_antenna", "get_tx_antenna",
+              "get_clock_source", "get_setting",
               "get_freq_correction"):
     setattr(RemoteDevice, _name, _forwarder(_name))
 for _name in ("get_rx_sample_rate", "get_tx_sample_rate", "get_rx_freq", "get_tx_freq"):

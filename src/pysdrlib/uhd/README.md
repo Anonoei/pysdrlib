@@ -5,7 +5,7 @@ Ettus USRP B2xx (B200/B210) through UHD's C API.
 ```python
 import pysdrlib
 sdr = pysdrlib.open("uhd")                 # or pysdrlib.find("uhd")[0].open()
-sdr.set_rx_freq(915e6); sdr.set_rx_sample_rate(10e6); sdr.set_rx_gain(40)
+sdr.set_rx_freq(915e6); sdr.set_rx_sample_rate(10e6); sdr.set_rx_gain_db(40)
 sdr.start_rx(); x = sdr.read(1_000_000)    # complex64
 
 sdr.start_tx(); sdr.write(tone)            # complex64, full scale is +-1; sdr.tx_stats
@@ -16,7 +16,7 @@ sdr.start_tx(); sdr.write(tone)            # complex64, full scale is +-1; sdr.t
 | Frequency | 50 MHz - 6 GHz |
 | Sample rate | 200 kS/s - 61.44 MS/s (about 32 MS/s sustained over USB 3 with Python in the loop) |
 | Channels | B210: 2 RX, 2 TX (`start_rx(channels=(0, 1))`, `start_tx(channels=(0, 1))`); B200: 1 |
-| Gain | one stage per direction, the AD9361 PGA: RX 0-76 dB (1 dB), TX 0-89.75 dB (0.25 dB); `set_gain_mode("auto")` for RX AGC |
+| Gain | one stage per direction, the AD9361 PGA: RX 0-76 dB (1 dB), TX 0-89.75 dB (0.25 dB); `set_rx_gain_mode("auto")` for RX AGC |
 | Antennas | RX: `TX/RX`, `RX2`. TX: `TX/RX` |
 | Bandwidth | 200 kHz - 56 MHz analog filter, per direction |
 | Settings | `dc_offset_auto`, `iq_balance_auto`, `time_source`, `master_clock_rate` |
@@ -29,7 +29,7 @@ The master clock is chosen from the sample rate (an even multiple of it in the A
 **Two channels.** A B210 has two RX and two TX channels (frontends A and B; a B200 has one). Every control takes
 `channel`:
 ```python
-sdr.set_gain(50, channel=1); sdr.set_antenna("TX/RX", channel=1)
+sdr.set_rx_gain_db(50, channel=1); sdr.set_rx_antenna("TX/RX", channel=1)
 sdr.set_tx_freq(915e6)                 # RX stays where it was
 sdr.start_rx(channels=(0, 1)); x = sdr.read(65536, channel=(0, 1))     # (2, 65536): the same instants
 sdr.start_tx(channels=(0, 1)); sdr.write(np.stack((a, b)))              # sent sample for sample together

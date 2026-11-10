@@ -184,7 +184,7 @@ def test_generated_python_driver_passes_the_checker(tmp_path):
     assert not testing.errors(testing.check_driver(module.ProbePy))
     sdr = module.ProbePy()
     sdr.open()
-    assert sdr.set_rx_freq(50e6) == 50e6 and sdr.set_gain(10) == 10
+    assert sdr.set_rx_freq(50e6) == 50e6 and sdr.set_rx_gain_db(10) == 10
     sdr.close()
 
 def test_command_line(tmp_path, capsys):
@@ -211,7 +211,7 @@ def test_stage_setters_are_made_from_caps():
     assert "0-40" in Sim.set_rx_if_gain.__doc__ and "default" in Sim.set_rx_if_gain.__doc__
     sdr = Sim()
     sdr.open()
-    assert sdr.set_rx_if_gain(24) == 24 and sdr.get_gain("IF") == 24
+    assert sdr.set_rx_if_gain(24) == 24 and sdr.get_rx_gain_db("IF") == 24
     assert sdr.set_rx_bb_gain() == sdr.CAPS.stage("rx", "BB").default      # None: the default
 
 def test_a_written_setter_is_kept():

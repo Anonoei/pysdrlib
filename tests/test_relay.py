@@ -129,7 +129,7 @@ class TestSharing:
         ctl.claim()
         ctl.initialize(cf=100e6, Fs=2e6)
         assert ctl.set_rx_freq(433e6) == 433e6 and far.radio.device.get_rx_freq() == 433e6
-        assert ctl.set_rx_if_gain(12) == 12 and far.radio.device.get_gain("IF") == 12   # a method of the far driver
+        assert ctl.set_rx_if_gain(12) == 12 and far.radio.device.get_rx_gain_db("IF") == 12   # a method of the far driver
         assert ctl.get_rx_freq() == 433e6
         viewer = local(near, worker.id)
         assert viewer.get_rx_freq() == 433e6

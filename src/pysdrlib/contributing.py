@@ -61,7 +61,7 @@ flight and how long it takes to settle: measure them, as the comments in the shi
 has, as `caps.Setting`s a user reaches with `set_setting`), `GAIN_RESERVE` and `GAIN_BALANCE` (how a total gain is split
 across stages).
 
-**Two layers of API stay in step.** The generic calls (`set_gain`, `set_rx_gain`, which split a total over the stages)
+**Two layers of API stay in step.** The generic calls (`set_rx_gain` as a fraction of the range, `set_rx_gain_db` in decibels, which split a total over the stages)
 work on every device. Each stage also has its own setter (`set_rx_amp_gain`) under the hardware's name. You provide only
 CAPS's declaration of the stage and `_set_<dir>_<stage>_gain`, which applies it; the setter is made from them.
 

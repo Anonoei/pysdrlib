@@ -44,15 +44,15 @@ class TestGain:
         assert calls(sdr, "set_rx_if_gain")[-1] == (float(config.stage("rx", "IF").max),)
 
     def test_default_total_gain(self, sdr):
-        assert sdr.set_rx_gain() == {"rf": 0, "if": 0}
+        assert sdr.set_rx_gain_db() == 0 and sdr.get_rx_gains_db() == {"RF": 0, "IF": 0}
 
     def test_total_gain_fills_the_if_stage_then_the_rf_stage(self, sdr):
-        sdr.set_rx_gain(config.stage("rx", "IF").max + 5)
+        sdr.set_rx_gain_db(config.stage("rx", "IF").max + 5)
         assert calls(sdr, "set_rx_if_gain")[-1] == (float(config.stage("rx", "IF").max),)
         assert calls(sdr, "set_rx_rf_gain")[-1] == (5.0,)
 
     def test_total_gain_below_the_if_range_attenuates(self, sdr):
-        sdr.set_rx_gain(config.stage("rx", "IF").min - 3)
+        sdr.set_rx_gain_db(config.stage("rx", "IF").min - 3)
         assert calls(sdr, "set_rx_if_gain")[-1] == (float(config.stage("rx", "IF").min),)
         assert calls(sdr, "set_rx_rf_gain")[-1] == (-3.0,)
 

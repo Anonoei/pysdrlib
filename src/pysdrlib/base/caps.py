@@ -20,7 +20,7 @@ class GainStage:
     """One adjustable gain element of a device (its name is whatever the device calls it), in dB
 
     step: spacing of its values (0: continuous). values: the gains it really has, when they are uneven steps (a
-    tuner's table); set gains snap to the nearest. default: what `set_gain()` with no value sets.
+    tuner's table); set gains snap to the nearest. default: what `set_rx_gain()` with no value sets.
     """
     step: float
     min: float

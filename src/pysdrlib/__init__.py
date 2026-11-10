@@ -16,6 +16,7 @@ PyPI: https://pypi.org/project/pysdrlib/
 
     sdr = pysdrlib.open(pysdrlib.find()[0])       # opened; or pysdrlib.open("<driver name>")
     sdr.initialize(cf=100e6, Fs=2e6)
+    sdr.set_rx_gain(0.5)                    # half of this radio's gain range, whatever the radio
     sdr.start_rx()
     samples = sdr.read(65536, timeout=1.0)        # exactly 65536 samples
     sdr.stop_rx()

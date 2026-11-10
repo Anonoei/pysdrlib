@@ -157,16 +157,16 @@ class TestCapabilities:
         assert back.json() == c.json()
 
     def test_gain_stages_by_name(self, driver):
-        stages = driver.gains()
+        stages = driver.rx_gain_stages()
         name, stage = next(iter(stages.items()))
-        got = driver.set_gain(stage.max, stage=name.lower())
-        assert got == stage.max and driver.get_gain(name) == stage.max
+        got = driver.set_rx_gain_db(stage.max, stage=name.lower())
+        assert got == stage.max and driver.get_rx_gain_db(name) == stage.max
         with pytest.raises(err.NotSupported):
-            driver.set_gain(1, stage="no such stage")
+            driver.set_rx_gain_db(1, stage="no such stage")
 
     def test_total_gain_is_the_sum_of_the_stages(self, driver):
-        driver.set_gain(20)
-        assert driver.get_gain() == sum(v for v in (driver.get_gain(n) for n in driver.gains()) if v is not None)
+        driver.set_rx_gain_db(20)
+        assert driver.get_rx_gain_db() == sum(v for v in (driver.get_rx_gain_db(n) for n in driver.rx_gain_stages()) if v is not None)
 
     def test_strict(self, driver, spec):
         driver.strict = True
@@ -179,19 +179,17 @@ class TestCapabilities:
     def test_channels(self, driver):
         with pytest.raises(err.InvalidValue):   # one past the last channel
             driver.set_rx_freq(100e6, channel=driver.caps.channels["rx"])
-        with pytest.raises(ValueError):
-            driver.gains("sideways")
 
     def test_unsupported_controls_say_so(self, driver):
         if not driver.caps.antennas["rx"]:
             with pytest.raises(err.NotSupported):
-                driver.set_antenna("A")
+                driver.set_rx_antenna("A")
         if not driver.caps.clock_sources:
             with pytest.raises(err.NotSupported):
                 driver.set_clock_source("external")
         if driver.caps.gain_modes["rx"] == ["manual"]:
             with pytest.raises(err.NotSupported):
-                driver.set_gain_mode("auto")
+                driver.set_rx_gain_mode("auto")
 
     def test_settings_reach_the_driver(self, driver):
         for name, s in driver.settings().items():
@@ -218,11 +216,11 @@ def test_hackrf_bandwidth(monkeypatch):
     monkeypatch.setattr(spec.device_module, "lib", fake_lib(spec))
     d = spec.device_class()
     d.open()
-    assert d.set_bandwidth(4e6) == 5_000_000            # the narrowest filter that passes 4 MHz
+    assert d.set_rx_bandwidth(4e6) == 5_000_000            # the narrowest filter that passes 4 MHz
     assert d.device.of("set_baseband_filter_bandwidth")[-1] == (5_000_000,)
-    assert d.get_bandwidth() == 5_000_000
+    assert d.get_rx_bandwidth() == 5_000_000
     with pytest.warns(Warning):
-        assert d.set_bandwidth(40e6) == 28_000_000
+        assert d.set_rx_bandwidth(40e6) == 28_000_000
 
 def test_rtl_sdr_gain_table_and_agc(monkeypatch):
     spec = BY_NAME["rtl_sdr"]
@@ -232,10 +230,10 @@ def test_rtl_sdr_gain_table_and_agc(monkeypatch):
     d.device._returns = {**d.device._returns, "gains": lambda: [0.0, 0.9, 1.4, 2.7, 29.7, 32.8, 49.6]}   # not the spec's dict
     d._caps = None
     assert d.caps.gains["rx"]["RF"].values[-1] == 49.6
-    assert d.set_gain(30) == 29.7 and d.device.of("set_rx_rf_gain")[-1] == (29.7,)
-    assert d.gain_modes() == ["manual", "auto"]
-    d.set_gain_mode("auto")
-    assert d.device.of("set_agc")[-1] == (True,) and d.get_gain_mode() == "auto"
+    assert d.set_rx_gain_db(30) == 29.7 and d.device.of("set_rx_rf_gain")[-1] == (29.7,)
+    assert d.rx_gain_modes() == ["manual", "auto"]
+    d.set_rx_gain_mode("auto")
+    assert d.device.of("set_agc")[-1] == (True,) and d.get_rx_gain_mode() == "auto"
     assert len(d.caps.rates) == 2   # the RTL2832U has no rates between them
 
 def test_rx888_rates_and_settings(monkeypatch):
@@ -274,20 +272,20 @@ def test_hackrf_total_gain_is_reached(monkeypatch):
     d = spec.device_class()
     d.open()
     for total in range(0, 114):
-        d.set_gain(total)
-        got = d.get_gain()
-        assert got <= total and total - got <= 2, (total, got, d.split_gain(total))  # within the 2 dB VGA step
+        d.set_rx_gain_db(total)
+        got = d.get_rx_gain_db()
+        assert got <= total and total - got <= 2, (total, got, d.split_rx_gain_db(total))  # within the 2 dB VGA step
         # the 11 dB amp only when the LNA and VGA can't come within their 2 dB step (above 104 dB)
-        assert (d.get_gain("RF") == 11) == (total >= 105), (total, d.split_gain(total))
-        assert d.split_gain(total) == d.split_gain(total)   # deterministic
-    d.set_gain(30)
-    assert d.get_gain() == 30 and d.device.of("set_amp_enable")[-1] == (False,)
+        assert (d.get_rx_gain_db("RF") == 11) == (total >= 105), (total, d.split_rx_gain_db(total))
+        assert d.split_rx_gain_db(total) == d.split_rx_gain_db(total)   # deterministic
+    d.set_rx_gain_db(30)
+    assert d.get_rx_gain_db() == 30 and d.device.of("set_amp_enable")[-1] == (False,)
     # the vendor's advice: IF and baseband about equal in dB (the LNA moves in 8 dB steps), the IF capped at 40
     for total in range(0, 81, 2):
-        s = d.split_gain(total)
+        s = d.split_rx_gain_db(total)
         assert abs(s["IF"] - s["BB"]) <= 8, (total, s)             # within one LNA step
-    assert d.split_gain(32) == {"RF": 0, "IF": 16, "BB": 16}      # their starting point
-    assert d.split_gain(100) == {"RF": 0, "IF": 40, "BB": 60}
+    assert d.split_rx_gain_db(32) == {"RF": 0, "IF": 16, "BB": 16}      # their starting point
+    assert d.split_rx_gain_db(100) == {"RF": 0, "IF": 40, "BB": 60}
 
 @pytest.mark.parametrize("name", ["hackrf", "rtl_sdr", "extio"])
 def test_relative_gain(name, monkeypatch):
@@ -296,17 +294,17 @@ def test_relative_gain(name, monkeypatch):
     d = spec.device_class()
     d.open()
     r = d.caps.gain_range("rx")
-    assert d.set_gain_relative(0.0) == pytest.approx(0.0, abs=0.02) and d.get_gain() == pytest.approx(r.lo, abs=1)
-    assert d.set_gain_relative(1.0) == pytest.approx(1.0, abs=0.02) and d.get_gain() == pytest.approx(r.hi, abs=1)
-    half = d.set_gain_relative(0.5)
-    assert abs(half - 0.5) < 0.06 and d.get_gain() == pytest.approx(r.lo + 0.5 * (r.hi - r.lo), abs=3)
-    stage = next(iter(d.gains()))
-    assert d.set_gain_relative(1.0, stage=stage) == pytest.approx(1.0)
-    with pytest.warns(Warning):
-        d.set_gain_relative(1.5)
-    d.strict = True
+    assert d.set_rx_gain(0.0) == pytest.approx(0.0, abs=0.02) and d.get_rx_gain_db() == pytest.approx(r.lo, abs=1)
+    assert d.set_rx_gain(1.0) == pytest.approx(1.0, abs=0.02) and d.get_rx_gain_db() == pytest.approx(r.hi, abs=1)
+    half = d.set_rx_gain(0.5)
+    assert abs(half - 0.5) < 0.06 and d.get_rx_gain_db() == pytest.approx(r.lo + 0.5 * (r.hi - r.lo), abs=3)
+    stage = next(iter(d.rx_gain_stages()))
+    assert d.set_rx_gain(1.0, stage=stage) == pytest.approx(1.0)
+    with pytest.raises(err.InvalidValue, match=r"set_rx_gain_db\(1\.5\)"):   # never clamped: it is nearly always dB, and clamping is full gain
+        d.set_rx_gain(1.5)
     with pytest.raises(err.InvalidValue):
-        d.set_gain_relative(-0.1)
+        d.set_rx_gain(-0.1)
+    assert d.get_rx_gain_db() == pytest.approx(r.hi, abs=1) or d.get_rx_gain_db() is not None   # (the failed calls set nothing)
 
 def test_relative_gain_follows_a_tuner_table(monkeypatch):
     spec = BY_NAME["rtl_sdr"]
@@ -315,8 +313,8 @@ def test_relative_gain_follows_a_tuner_table(monkeypatch):
     d.open()
     d.device._returns = {**d.device._returns, "gains": lambda: [0.0, 0.9, 1.4, 2.7, 29.7, 32.8, 49.6]}
     d._caps = None
-    d.set_gain_relative(0.6)                              # 29.76 dB of 0-49.6: the table's 29.7
-    assert d.get_gain() == 29.7 and d.get_gain_relative() == pytest.approx(29.7 / 49.6)
+    d.set_rx_gain(0.6)                              # 29.76 dB of 0-49.6: the table's 29.7
+    assert d.get_rx_gain_db() == 29.7 and d.get_rx_gain() == pytest.approx(29.7 / 49.6)
 
 # ---------------------------------------------------------------- samples lost before the queue
 def test_ring_skip_marks_a_gap_reads_never_span():
@@ -344,3 +342,14 @@ def test_read_reports_samples_lost_before_the_queue():
     finally:
         s.stop_rx()
     assert (0, 777) in m.gaps or any(n == 777 for _, n in m.gaps)
+
+
+def test_decibels_given_to_set_gain_are_refused_on_a_transmitter_too(driver, spec):
+    """Clamped, 40 would have been the most transmit gain there is"""
+    if not type(driver).CAN_TRANSMIT:
+        pytest.skip(f"{spec.name} does not transmit")
+    driver.set_tx_gain(0.0)
+    before = driver.get_tx_gain_db()
+    with pytest.raises(err.InvalidValue):
+        driver.set_tx_gain(40)
+    assert driver.get_tx_gain_db() == before

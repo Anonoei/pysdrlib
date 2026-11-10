@@ -96,7 +96,7 @@ class @CLASS@(NativeDevice):
         self.device.set_freq(int(freq))
 
     # --- gain: one hook per stage in CAPS applies it (set_rx_main_gain is made from CAPS) --- #
-    # `set_gain(total)` splits a total across the stages; `set_rx_gain` is the same; the stage setter sets one.
+    # `set_rx_gain_db(total)` splits a total across the stages; `set_rx_gain(fraction)` is the same by fraction; the stage setter sets one.
     def _set_rx_main_gain(self, gain, channel=0):
         self.device.set_rx_gain(float(gain))
 
@@ -202,7 +202,7 @@ TODO: what the radio is, and links (vendor page, a how-to, the library it wraps)
 - Frequency (TODO)
 - Sample rate (TODO)
 - Samples (TODO: complex int16, converted to complex64)
-- Gain (dB): TODO the stages, as `sdr.gains()` lists them
+- Gain (dB): TODO the stages, as `sdr.rx_gain_stages()` lists them
 
 ## Setup
 TODO: what the first import looks for (system library, cache, bundled build) and what a build needs.

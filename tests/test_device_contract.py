@@ -104,14 +104,15 @@ class TestCaps:
                 assert setter(default) == default
 
     def test_total_gain_covers_the_declared_stages(self, sdr, spec):
-        out = sdr.set_rx_gain()
-        assert {k.upper() for k in out} == set(spec.caps.gains["rx"])
+        total = sdr.set_rx_gain_db()
+        assert set(sdr.get_rx_gains_db()) == set(spec.caps.gains["rx"]) and total == sum(sdr.get_rx_gains_db().values())
 
     def test_transmit_matches_the_declaration(self, sdr, spec):
         assert bool(spec.caps.gains["tx"]) == type(sdr).CAN_TRANSMIT
         if not type(sdr).CAN_TRANSMIT:
             return
-        assert set(sdr.set_tx_gain()) == {k.lower() for k in spec.caps.gains["tx"]}
+        sdr.set_tx_gain_db()
+        assert set(sdr.get_tx_gains_db()) == set(spec.caps.gains["tx"])
 
 
 class TestRx:

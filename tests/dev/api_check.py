@@ -37,11 +37,11 @@ def main():
         section("controls")
         lo, hi = c.rates[0].lo, c.rates[-1].hi
         sdr.initialize(cf=c.freq[0].clip(100e6), Fs=lo)
-        print("relative gain 0.5 ->", sdr.set_gain_relative(0.5), describe_gain(sdr))
+        print("relative gain 0.5 ->", sdr.set_rx_gain(0.5), describe_gain(sdr))
         if c.bandwidths["rx"]:
-            print("bandwidth for", lo, "->", sdr.set_bandwidth(lo))
+            print("bandwidth for", lo, "->", sdr.set_rx_bandwidth(lo))
         if len(c.gain_modes["rx"]) > 1:
-            print("gain mode ->", sdr.set_gain_mode("auto"), sdr.set_gain_mode("manual"))
+            print("gain mode ->", sdr.set_rx_gain_mode("auto"), sdr.set_rx_gain_mode("manual"))
         print("freq correction 15 ppm ->", sdr.set_freq_correction(15.0), "| freq", sdr.get_rx_freq(), "| rate", sdr.get_rx_sample_rate())
         sdr.set_freq_correction(0)
 

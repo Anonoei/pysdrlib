@@ -59,29 +59,29 @@ class TestGain:
             assert sdr.set_rx_pga_gain(500) == config.stage("rx", "PGA").max
 
     def test_generic_gain_is_the_pga(self, sdr):
-        sdr.set_rx_gain(30)
-        sdr.set_tx_gain(None)
+        sdr.set_rx_gain_db(30)
+        sdr.set_tx_gain_db(None)
         assert calls(sdr, "set_rx_gain")[-1] == (30.0, 0)
         assert calls(sdr, "set_tx_gain")[-1] == (float(config.stage("tx", "PGA").default), 0)
 
     def test_agc_is_a_receive_gain_mode(self, sdr):
-        assert sdr.gain_modes("rx") == ["manual", "auto"] and sdr.gain_modes("tx") == ["manual"]
-        sdr.set_gain_mode("auto")
-        sdr.set_gain_mode("manual")
+        assert sdr.rx_gain_modes() == ["manual", "auto"] and sdr.tx_gain_modes() == ["manual"]
+        sdr.set_rx_gain_mode("auto")
+        sdr.set_rx_gain_mode("manual")
         assert calls(sdr, "set_rx_agc") == [(True, 0), (False, 0)]
 
 
 class TestControls:
     def test_antenna(self, sdr):
-        assert sdr.antennas("rx") == ["TX/RX", "RX2"] and sdr.antennas("tx") == ["TX/RX"]
-        sdr.set_antenna("RX2")
+        assert sdr.rx_antennas() == ["TX/RX", "RX2"] and sdr.tx_antennas() == ["TX/RX"]
+        sdr.set_rx_antenna("RX2")
         assert calls(sdr, "set_rx_antenna") == [("RX2", 0)]
         with pytest.raises(err.NotSupported):
-            sdr.set_antenna("RX2", "tx")
+            sdr.set_tx_antenna("RX2")
 
     def test_bandwidth_goes_to_the_requested_direction(self, sdr):
-        sdr.set_bandwidth(8e6, "rx")
-        sdr.set_bandwidth(4e6, "tx")
+        sdr.set_rx_bandwidth(8e6)
+        sdr.set_tx_bandwidth(4e6)
         assert calls(sdr, "set_rx_bandwidth")[-1] == (8e6, 0) and calls(sdr, "set_tx_bandwidth")[-1] == (4e6, 0)
 
     def test_clock_source(self, sdr):

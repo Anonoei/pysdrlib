@@ -65,7 +65,7 @@ class HackRF(NativeDevice):
 
     # HackRF gain stages: RF amp, IF (LNA), baseband (VGA), plus the TX amp and TXVGA.
     # Device-specific controls: `set_rx_if_gain` and the rest are made from CAPS (see Device._make_stage_setters),
-    # these apply them. A total (`set_gain`, `set_rx_gain`) is split across them by Device.split_gain.
+    # these apply them. A total (`set_rx_gain`, `set_rx_gain_db`) is split across them by Device._split_gain.
     def _set_rx_rf_gain(self, gain, channel=0):
         gain = bool(gain)
         self.device.set_amp_enable(gain)

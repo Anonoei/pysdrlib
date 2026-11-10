@@ -5,8 +5,9 @@ Lifecycle and tuning (`open`, `initialize`, `set_rx_freq`, `set_rx_sample_rate`,
 
     sdr = pysdrlib.device("rtl_sdr"); sdr.open()
     sdr.caps.gains["rx"]                     # the device's own gain stages
-    sdr.set_gain(30)                         # total gain, split by the device; sdr.set_gain(12, stage="IF"): one stage
-    sdr.set_bandwidth(1.5e6)                 # analog filter, when the device has one
+    sdr.set_rx_gain(0.5)                     # gain as a fraction of this device's range: the same call on every radio
+    sdr.set_rx_gain_db(30)                   # ... or in dB: a total (split by the device) or one stage, set_rx_gain_db(12, stage="IF")
+    sdr.set_rx_bandwidth(1.5e6)              # analog filter, when the device has one
     sdr.set_freq_correction(14.8)            # ppm error of the device's reference
     sdr.set_setting("dither", True)          # anything else the device has (caps.settings)
     with sdr.stream(65536, meta=True) as s:
@@ -22,8 +23,10 @@ channels, or the whole device's). A multi-channel device streams several channel
 A device that lacks a control raises `err.NotSupported`. Values out of range are clamped with a warning, or raise
 `err.InvalidValue` with `strict = True`.
 """
+import atexit
 import itertools
 import time
+import weakref
 
 import numpy as np
 
@@ -32,6 +35,24 @@ from .. import warn
 from .. import err
 from . import caps as _caps
 from .stream import Event, RxMeta, RxStream, sample_time
+
+_OPEN = weakref.WeakSet()   # the devices that are open (see `_close_open_devices`)
+
+def _close_open_devices():
+    """At exit: stop and close the devices still open. A script that dies mid-stream (an exception, Ctrl+C) otherwise
+    leaves a radio streaming, and some (a USRP B210) then refuse to start again until they are reset"""
+    for dev in list(_OPEN):
+        try:
+            if dev.state["rx"]:
+                dev.stop_rx()
+            if dev.state["tx"]:
+                dev.stop_tx()
+            if dev.state["open"]:
+                dev.close()
+        except Exception:
+            pass
+
+atexit.register(_close_open_devices)
 
 READ_SLICE = 0.1   # seconds a read waits at a time, between checks on the stream (stalls, stop_rx)
 TX_CHUNK = 16384   # samples a multi-channel write queues per channel at a time (so no channel's queue starves another)
@@ -71,15 +92,6 @@ class Device:
     GAIN_RESERVE: dict = {}  # {"rx"/"tx": (stage, ...)}: stages a total gain uses only when the others can't reach it
     GAIN_BALANCE = "range"   # how a total is shared: "range" (each stage the same fraction of its range) or "db" (equal dB)
 
-    __slots__ = (
-        "log",
-        "device", "state",
-        "_cf", "_Fs",
-        "strict", "dc_correction",
-        "_ppm", "_gain_values", "_gain_mode", "_bandwidth", "_antenna", "_clock_source", "_settings",
-        "_caps", "_caps_open", "_tuning", "_rx_channels", "_tx_channels",
-        "_rx_next", "_rx_discard", "_rx_events", "_rx_now", "_rx_dc", "_rx_buf", "_rx_buf_index",
-    )
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         cls._make_stage_setters()
@@ -144,9 +156,14 @@ class Device:
         self.device = self._open(*args, **kwargs)
         self.state["open"] = True
         self._caps = None
-    def initialize(self, cf=None, Fs=None, rx_gain=None, tx_gain=None):
-        """Initialize the device settings"""
-        self.log.trace("initialize(cf=%s, Fs=%s, rx_gain=%s, tx_gain=%s)", cf, Fs, rx_gain, tx_gain)
+        _OPEN.add(self)
+    def initialize(self, cf=None, Fs=None, rx_gain=None, tx_gain=None, rx_gain_db=None, tx_gain_db=None):
+        """Tune the receiver (and the transmitter, where it has its own synthesizer) to `cf` and `Fs`, and set the gains.
+        `rx_gain` and `tx_gain` are fractions of the device's range, as `set_rx_gain` takes; `rx_gain_db` and `tx_gain_db`
+        are decibels, as `set_rx_gain_db` takes. Each is a number for the total, None (the defaults), or a dict of
+        stages, `{"IF": 16, "BB": 20}` (see `rx_gain_stages()`; a stage not named keeps the device's). Not both for one direction"""
+        self.log.trace("initialize(cf=%s, Fs=%s, rx_gain=%s, tx_gain=%s, rx_gain_db=%s, tx_gain_db=%s)",
+                       cf, Fs, rx_gain, tx_gain, rx_gain_db, tx_gain_db)
         self._ensure_open("initialize")
         cf = self.set_rx_freq(cf)
         Fs = self.set_rx_sample_rate(Fs)
@@ -154,9 +171,25 @@ class Device:
             self.set_tx_freq(cf)
         if type(self).CAN_TRANSMIT and self.caps.shared.get("rate") != "device":
             self.set_tx_sample_rate(Fs)
-        rx_gain = self.set_rx_gain(rx_gain)
-        tx_gain = self.set_tx_gain(tx_gain) if type(self).CAN_TRANSMIT else None
-        self._initialize(cf, Fs, rx_gain, tx_gain)
+        rx_gain = self._initial_gain("rx", rx_gain, rx_gain_db)
+        tx_gain = self._initial_gain("tx", tx_gain, tx_gain_db) if type(self).CAN_TRANSMIT else None
+        self._initialize(cf, Fs, rx_gain, tx_gain)   # (the hook gets the total gains in dB)
+
+    def _initial_gain(self, d, fraction, db):
+        """Set a direction's gain from initialize's arguments; returns the total in dB"""
+        if fraction is not None and db is not None:
+            raise ValueError(f"give {d}_gain (a fraction) or {d}_gain_db, not both")
+        if isinstance(db, dict):
+            for stage, value in db.items():
+                self._set_gain_db(d, value, stage, 0, False)
+        elif isinstance(fraction, dict):
+            for stage, value in fraction.items():
+                self._set_gain(value, d, stage, 0, False)
+        elif fraction is not None:
+            self._set_gain(fraction, d, None, 0, False)
+        else:
+            self._set_gain_db(d, db, None, 0, False)
+        return self._get_gain_db(d, None, 0)
 
     def close(self):
         """Disconnect from device"""
@@ -165,6 +198,7 @@ class Device:
         self._close()
         self.state["open"] = False
         self._caps = None
+        _OPEN.discard(self)
 
     def __enter__(self):
         self.open()
@@ -206,7 +240,8 @@ class Device:
         self._stop_rx()
         self.state["rx"] = False
     def get_samples(self) -> np.ndarray:
-        """Get samples from buffer: whatever has arrived since the last call (possibly none). See `read`"""
+        """The low-level call: whatever has arrived since the last call (any number, possibly none, without waiting). Most
+        code wants `read` (an exact count, waiting for it, with the stream's metadata) or `stream` (blocks until you stop)"""
         # self.log.trace("get_samples()")
         self._ensure_open("get_samples")
         return self._get_samples()
@@ -336,72 +371,98 @@ class Device:
         return self._ppm
 
     # ------------------------------------------------------------------ gain
-    def set_rx_gain(self, gain=None):
-        """Set abstract receive gain"""
-        self.log.trace("set_rx_gain(%s)", gain)
-        self._ensure_open("set_rx_gain")
-        if gain is None:
-            gain = "default"
-        else:
-            gain = self._check_gain(gain, "RX")
-        return self._set_rx_gain(gain)
-    def set_tx_gain(self, gain=None):
-        """Set abstract transmit gain"""
-        self.log.trace("set_tx_gain(%s)", gain)
-        self._ensure_open("set_tx_gain")
-        if gain is None:
-            gain = "default"
-        else:
-            gain = self._check_gain(gain, "TX")
-        return self._set_tx_gain(gain)
+    # A gain is a fraction of the device's range (set_rx_gain: the call for code that should run on any radio) or in
+    # decibels (set_rx_gain_db). Both take a `stage` (see `rx_gain_stages()`) to set one stage instead of the total, which the device
+    # splits across its stages. Receive and transmit are separate calls, as for frequency.
+    def set_rx_gain(self, fraction=None, stage=None, channel=0, flush=False):
+        """The receive gain, as a fraction of the device's range: 0.0 its least, 1.0 its most (linear in dB), of the total
+        or of one `stage`. None: the defaults. The same fraction is the same place in the range on every device, so this is
+        the call for code that should run on more than one kind of radio: 40 dB is most of one radio's gain range, and a
+        third of another's. It takes a fraction, not decibels (for those, `set_rx_gain_db`): a value outside 0-1 raises
+        `err.InvalidValue` rather than being clamped, because it is nearly always decibels given to the wrong call, and
+        clamping would set the most gain. flush: while receiving, discard what was received before the change and its
+        settling time (see `set_rx_freq`). Returns the fraction in effect"""
+        return self._set_gain(fraction, "rx", stage, channel, flush)
+    def set_tx_gain(self, fraction=None, stage=None, channel=0):
+        """The transmit gain, as a fraction of the device's range (see `set_rx_gain`). Returns the fraction in effect"""
+        return self._set_gain(fraction, "tx", stage, channel, False)
+    def get_rx_gain(self, stage=None, channel=0):
+        """The receive gain last set, as a fraction of the device's range (None before a gain was set); `get_rx_gain_db`
+        has decibels"""
+        return self._get_gain("rx", stage, channel)
+    def get_tx_gain(self, stage=None, channel=0):
+        """The transmit gain last set, as a fraction of the device's range (None before a gain was set)"""
+        return self._get_gain("tx", stage, channel)
 
-    def gains(self, direction="rx", channel=0):
-        """{stage name: GainStage} of a direction, as the device names them"""
-        d = self._direction(direction, channel)
-        return dict(self.caps.gains[d])
-    def set_gain(self, gain=None, stage=None, direction="rx", channel=0, flush=False):
-        """The total gain of a direction (the device splits it across its stages), or one `stage`'s (see
-        `gains()`). None: the default. Returns the gain in effect (the total, or the stage's)"""
-        d = self._direction(direction, channel)
+    def set_rx_gain_db(self, gain=None, stage=None, channel=0, flush=False):
+        """The receive gain in decibels: a total (the device splits it across its stages) or one `stage`'s. None: the
+        defaults. Decibels mean different things on different radios; for code that should run on any of them use
+        `set_rx_gain`. Returns the gain in effect (the total, or the stage's)"""
+        return self._set_gain_db("rx", gain, stage, channel, flush)
+    def set_tx_gain_db(self, gain=None, stage=None, channel=0):
+        """The transmit gain in decibels (see `set_rx_gain_db`). Returns the gain in effect"""
+        return self._set_gain_db("tx", gain, stage, channel, False)
+    def get_rx_gain_db(self, stage=None, channel=0):
+        """The receive gain last set in decibels: a stage's, or the total of the stages (None before any was set)"""
+        return self._get_gain_db("rx", stage, channel)
+    def get_tx_gain_db(self, stage=None, channel=0):
+        """The transmit gain last set in decibels: a stage's, or the total of the stages (None before any was set)"""
+        return self._get_gain_db("tx", stage, channel)
+    def get_rx_gains_db(self, channel=0):
+        """{stage name: gain [dB]} of what each receive stage was last set to (stages never set are missing)"""
+        return self._get_gains_db("rx", channel)
+    def get_tx_gains_db(self, channel=0):
+        """{stage name: gain [dB]} of what each transmit stage was last set to"""
+        return self._get_gains_db("tx", channel)
+
+    def rx_gain_stages(self, channel=0):
+        """{stage name: GainStage} of the receiver, as the device names its stages (`stage=` of the gain calls)"""
+        return dict(self.caps.gains[self._direction("rx", channel)])
+    def tx_gain_stages(self, channel=0):
+        """{stage name: GainStage} of the transmitter"""
+        return dict(self.caps.gains[self._direction("tx", channel)])
+
+    def _set_gain(self, fraction, d, stage, channel, flush):
+        self._ensure_open(f"set_{d}_gain")
+        gain = None
+        if fraction is not None:
+            lo, hi = self._gain_span(stage, self._direction(d, channel))
+            if not 0.0 <= fraction <= 1.0:
+                raise err.InvalidValue(f"set_{d}_gain takes a fraction of the gain range, 0 to 1, not {fraction}: "
+                                       f"for decibels use set_{d}_gain_db({fraction})")
+            gain = lo + fraction * (hi - lo)
+        self._set_gain_db(d, gain, stage, channel, flush)
+        return self._get_gain(d, stage, channel)
+
+    def _set_gain_db(self, d, gain, stage, channel, flush):
+        self.log.trace("set_%s_gain_db(%s, stage=%s)", d, gain, stage)
+        self._ensure_open(f"set_{d}_gain_db")
+        self._direction(d, channel)
         if stage is None:
-            if channel == 0:
-                (self.set_rx_gain if d == "rx" else self.set_tx_gain)(gain)
-            else:
-                self._ensure_open("set_gain")
-                total = "default" if gain is None else self._check_gain(gain, d.upper())
-                (self._set_rx_gain if d == "rx" else self._set_tx_gain)(total, channel=channel)
+            total = "default" if gain is None else self._check_gain(gain, d.upper())
+            (self._set_rx_gain if d == "rx" else self._set_tx_gain)(total, channel=channel)
         else:
             name = str(stage).upper()
             setter = getattr(self, f"_set_{d}_{name.lower()}_gain", None)
             if name not in self.caps.gains[d] or setter is None:
                 raise err.NotSupported(f"{type(self).NAME} has no {d.upper()} gain stage {stage!r} (it has {list(self.caps.gains[d])})")
             self._set_gain_stage(d.upper(), name, gain, setter, channel)
-        value = self.get_gain(stage, d, channel)
+        value = self._get_gain_db(d, stage, channel)
         if d == "rx":
             self._note("gain", value, channel, flush)
         return value
-    def get_gain(self, stage=None, direction="rx", channel=0):
-        """Gain last set: a stage's, or the total of the stages (None before any was set)"""
-        d = self._direction(direction, channel)
-        values = self._gain_values.get((d.upper(), channel), {})
+
+    def _get_gain_db(self, d, stage, channel):
+        values = self._gain_values.get((self._direction(d, channel).upper(), channel), {})
         if stage is not None:
             return values.get(str(stage).upper())
         return sum(values.values()) if values else None
 
-    def set_gain_relative(self, fraction, stage=None, direction="rx", channel=0, flush=False):
-        """Gain as a fraction of the device's range: 0.0 its least, 1.0 its most (linear in dB), of the total or of one
-        `stage`. The same fraction is the same place in the range on every device. Returns the fraction in effect"""
-        d = self._direction(direction, channel)
-        lo, hi = self._gain_span(stage, d)
-        if not 0.0 <= fraction <= 1.0:
-            self._invalid(f"Relative gain must be between 0 and 1, not {fraction}")
-            fraction = min(max(fraction, 0.0), 1.0)
-        self.set_gain(lo + fraction * (hi - lo), stage, d, channel, flush)
-        return self.get_gain_relative(stage, d, channel)
-    def get_gain_relative(self, stage=None, direction="rx", channel=0):
-        """`get_gain` as a fraction of the range (None before a gain was set)"""
-        d = self._direction(direction, channel)
-        gain = self.get_gain(stage, d, channel)
+    def _get_gains_db(self, d, channel):
+        return dict(self._gain_values.get((self._direction(d, channel).upper(), channel), {}))
+
+    def _get_gain(self, d, stage, channel):
+        gain = self._get_gain_db(d, stage, channel)
         if gain is None:
             return None
         lo, hi = self._gain_span(stage, d)
@@ -416,28 +477,53 @@ class Device:
             raise err.NotSupported(f"{type(self).NAME} has no {d.upper()} gain stage {stage!r} (it has {list(self.caps.gains[d])})")
         return spec.min, spec.max
 
-    def gain_modes(self, direction="rx", channel=0):
-        """["manual"] and, when the device can set its own gain, "auto\""""
-        return list(self.caps.gain_modes[self._direction(direction, channel)])
-    def set_gain_mode(self, mode, direction="rx", channel=0):
-        """"auto": the device sets its own gain (AGC), "manual": the gain last set"""
-        d = self._direction(direction, channel)
-        self._ensure_open("set_gain_mode")
+    def rx_gain_modes(self, channel=0):
+        """["manual"] and, when the receiver can set its own gain, "auto\""""
+        return list(self.caps.gain_modes[self._direction("rx", channel)])
+    def tx_gain_modes(self, channel=0):
+        """The transmitter's gain modes (["manual"])"""
+        return list(self.caps.gain_modes[self._direction("tx", channel)])
+    def set_rx_gain_mode(self, mode, channel=0):
+        """"auto": the receiver sets its own gain (AGC), "manual": the gain last set. Raises `err.NotSupported` for a mode
+        the device lacks"""
+        return self._set_gain_mode_of("rx", mode, channel)
+    def set_tx_gain_mode(self, mode, channel=0):
+        """The transmitter's gain mode (see `set_rx_gain_mode`)"""
+        return self._set_gain_mode_of("tx", mode, channel)
+    def get_rx_gain_mode(self, channel=0):
+        """Current receive gain mode, "manual" unless `set_rx_gain_mode` changed it"""
+        return self._gain_mode.get((self._direction("rx", channel), channel), "manual")
+    def get_tx_gain_mode(self, channel=0):
+        """Current transmit gain mode"""
+        return self._gain_mode.get((self._direction("tx", channel), channel), "manual")
+
+    def _set_gain_mode_of(self, d, mode, channel):
+        self._direction(d, channel)
+        self._ensure_open(f"set_{d}_gain_mode")
         if mode not in self.caps.gain_modes[d]:
             raise err.NotSupported(f"{type(self).NAME} has no {d.upper()} gain mode {mode!r} (it has {self.caps.gain_modes[d]})")
         self._set_gain_mode(d, mode, channel=channel)
         self._gain_mode[(d, channel)] = mode
         return mode
-    def get_gain_mode(self, direction="rx", channel=0):
-        """Current gain mode, "manual" unless `set_gain_mode` changed it"""
-        return self._gain_mode.get((self._direction(direction, channel), channel), "manual")
 
     # ------------------------------------------------------------------ filter, antenna, clock
-    def set_bandwidth(self, bandwidth=None, direction="rx", channel=0):
-        """Analog filter bandwidth [Hz]: the narrowest the device has that is at least `bandwidth` (None: the
+    def set_rx_bandwidth(self, bandwidth=None, channel=0):
+        """Receive analog filter bandwidth [Hz]: the narrowest the device has that is at least `bandwidth` (None: the
         sample rate). Returns the bandwidth set"""
-        d = self._direction(direction, channel)
-        self._ensure_open("set_bandwidth")
+        return self._set_bandwidth_of("rx", bandwidth, channel)
+    def set_tx_bandwidth(self, bandwidth=None, channel=0):
+        """Transmit analog filter bandwidth [Hz] (see `set_rx_bandwidth`). Returns the bandwidth set"""
+        return self._set_bandwidth_of("tx", bandwidth, channel)
+    def get_rx_bandwidth(self, channel=0):
+        """Receive analog filter bandwidth [Hz] last set (None: never set)"""
+        return self._bandwidth.get((self._direction("rx", channel), channel))
+    def get_tx_bandwidth(self, channel=0):
+        """Transmit analog filter bandwidth [Hz] last set (None: never set)"""
+        return self._bandwidth.get((self._direction("tx", channel), channel))
+
+    def _set_bandwidth_of(self, d, bandwidth, channel):
+        self._direction(d, channel)
+        self._ensure_open(f"set_{d}_bandwidth")
         ranges = self.caps.bandwidths[d]
         if not ranges:
             raise err.NotSupported(f"{type(self).NAME} has no adjustable {d.upper()} filter")
@@ -453,25 +539,34 @@ class Device:
         if d == "rx":
             self._note("bandwidth", bw, channel, False)
         return bw
-    def get_bandwidth(self, direction="rx", channel=0):
-        """Analog filter bandwidth [Hz] last set (None: never set)"""
-        return self._bandwidth.get((self._direction(direction, channel), channel))
 
-    def antennas(self, direction="rx", channel=0):
-        """Selectable antenna ports ([]: just the one)"""
-        return list(self.caps.antennas[self._direction(direction, channel)])
-    def set_antenna(self, name, direction="rx", channel=0):
-        """Select an antenna port by name (see `antennas`). Raises `err.NotSupported` for a name the device lacks"""
-        d = self._direction(direction, channel)
-        self._ensure_open("set_antenna")
+    def rx_antennas(self, channel=0):
+        """The receiver's selectable antenna ports ([]: just the one)"""
+        return list(self.caps.antennas[self._direction("rx", channel)])
+    def tx_antennas(self, channel=0):
+        """The transmitter's selectable antenna ports ([]: just the one)"""
+        return list(self.caps.antennas[self._direction("tx", channel)])
+    def set_rx_antenna(self, name, channel=0):
+        """Select a receive antenna port by name (see `rx_antennas`). Raises `err.NotSupported` for a name the device lacks"""
+        return self._set_antenna_of("rx", name, channel)
+    def set_tx_antenna(self, name, channel=0):
+        """Select a transmit antenna port by name (see `tx_antennas`)"""
+        return self._set_antenna_of("tx", name, channel)
+    def get_rx_antenna(self, channel=0):
+        """The receive antenna port last selected (None: never set)"""
+        return self._antenna.get((self._direction("rx", channel), channel))
+    def get_tx_antenna(self, channel=0):
+        """The transmit antenna port last selected (None: never set)"""
+        return self._antenna.get((self._direction("tx", channel), channel))
+
+    def _set_antenna_of(self, d, name, channel):
+        self._direction(d, channel)
+        self._ensure_open(f"set_{d}_antenna")
         if name not in self.caps.antennas[d]:
             raise err.NotSupported(f"{type(self).NAME} has no {d.upper()} antenna {name!r} (it has {self.caps.antennas[d]})")
         self._set_antenna(d, name, channel=channel)
         self._antenna[(d, channel)] = name
         return name
-    def get_antenna(self, direction="rx", channel=0):
-        """The antenna port last selected (None: never set)"""
-        return self._antenna.get((self._direction(direction, channel), channel))
 
     def clock_sources(self):
         """Reference clock sources ([]: not selectable)"""
@@ -984,20 +1079,27 @@ class Device:
         return self._set_total_gain("tx", gain, channel)
 
     def _set_total_gain(self, direction, gain, channel=0):
-        """Set every stage of a direction: their defaults ("default"), or `split_gain`'s share of a total.
+        """Set every stage of a direction: their defaults ("default"), or `_split_gain`'s share of a total.
         Returns {stage (lower case): gain}"""
         d = direction.lower()
         stages = self.caps.gains[d]
         if not stages:
             raise NotImplementedError(f"{type(self).NAME} has no {d.upper()} gain stages")
-        shares = {n: s.default for n, s in stages.items()} if gain == "default" else self.split_gain(gain, d)
+        shares = {n: s.default for n, s in stages.items()} if gain == "default" else self._split_gain(gain, d)
         out = {}
         for name, value in shares.items():
             setter = getattr(self, f"_set_{d}_{name.lower()}_gain")
             out[name.lower()] = self._set_gain_stage(d.upper(), name, value, setter, channel)
         return out
 
-    def split_gain(self, total, direction="rx"):
+    def split_rx_gain_db(self, total):
+        """How a total receive gain [dB] is shared between the stages: `_split_gain`'s answer, {stage: gain}"""
+        return self._split_gain(total, "rx")
+    def split_tx_gain_db(self, total):
+        """How a total transmit gain [dB] is shared between the stages: {stage: gain}"""
+        return self._split_gain(total, "tx")
+
+    def _split_gain(self, total, direction):
         """How a total gain is shared between a direction's stages: {stage: gain}, chosen from every combination the
         stages allow. Stages in GAIN_RESERVE stay at their least unless the others can't come within their finest
         step of `total`. Then: the sum nearest `total` (not above it when there is a choice), and the stages as evenly

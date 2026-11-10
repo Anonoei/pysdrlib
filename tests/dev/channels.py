@@ -47,15 +47,15 @@ def main():
         sdr.set_tx_sample_rate(4e6)
         print("set_sample_rate(4 MS/s, direction='tx') -> TX rates", raw.get_tx_rate(0), raw.get_tx_rate(1),
               "| RX", raw.get_rx_rate(0), raw.get_rx_rate(1))
-        sdr.set_gain(10, channel=0); sdr.set_gain(50, channel=1)
-        print("set_gain(10, ch0), (50, ch1) -> RX gains", raw.get_rx_gain(0), raw.get_rx_gain(1))
-        sdr.set_antenna("RX2", channel=0); sdr.set_antenna("TX/RX", channel=1)
+        sdr.set_rx_gain_db(10, channel=0); sdr.set_rx_gain_db(50, channel=1)
+        print("set_rx_gain_db(10, ch0), (50, ch1) -> RX gains", raw.get_rx_gain(0), raw.get_rx_gain(1))
+        sdr.set_rx_antenna("RX2", channel=0); sdr.set_rx_antenna("TX/RX", channel=1)
         print("antennas RX2 / TX/RX ->", raw.get_rx_antenna(0), raw.get_rx_antenna(1))
-        sdr.set_bandwidth(1e6, channel=0); sdr.set_bandwidth(20e6, channel=1)
+        sdr.set_rx_bandwidth(1e6, channel=0); sdr.set_rx_bandwidth(20e6, channel=1)
         print("bandwidth 1 / 20 MHz ->", raw.get_rx_bandwidth(0), raw.get_rx_bandwidth(1))
         for ch in (0, 1):
-            sdr.set_antenna("RX2", channel=ch)
-            sdr.set_gain_relative(0.6, channel=ch)
+            sdr.set_rx_antenna("RX2", channel=ch)
+            sdr.set_rx_gain(0.6, channel=ch)
 
         for rate in a.rates:
             section(f"both RX channels at {rate/1e6:g} MS/s for {a.seconds:g} s")
@@ -100,7 +100,7 @@ def main():
             section("TX on both channels: silence at the least gain")
             sdr.set_tx_sample_rate(1e6)
             for ch in (0, 1):
-                sdr.set_gain(0, channel=ch, direction="tx")
+                sdr.set_tx_gain_db(0, channel=ch)
             sdr.start_tx(channels=(0, 1))
             try:
                 for _ in range(10):

@@ -73,5 +73,5 @@ def find_station(sdr, Fs, band=FM_BAND, step=0.2e6, away=5e6, contrast=15.0):
     return f, level(sdr, f, Fs), level(sdr, f + away, Fs)
 
 def describe_gain(sdr):
-    stages = {n: sdr.get_gain(n) for n in sdr.gains()}
-    return f"{sdr.get_gain()} dB {stages}"
+    stages = {n: sdr.get_rx_gain_db(n) for n in sdr.rx_gain_stages()}
+    return f"{sdr.get_rx_gain_db()} dB {stages}"

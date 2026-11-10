@@ -3,7 +3,7 @@
     python tests/dev/gain.py                              # the first device found, an FM station it finds itself
     python tests/dev/gain.py --freq 162.4e6 --steps 21    # any frequency (a band you want to tune the gain for)
 
-Sweeps set_gain_relative from 0 to 1 and, at each step, measures:
+Sweeps set_rx_gain from 0 to 1 and, at each step, measures:
     signal   power within +-80 kHz of the centre (dB re full scale)
     floor    median of the spectrum (dB per bin): the noise floor
     SNR      signal over the floor across the same width
@@ -34,8 +34,8 @@ def main():
         sdr.initialize(cf=a.freq or a.station or a.band[0], Fs=a.rate)
         Fs = sdr.get_rx_sample_rate()
         if sdr.caps.bandwidths["rx"]:
-            sdr.set_bandwidth(0.9 * Fs)
-        sdr.set_gain_relative(0.5)
+            sdr.set_rx_bandwidth(0.9 * Fs)
+        sdr.set_rx_gain(0.5)
         sdr.start_rx()
         freq = a.freq or a.station
         if freq is None:
@@ -50,7 +50,7 @@ def main():
               f"{'dSig/dG':>8} {'dFlr/dG':>8}")
         prev, base_spurs, rows = None, None, []
         for rel in np.linspace(0, 1, a.steps):
-            sdr.set_gain_relative(float(rel), flush=True)
+            sdr.set_rx_gain(float(rel), flush=True)
             x = sdr.read(int(a.seconds * Fs), timeout=3)
             p = psd(x, a.nfft)
             floor = float(np.median(p[away & edge]))
@@ -61,7 +61,7 @@ def main():
             spurs = set(np.nonzero(away & edge & (p > floor + 15))[0])
             base_spurs = spurs if base_spurs is None else base_spurs
             new = len(spurs - base_spurs)
-            gain = sdr.get_gain()
+            gain = sdr.get_rx_gain_db()
             slope = ("", "")
             if prev is not None and gain != prev[0]:
                 slope = (f"{(signal - prev[1]) / (gain - prev[0]):8.2f}", f"{(floor - prev[2]) / (gain - prev[0]):8.2f}")

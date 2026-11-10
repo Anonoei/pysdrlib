@@ -96,7 +96,7 @@ class TestRemoteDevice:
         dev.initialize()
         assert dev.set_rx_if_gain(12) == 12          # not defined on RemoteDevice: resolved from capabilities
         assert "set_rx_if_gain" in dir(dev)
-        assert dev.set_rx_gain(30) == {"if": 30, "bb": 0}   # generic layer still works alongside
+        assert dev.set_rx_gain_db(30) == 30 and dev.get_rx_gains_db() == {"IF": 30, "BB": 0}   # generic layer still works alongside
         with pytest.raises(AttributeError):
             dev.set_nonexistent_gain(1)
 
@@ -408,10 +408,10 @@ class TestWire:
 class TestGenericControlsRemotely:
     """The device-agnostic controls reach the hosted device; samples still come over the stream"""
     def test_caps_come_from_the_server(self, dev):
-        assert dev.caps.driver == "Simulated" and set(dev.gains()) == {"IF", "BB"}
+        assert dev.caps.driver == "Simulated" and set(dev.rx_gain_stages()) == {"IF", "BB"}
 
     def test_gain_and_correction_are_forwarded(self, dev):
-        assert dev.set_gain(10, stage="IF") == 10 and dev.get_gain("IF") == 10
+        assert dev.set_rx_gain_db(10, stage="IF") == 10 and dev.get_rx_gain_db("IF") == 10
         assert dev.set_freq_correction(5.0) == 5.0 and dev.get_freq_correction() == 5.0
 
     def test_read_with_meta(self, dev):
@@ -429,7 +429,7 @@ class TestGenericControlsRemotely:
             assert name not in dev.capabilities["methods"]
 
     def test_relative_gain_is_forwarded(self, dev):
-        assert dev.set_gain_relative(1.0) == pytest.approx(1.0) and dev.get_gain_relative() == pytest.approx(1.0)
+        assert dev.set_rx_gain(1.0) == pytest.approx(1.0) and dev.get_rx_gain() == pytest.approx(1.0)
 
 
 @pytest.fixture

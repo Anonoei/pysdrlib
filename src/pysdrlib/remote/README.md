@@ -27,7 +27,7 @@ sdr.start_rx()
 samples = sdr.read(65536)                                      # complex64, like any device
 sdr.close()                                                    # also closes the hackrf on the server
 ```
-`sdr.caps` comes from the hosted device, and every control (`set_gain`, `set_bandwidth`, `set_setting`, a driver's own
+`sdr.caps` comes from the hosted device, and every control (`set_rx_gain`, `set_bandwidth`, `set_setting`, a driver's own
 setters such as `set_rx_lna_gain`...) is forwarded to it. Channels, transmit, `read(meta=True)` gaps and `stream()` work
 as they do locally.
 

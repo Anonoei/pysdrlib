@@ -18,7 +18,7 @@ class B210(NativeDevice):
     the streams need one rate per direction (caps.shared). Gain, filter and antenna are per channel.
 
     The gain is the AD9361's single programmable gain (PGA): `set_rx_pga_gain`/`set_tx_pga_gain`, or the generic
-    `set_gain`/`set_rx_gain`/`set_tx_gain`.
+    `set_rx_gain_db`/`set_tx_gain_db` (decibels) or `set_rx_gain`/`set_tx_gain` (a fraction of the range).
     """
     NAME = "UHD B210"
     # 61.44 MS/s with one channel, 30.72 MS/s with two (USB 3 carries sc16 at that rate). The gain is the AD9361 PGA,

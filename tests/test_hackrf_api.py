@@ -75,15 +75,15 @@ class TestSpecificGainPublic:
 
 class TestTotalGain:
     def test_rx_default_programs_the_lna_and_vga(self, sdr):
-        sdr.set_rx_gain()
+        sdr.set_rx_gain_db()
         assert calls(sdr, "set_lna_gain") == [(config.stage("rx", "IF").default,)]
         assert calls(sdr, "set_vga_gain") == [(config.stage("rx", "BB").default,)]
 
     def test_tx_uses_the_amp_only_when_the_txvga_cannot_supply_it(self, sdr):
-        sdr.set_tx_gain(45)   # the TXVGA reaches 47 dB on its own: the amp is switched off, whatever it was
+        sdr.set_tx_gain_db(45)   # the TXVGA reaches 47 dB on its own: the amp is switched off, whatever it was
         assert calls(sdr, "set_amp_enable") == [(False,)] and calls(sdr, "set_txvga_gain")[-1] == (45,)
         sdr.device.calls.clear()
-        sdr.set_tx_gain(58)   # max: the 11 dB amp plus 47 dB of TXVGA
+        sdr.set_tx_gain_db(58)   # max: the 11 dB amp plus 47 dB of TXVGA
         assert calls(sdr, "set_amp_enable") == [(True,)] and calls(sdr, "set_txvga_gain") == [(47,)]
 
 

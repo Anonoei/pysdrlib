@@ -262,3 +262,45 @@ r.close()
     def test_a_segment_that_is_not_there_is_not_found(self):
         with pytest.raises(FileNotFoundError):
             shm.ShmReader("psdr-does-not-exist")
+
+
+class TestStats:
+    def test_a_client_counts_what_it_received_and_what_was_lost(self, tmp_path):
+        with Server(f"ipc://{tmp_path}/c2", devices=["sim"], lease=0, shm_samples=1 << 15) as server:
+            dev = open_sim(server, realtime=False)
+            try:
+                dev.initialize(cf=100e6, Fs=10e6)
+                dev.start_rx()
+                dev.read(4096, timeout=5)
+                first = dev.stats   # (a flooding device may have lapped the small ring before the first read: dropped can be > 0)
+                assert first.samples >= 4096 and first.age is not None
+                time.sleep(0.3)    # the flooding device laps the 32768-sample ring again
+                x, m = dev.read(4096, timeout=5, meta=True)
+                after = dev.stats
+                assert m.dropped > 0 and after.dropped >= first.dropped + m.dropped and after.samples > first.samples
+            finally:
+                dev.close()
+
+    def test_over_the_socket_too(self, server):
+        dev = open_sim(server, transport="zmq")
+        try:
+            dev.initialize(cf=100e6, Fs=2e6)
+            assert dev.stats.samples == 0 and dev.stats.age is None
+            dev.start_rx()
+            dev.read(8192, timeout=5)
+            st = dev.stats
+            assert st.samples >= 8192 and st.dropped == 0 and st.age is not None
+        finally:
+            dev.close()
+
+    def test_starting_the_stream_again_starts_the_counts_again(self, server):
+        dev = open_sim(server)
+        try:
+            dev.initialize(cf=100e6, Fs=2e6)
+            dev.start_rx()
+            dev.read(8192, timeout=5)
+            dev.stop_rx()
+            dev.start_rx()
+            assert dev.stats.samples < 8192
+        finally:
+            dev.close()

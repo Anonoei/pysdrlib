@@ -36,6 +36,7 @@ for info in pysdrlib.find():             # radios attached, for every driver who
 
 sdr = pysdrlib.open(pysdrlib.find()[0])  # opened; or pysdrlib.open("<driver>", serial="...")
 sdr.initialize(cf=100e6, Fs=2e6)
+sdr.set_rx_gain(0.5)               # half of this radio's gain range, whatever the radio
 sdr.start_rx()
 x = sdr.read(65536, timeout=1.0)         # exactly 65536 samples (err.Timeout after 1 s)
 ```
@@ -47,6 +48,8 @@ import pysdrlib.rtl_sdr                  # static import; pysdrlib.rtl_sdr.Devic
 `find()` never builds a vendor library (`find(build=True)` allows it); `find(virtual=True)` also lists the simulated device.
 
 ### Reading
+`read` and `stream` are the way to get samples: an exact count, waiting for it, with the loss and retune information of
+the stream. (`get_samples()` is the low-level call under them: whatever has arrived, any number, without waiting.)
 ```python
 x, m = sdr.read(65536, meta=True)        # m.index: the first sample's position in the stream; m.gaps / m.dropped:
                                          # where samples were lost; m.events: retunes inside the block; m.time
@@ -57,31 +60,35 @@ with sdr.stream(65536, meta=True) as s:  # starts receiving, stops on exit
 
 sdr.set_rx_freq(162.4e6, flush=True)     # the next read is all at the new frequency (settling skipped)
 ```
-`get_samples()` (whatever has arrived) still works. `sdr.on_drop` decides what lost samples do: `"warn"` (default),
-`"raise"`, `"ignore"` or a function.
+`sdr.on_drop` decides what lost samples do: `"warn"` (default), `"raise"`, `"ignore"` or a function.
 
 ### Controls
 Every device describes itself in `sdr.caps` (refined for the attached unit once open), and the same calls work on all of
 them. A control a device doesn't have raises `err.NotSupported`.
 ```python
 sdr.caps.freq, sdr.caps.rates                    # [Range]: tunable and sample-rate ranges (lo == hi: one discrete value)
-sdr.gains()                                      # {stage: GainStage}: the device's own gain stages, by its names
-sdr.set_gain(40)                                 # total gain (the device splits it); sdr.set_gain(16, stage="...") one stage
-sdr.get_gain(), sdr.set_gain_mode("auto")        # readback; automatic gain where the device has it (sdr.gain_modes())
-sdr.set_bandwidth(1.5e6)                         # analog filter (sdr.caps.bandwidths)
+sdr.rx_gain_stages()                                      # {stage: GainStage}: the device's own gain stages, by its names
+sdr.set_rx_gain(0.6)                             # gain as a fraction of the device's range (0 least, 1 most): the portable call
+sdr.set_rx_gain_db(40)                           # or in dB: a total (the device splits it), or set_rx_gain_db(16, stage="...") one;
+                                                 # dB mean different things on different radios, so prefer the fraction
+sdr.get_rx_gain(), sdr.get_rx_gain_db()          # readback, as a fraction and in dB (sdr.get_rx_gains_db(): by stage)
+sdr.set_rx_gain_mode("auto")                        # automatic gain where the device has it (sdr.rx_gain_modes())
+sdr.set_rx_bandwidth(1.5e6)                         # analog filter (sdr.caps.bandwidths)
 sdr.set_freq_correction(14.8)                    # ppm error of the reference: tuning (and continuous rates) corrected
 sdr.settings(); sdr.set_setting("bias_t", True)  # everything else the device has
-sdr.antennas(), sdr.clock_sources()              # where the device has them
+sdr.rx_antennas(), sdr.clock_sources()              # where the device has them
 sdr.strict = True                                # out-of-range values raise err.InvalidValue instead of being clamped
 sdr.dc_correction = True                         # remove the DC offset from what read() returns
 ```
-Every control takes `direction="rx"`/`"tx"` where it applies and `channel=0` (the count is in `sdr.caps.channels`).
+Every control that differs between receiving and transmitting has a call for each: `set_rx_freq`/`set_tx_freq`,
+`set_rx_gain`/`set_tx_gain`, `set_rx_bandwidth`/`set_tx_bandwidth`, `set_rx_antenna`/`set_tx_antenna`...
+There is no `direction=` argument anywhere. Each takes `channel=0` (the count is in `sdr.caps.channels`).
 Devices also keep their own per-stage setters (`set_rx_lna_gain`, ...) alongside the generic ones.
 
 ### Channels
 A device with several channels (`sdr.caps.channels`, e.g. a B210's 2 RX and 2 TX) streams any of them together:
 ```python
-sdr.set_gain(40, channel=1)                       # every control takes the channel
+sdr.set_rx_gain_db(40, channel=1)                 # every control takes the channel
 sdr.set_tx_freq(915e6)                            # tuning is per direction: set_rx_freq / set_tx_freq
 sdr.caps.shared                                   # what one setting changes: "freq": "direction" means the channels
                                                   # of a direction share one synthesizer
@@ -95,15 +102,15 @@ Samples the hardware lost before they reached pysdrlib (an overflow) show as gap
 channel alike, so they stay aligned.
 
 ### Stalls and dropped samples
-Hardware devices watch their own stream each time you call `get_samples()`:
+Hardware devices watch their own stream each time you `read` (or call `get_samples()`):
 ```python
 try:
-    samples = sdr.get_samples()
+    samples = sdr.read(65536, timeout=1.0)
 except pysdrlib.err.StreamStalled:   # no samples for sdr.stall_timeout seconds (default 1, None disables)
     sdr.stop_rx(); sdr.start_rx()    # or close and reopen the device
 print(sdr.stats)  # samples delivered, dropped, missing, stalls, and seconds since the last samples
 ```
-Samples lost because `get_samples()` wasn't called often enough, or because the device delivered fewer than its sample
+Samples lost because you didn't read often enough, or because the device delivered fewer than its sample
 rate requires, raise a `pysdrlib.warn.Dropped` warning. Anything still buffered when a stall is detected is returned first.
 
 ### Sample files
