@@ -1,6 +1,6 @@
-"""Vendor libraries are never built while packaging; each is found or built on the user's machine when its
-device package is first imported. Covers pysdrlib._ext for every device in tests/devices.py without
-needing cmake, libusb or a device.
+"""Vendor libraries are never built while packaging, and never as a side effect of importing a driver: each is found
+(installed, or built before), or `pysdrlib build <driver>` builds it on the user's machine. Covers pysdrlib._ext for every
+device in tests/devices.py without needing cmake, libusb or a device.
 """
 import os
 import sys
@@ -104,11 +104,41 @@ class TestLoadOrder:
         lib.load()
         assert loaded == [str(user / lib.files[-1])]
 
-    def test_builds_only_when_nothing_else_works(self, lib, cache, loaded, no_system_library, monkeypatch):
+    def test_builds_only_when_asked_and_nothing_else_works(self, lib, cache, loaded, no_system_library, monkeypatch):
         built = []
         monkeypatch.setattr(lib, "build", lambda: built.append(1) or Path("/x") / lib.files[0])
-        assert "built" in lib.load()
+        assert "built" in lib.load(build=True)
         assert built == [1] and loaded == [str(Path("/x") / lib.files[0])]
+
+    def test_a_missing_library_is_not_built_by_importing(self, lib, cache, loaded, no_system_library, monkeypatch):
+        monkeypatch.delenv("PYSDRLIB_BUILD", raising=False)
+        monkeypatch.setattr(lib, "build", lambda: pytest.fail("importing must not build"))
+        with pytest.raises(RuntimeError, match=rf"pysdrlib build {lib.driver}") as exc:
+            lib.load()
+        assert "PYSDRLIB_BUILD=auto" in str(exc.value) and lib.help in str(exc.value) and loaded == []
+
+    @pytest.mark.parametrize("value", ["auto", "AUTO", "1", "yes", "true"])
+    def test_the_environment_can_allow_building_on_first_use(self, lib, cache, loaded, no_system_library, monkeypatch, value):
+        monkeypatch.setenv("PYSDRLIB_BUILD", value)
+        monkeypatch.setattr(lib, "build", lambda: Path("/x") / lib.files[0])
+        assert "built" in lib.load()
+
+    @pytest.mark.parametrize("value", ["", "no", "0", "never"])
+    def test_other_values_do_not(self, lib, cache, loaded, no_system_library, monkeypatch, value):
+        monkeypatch.setenv("PYSDRLIB_BUILD", value)
+        monkeypatch.setattr(lib, "build", lambda: pytest.fail("not allowed"))
+        with pytest.raises(RuntimeError, match="pysdrlib build"):
+            lib.load()
+
+    def test_where_it_is_is_known(self, lib, cache, no_system_library):
+        pkg, _ = cache
+        assert lib.locate() is None and not lib.available()
+        pkg.mkdir(parents=True)
+        (pkg / lib.files[0]).write_bytes(b"lib")
+        assert lib.locate() == ("cached", str(pkg / lib.files[0])) and lib.available()
+
+    def test_every_library_names_its_driver(self, lib, spec):
+        assert lib.driver == spec.name
 
     def test_unloadable_system_library_falls_through(self, lib, cache, monkeypatch):
         attempts = []
@@ -119,7 +149,7 @@ class TestLoadOrder:
         monkeypatch.setattr(utils, "load_global", load)
         monkeypatch.setattr(utils.ctypes.util, "find_library", lambda n: "system.so")
         monkeypatch.setattr(lib, "build", lambda: Path("/built") / lib.files[0])
-        assert "built" in lib.load()
+        assert "built" in lib.load(build=True)
         assert attempts == ["system.so", str(Path("/built") / lib.files[0])]
 
     def test_a_built_library_that_will_not_load_is_explained(self, lib, cache, no_system_library, monkeypatch):
@@ -128,12 +158,12 @@ class TestLoadOrder:
         monkeypatch.setattr(utils, "load_global", load)
         monkeypatch.setattr(lib, "build", lambda: Path("/built") / lib.files[0])
         with pytest.raises(RuntimeError, match="bad ELF"):
-            lib.load()
+            lib.load(build=True)
 
     def test_build_failure_comes_with_instructions(self, lib, cache, loaded, no_system_library, monkeypatch):
         monkeypatch.setattr(utils.shutil, "which", lambda n: None)
         with pytest.raises(RuntimeError, match="cmake") as exc:
-            lib.load()
+            lib.load(build=True)
         assert "libusb" in str(exc.value)
 
 
@@ -242,6 +272,13 @@ class TestImportDevice:
         fake_import(ImportError("No module named 'pkg.lib._x'"))
         monkeypatch.setattr(lib, "load", lambda: pytest.fail("building the library will not help"))
         with pytest.raises(ImportError, match="compiled extension"):
+            utils.import_device("pkg", ".mod", "Device", lib)
+
+    def test_a_missing_library_becomes_an_import_error_that_says_how_to_build_it(self, lib, fake_import, cache, no_system_library,
+                                                                                 monkeypatch):
+        fake_import(ImportError("undefined symbol: x"))
+        monkeypatch.delenv("PYSDRLIB_BUILD", raising=False)
+        with pytest.raises(ImportError, match=rf"pysdrlib build {lib.driver}"):
             utils.import_device("pkg", ".mod", "Device", lib)
 
     def test_build_failure_becomes_an_import_error_with_instructions(self, lib, fake_import, monkeypatch):

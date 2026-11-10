@@ -2,11 +2,13 @@
 
 The extension is compiled WITHOUT linking libhackrf (only the vendored hackrf.h is needed), so
 packaging never builds or needs the library and wheels build anywhere. libhackrf is found or built on
-the user's machine the first time `pysdrlib.hackrf` is imported; see `utils.VendorLibrary`.
+the user's machine when `pysdrlib build hackrf` is run (or, with PYSDRLIB_BUILD=auto, the first time
+`pysdrlib.hackrf` is imported); see `utils.VendorLibrary`.
 """
 from . import utils
 
 LIB = utils.VendorLibrary(
+    driver="hackrf",
     name="hackrf",
     source=utils.PATH_MOD / "hackrf" / "vendor" / "libhackrf",   # vendored libhackrf (CMake project)
     files=("libhackrf.so.0", "libhackrf.so", "libhackrf.0.dylib", "libhackrf.dylib", "hackrf.dll"),

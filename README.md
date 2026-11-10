@@ -142,11 +142,22 @@ authentication or encryption, so only serve a network you trust. See the
 and wire formats.
 
 ## Building from source
-Each vendor's library (HackRF, ExtIO, etc.) is built on first use if it isn't already installed. That needs `cmake`, a
-C++17 compiler, `pkg-config` and the development files below. Tests for a device whose library can't be built are skipped.
+Each driver needs its vendor's library (libhackrf, libuhd...).
+Use the one your package manager has, or build the copy that
+comes with pysdrlib:
+
+```
+pysdrlib build              # where each driver's library is: installed, built before, or missing
+pysdrlib build hackrf       # build one
+pysdrlib build --all        # build every one that is missing
+```
+Importing a driver never builds anything by itself: without its library it fails with a message that says to run the command
+above. (`PYSDRLIB_BUILD=auto` in the environment restores building on first use, and `find(build=True)` builds what is missing.)
+Building needs `cmake`, a C++17 compiler, `pkg-config` and the development files below, and installs nothing system-wide: it
+is built out of the source tree into a per-user cache.
+Tests for a device whose library isn't there are skipped.
 
 Prebuilt `librtlsdr` / `libhackrf` / `libextio_sdcc` / `libuhd` packages can be installed instead of building them.
-(Building UHD takes several minutes, and only the B200 family is built.)
 
 Install the build tools and `libusb`, plus **fftw** for the RX-888 or **boost** for UHD:
 

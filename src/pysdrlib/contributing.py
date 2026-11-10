@@ -91,8 +91,9 @@ The error codes you throw are listed once, in `<name>_pybind.cpp`'s `hw::registe
 `_native/uhd/` (several channels, transmit) are complete examples.
 
 The extension is built **without linking** the vendor library: its symbols resolve when `_ext/<name>.py`'s `LIB` loads
-the library at first import (installed, cached, or built from the vendored sources with cmake, no network). Vendored
-sources go in `<name>/vendor/` (a git submodule). Give `LIB.help` a message a user can act on.
+the library at first import (installed, or built before by `pysdrlib build <name>` from the vendored sources with cmake, no
+network). Importing never builds it. Vendored
+sources go in `<name>/vendor/` (a git submodule). Give `LIB.help` a message a user can act on, `LIB.driver` your driver's name (it is what `pysdrlib build <name>` takes), and `LIB.note` a warning if building is slow.
 
 ## 4. Finding units: `find()`
 
@@ -101,6 +102,9 @@ attached unit. `open_args` is what `Device.open` takes to open that one (`{"seri
 is how `pysdrlib.open(info)` works. It must not open the radio, and must not raise when none is attached.
 
 ## 5. Check it
+
+After changing a binding, regenerate the extension's type stubs (`pip install pybind11-stubgen`, then
+`python -m pysdrlib._ext.stubs`): editors read them, and `tests/test_stubs.py` fails until they list what the extension has.
 
     from pysdrlib import testing
     print(*testing.check_package("my_radio"), sep="\\n")

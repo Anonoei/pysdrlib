@@ -73,11 +73,20 @@ def _library_ready(name, build):
     except ModuleNotFoundError:
         return True   # no vendor library (simulated devices)
     lib = getattr(ext, "LIB", None)
-    return build or lib is None or lib.available()
+    if lib is None or lib.available():
+        return True
+    if not build:
+        return False
+    try:
+        lib.load(build=True)   # what `find(build=True)` allows: building the vendor library now
+    except RuntimeError as exc:
+        _log.debug("find: %s: %s", name, exc)
+        return False
+    return True
 
 def find(driver: Optional[str] = None, build=False, virtual=False) -> list:
     """The radios attached to this machine, as DeviceInfo. Only drivers whose vendor library is installed or was
-    built before are asked (importing a driver otherwise builds it; `build=True` allows that).
+    built before are asked (`pysdrlib build <driver>` builds one; `build=True` builds the ones that are missing now).
     virtual: also list simulated devices"""
     found = []
     for name in ([driver] if driver else ls()):

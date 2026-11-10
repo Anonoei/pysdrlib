@@ -33,10 +33,10 @@ dependencies = ["numpy"]
 
 [project.optional-dependencies]
 remote = ["pyzmq"]
-dev = ["setuptools", "pyzmq", "twine", "build", "cython", "pybind11", "bumpver", "pytest", "pdoc3", "matplotlib"]
+dev = ["setuptools", "pyzmq", "twine", "build", "cython", "pybind11", "bumpver", "pytest", "pdoc3", "matplotlib", "pybind11-stubgen"]
 
 [project.scripts]
-pysdrlib = "pysdrlib.remote.cli:main"
+pysdrlib = "pysdrlib.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/Anonoei/pysdrlib"

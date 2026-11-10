@@ -176,6 +176,7 @@ or needs it and wheels build anywhere. The library is found or built on the user
 from . import utils
 
 LIB = utils.VendorLibrary(
+    driver="@NAME@",
     name="@NAME@",                                              # TODO: the name ctypes.util.find_library knows it by
     source=utils.PATH_MOD / "@NAME@" / "vendor" / "@NAME@",     # TODO: the vendored sources (a CMake project)
     files=("lib@NAME@.so.0", "lib@NAME@.so", "lib@NAME@.dylib", "@NAME@.dll"),

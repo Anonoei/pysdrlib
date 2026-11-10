@@ -2,7 +2,8 @@
 
 The extension uses UHD's C API and is compiled WITHOUT linking libuhd (only the vendored uhd.h is needed), so
 packaging never builds or needs the library and wheels build anywhere. libuhd is found or built on the user's
-machine the first time `pysdrlib.uhd` is imported; see `utils.VendorLibrary`. The bundled copy is configured for
+machine when `pysdrlib build uhd` is run (or, with PYSDRLIB_BUILD=auto, the first time
+`pysdrlib.uhd` is imported); see `utils.VendorLibrary`. The bundled copy is configured for
 the B2xx family only (B200/B210/B200mini); building it takes several minutes and needs cmake, a C++17
 compiler, Boost and libusb.
 """
@@ -13,6 +14,7 @@ from . import utils
 GENERATED = utils.PATH_MOD / "_native" / "uhd" / "generated"   # holds uhd/version.hpp (not committed)
 
 LIB = utils.VendorLibrary(
+    driver="uhd", note="takes several minutes",
     name="uhd",
     source=utils.PATH_MOD / "uhd" / "vendor",   # CMake wrapper around the vendored EttusResearch/uhd
     files=("libuhd.so.4", "libuhd.so", "libuhd.4.dylib", "libuhd.dylib", "uhd.dll"),

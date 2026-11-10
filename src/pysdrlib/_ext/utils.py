@@ -33,7 +33,8 @@ def is_installed(lib_name):
 #
 #     1. the system library, if installed
 #     2. a copy previously built from the vendored sources
-#     3. otherwise build one now from the vendored sources (cmake, no network) and cache it
+#     3. otherwise it is missing: `pysdrlib build <driver>` builds one from the vendored sources (cmake, no network) and
+#        caches it. Importing a driver never does that by itself (it can take minutes); PYSDRLIB_BUILD=auto allows it.
 
 def user_cache(name: str) -> Path:
     """Per-user directory for the library pysdrlib builds (override the root with PYSDRLIB_CACHE)"""
@@ -65,6 +66,8 @@ class VendorLibrary:
     help: str                       # what to tell the user when it can't be built
     build_globs: tuple = ()         # CMake output to cache (default: `files`)
     missing_hints: tuple = ()       # in an ImportError: the extension loaded but this library didn't
+    driver: str = ""                # the driver it belongs to: what `pysdrlib build` takes
+    note: str = ""                  # about building it ("takes several minutes")
 
     def cache_dirs(self):
         """Where a built library may live: next to the package (dev checkouts), then the user cache"""
@@ -80,7 +83,23 @@ class VendorLibrary:
 
     def available(self) -> bool:
         """True if the library can be loaded without building it (installed, or built before)"""
-        return bool(ctypes.util.find_library(self.name)) or self.find_cached() is not None
+        return self.locate() is not None
+
+    def locate(self):
+        """("system", name) if installed, ("cached", path) if built before, else None"""
+        system = ctypes.util.find_library(self.name)
+        if system:
+            return "system", system
+        cached = self.find_cached()
+        return ("cached", str(cached)) if cached is not None else None
+
+    def not_built(self) -> str:
+        """What to tell a user whose driver needs this library and it is not there"""
+        driver = self.driver or self.name
+        slow = f" ({self.note})" if self.note else ""
+        return (f"{self.name} is not installed and has not been built. Run `pysdrlib build {driver}`{slow} to build the copy "
+                f"that comes with pysdrlib, or install it with your package manager. (pysdrlib does not build it while "
+                f"importing; set PYSDRLIB_BUILD=auto to have it do that on first use.) {self.help}")
 
     def is_missing(self, exc: ImportError) -> bool:
         """True if `exc` means the extension is there but this library's symbols aren't"""
@@ -117,9 +136,10 @@ class VendorLibrary:
             raise RuntimeError(f"Could not find the built {self.name} in {target}. {self.help}")
         return found
 
-    def load(self) -> str:
-        """Make the library's symbols available to the extension; returns a description of what was
-        loaded. Builds the bundled copy only if neither a system nor a cached library can be loaded."""
+    def load(self, build=None) -> str:
+        """Make the library's symbols available to the extension; returns a description of what was loaded. Builds the
+        bundled copy only if neither a system nor a cached library can be loaded, and only when `build` is true (None:
+        when PYSDRLIB_BUILD is "auto"); otherwise a missing library is a RuntimeError saying how to build it."""
         system = ctypes.util.find_library(self.name)
         if system:
             try:
@@ -134,6 +154,10 @@ class VendorLibrary:
                 return f"cached {cached}"
             except OSError:
                 pass
+        if build is None:
+            build = os.environ.get("PYSDRLIB_BUILD", "").lower() in ("auto", "1", "yes", "true")
+        if not build:
+            raise RuntimeError(self.not_built())
         built = self.build()
         try:
             load_global(built)

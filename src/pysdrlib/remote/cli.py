@@ -1,13 +1,13 @@
-"""Command line for the remote server and client.
+"""Command line for the remote server, relay and client
 
-    pysdrlib server --bind tcp://0.0.0.0:5555 --port-range 6000-6100 --devices hackrf,rtl_sdr
+    pysdrlib server --bind tcp://0.0.0.0:5555 --port-range 6000-6100 --devices <driver1>,<driver2>
     pysdrlib client tcp://host:5555 list
-    pysdrlib client tcp://host:5555 info hackrf-0
-    pysdrlib client tcp://host:5555 rx hackrf --freq 100e6 --rate 10e6 -o out.cfile -t 5
-    pysdrlib client tcp://host:5555 watch hackrf-0 -o out.cfile -t 5
-    pysdrlib client tcp://host:5555 tx hackrf -i out.cfile --freq 915e6 --rate 2e6 --tx-gain 0 --tx-wire int8
-    pysdrlib client tcp://host:5555 set hackrf-0 rx_freq=101e6 rx_lna_gain=16
-    pysdrlib relay tcp://host:5555 hackrf-0 --bind tcp://127.0.0.1:5556      # programs here share one connection to it
+    pysdrlib client tcp://host:5555 info <driver>-0
+    pysdrlib client tcp://host:5555 rx <driver> --freq 100e6 --rate 10e6 -o out.cfile -t 5
+    pysdrlib client tcp://host:5555 watch <driver>-0 -o out.cfile -t 5
+    pysdrlib client tcp://host:5555 tx <driver> -i out.cfile --freq 915e6 --rate 2e6 --tx-gain 0 --tx-wire int8
+    pysdrlib client tcp://host:5555 set <driver>-0 rx_freq=101e6 rx_lna_gain=16
+    pysdrlib relay tcp://host:5555 <driver>-0 --bind tcp://127.0.0.1:5556      # programs here share one connection to it
 
 Recordings and transmit files are raw complex64 (GNU Radio `.cfile`).
 --rx-wire / --tx-wire choose the format samples cross the network in (native = the device's own layout).
@@ -32,11 +32,8 @@ def _port_range(text):
         raise argparse.ArgumentTypeError("expected LOW-HIGH, e.g. 6000-6100")
     return int(low), int(high)
 
-def build_parser():
-    """The `pysdrlib` argument parser: `server` and `client` modes (see the module docs)"""
-    p = argparse.ArgumentParser(prog="pysdrlib", description="pysdrlib remote server and client")
-    sub = p.add_subparsers(dest="mode", required=True)
-
+def add_parsers(sub):
+    """Add the `server`, `relay` and `client` commands to the subparsers of the `pysdrlib` command"""
     s = sub.add_parser("server", help="host the SDRs connected to this machine")
     s.add_argument("--bind", default="tcp://127.0.0.1:5555", help="C2 endpoint (default %(default)s; use tcp://0.0.0.0:5555 to serve the network)")
     s.add_argument("--port-range", type=_port_range, help="LOW-HIGH ports for per-device sockets (default: any free port)")
@@ -98,6 +95,11 @@ def build_parser():
     t.add_argument("--loop", action="store_true", help="repeat the file until Ctrl+C")
     t.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="device specific setter, e.g. tx_if_gain=0 (repeatable)")
     t.add_argument("--init", action="append", default=[], metavar="KEY=VALUE", help="device constructor argument (repeatable)")
+
+def build_parser():
+    """A parser of just the remote commands, for `main` here"""
+    p = argparse.ArgumentParser(prog="pysdrlib", description="pysdrlib remote server, relay and client")
+    add_parsers(p.add_subparsers(dest="mode", required=True))
     return p
 
 def _record_args(p):
@@ -267,9 +269,8 @@ def run_client(args):
             print(f"{dev.id}: cf={dev.get_rx_freq():,.0f} Fs={dev.get_rx_sample_rate():,.0f} tx_wire={dev.tx_wire_name}")
             _transmit(dev, args)
 
-def main(argv=None):
-    """Entry point of the `pysdrlib` command; errors exit with a message instead of a traceback"""
-    args = build_parser().parse_args(argv)
+def run(args):
+    """Run the command `args` names (`server`, `relay` or `client`); errors exit with a message instead of a traceback"""
     try:
         import zmq  # noqa: F401
     except ImportError:
@@ -283,6 +284,10 @@ def main(argv=None):
         if isinstance(e, err._Error):
             raise SystemExit(f"error: {e}")
         raise
+
+def main(argv=None):
+    """The remote commands on their own (`pysdrlib.cli.main` is the whole `pysdrlib` command)"""
+    run(build_parser().parse_args(argv))
 
 if __name__ == "__main__":
     sys.exit(main())
