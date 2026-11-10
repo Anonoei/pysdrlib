@@ -391,3 +391,26 @@ class TestNits:
         with FileSink(tmp_path / "b", "i16t") as s:
             with pytest.raises(ValueError, match=r"^i16t: .*clip=True"):
                 s.write([40000])
+
+
+class TestScale:
+    def test_scaled_samples_are_what_a_device_returns(self, tmp_path):
+        path = tmp_path / "cap.ci16t"
+        with open(path, "wb") as f:
+            Formats.ci16t.write(f, [127 - 128j, 64 + 0j, 0 + 0j, -64 + 32j])
+        with File(path, "ci16t") as raw:
+            assert raw.next(4).tolist() == [127 - 128j, 64 + 0j, 0 + 0j, -64 + 32j]
+        with File(path, "ci16t", scale=True) as scaled:
+            x = scaled.next(4)
+        assert x.dtype == np.complex64
+        np.testing.assert_allclose(x, [127 / 128 - 1j, 0.5, 0, -0.5 + 0.25j])
+
+    def test_it_can_be_switched_on_later(self, tmp_path):
+        path = tmp_path / "cap.i8t"
+        path.write_bytes(bytes([64, 64]))
+        f = File(path, "i8t")
+        f.open()
+        assert f.next(1).tolist() == [64]
+        f.scale = True
+        assert f.next(1).tolist() == [0.5]
+        f.close()

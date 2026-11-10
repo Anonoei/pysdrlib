@@ -54,8 +54,9 @@ all-ones (`0xFF`) is a "negative zero" that reads as 0. It is read into the matc
 and written back the same way. You'll only need `i4o`/`i8o`/`i16o` for hardware or files that use them.
 
 ## What reading and writing do
-- **Nothing is scaled.** A `ci16t` file of full-scale samples reads back as values from -128 to 127, not -1 to 1. Divide
-  by the full scale yourself (e.g. `/ 128`) if you want the `[-1, 1]` that devices return.
+- **Nothing is scaled** unless you ask. A `ci16t` file of full-scale samples reads back as values from -128 to 127, not
+  -1 to 1. `File(path, fmt, scale=True)` (or `Formats.<name>.scale(samples)`) gives the `[-1, 1]` that devices return;
+  `Formats.<name>.full_scale` is the value that maps to 1.0.
 - **Real formats** read as their natural numpy type (`i16t` -> `int16`, `f32` -> `float32`).
   **Complex formats** read as `complex64`, except `cf128`, which reads as `complex128`.
 - **Writing** accepts any array-like. Floats written to an integer format are rounded to the nearest integer. A value
@@ -99,6 +100,8 @@ delivers* (for instance a 12-bit ADC in 16-bit words) and converts it to `comple
 `pysdrlib.remote` wire formats are `SampleFormat`s.
 """
 from enum import Enum
+
+import numpy as np
 
 from . import io as IO
 
@@ -153,6 +156,22 @@ class Formats(Enum):
     def integer(self):
         """True if components are stored as integers"""
         return self.value.integer()
+
+    @property
+    def full_scale(self):
+        """The magnitude of a component (I or Q) that `scale` maps to 1.0: 2^(bits-1) for signed integers, half the range
+        for unsigned ones, 1.0 for floats"""
+        return self.value.full_scale()
+
+    def scale(self, samples):
+        """Samples as `read` gives them, scaled the way a device's are: float32 (complex64 for complex formats) with
+        full scale at +-1. An unsigned integer format is centred first (mid-scale is zero). A float format keeps its
+        values; `cf128` and `f64` stay double precision"""
+        x = np.asarray(samples)
+        if x.dtype.kind != "c" and x.dtype != np.float64:
+            x = x.astype(np.float32)
+        offset = self.value.offset()
+        return ((x - offset) if offset else x) / x.real.dtype.type(self.full_scale)
 
     @property
     def bits(self):

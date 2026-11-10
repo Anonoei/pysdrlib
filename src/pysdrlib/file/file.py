@@ -13,15 +13,17 @@ from . import err
 class File:
     """Read samples from a file like a device: `File(path, fmt)`, then `next`, `forward`, `seek`...
 
-    `fmt` names one of `pysdrlib.Formats` (e.g. `"cf64"`, `"ci16t"`; see `pysdrlib.base.formats`). Samples are returned as stored, never scaled.
+    `fmt` names one of `pysdrlib.Formats` (e.g. `"cf64"`, `"ci16t"`; see `pysdrlib.base.formats`). Samples are returned as stored,
+    unless `scale=True`: then complex64 (or float32) with full scale at +-1, like a device's (see `Formats.scale`).
     Usable as a context manager, which opens and closes it:
 
         with File("capture.cfile", "cf64") as f:      # cf64: two float32 per sample
             for block in f.forward(8192, partial=True):
                 ...
     """
-    def __init__(self, path=None, fmt: str | None = None):
+    def __init__(self, path=None, fmt: str | None = None, scale: bool = False):
         self.log = logger.new("device.File")
+        self.scale = scale   # return samples scaled to +-1, like a device (otherwise as stored)
         self.fmt: Formats = None # type: ignore
         self.path: Path = None # type: ignore
         self.count = 8192
@@ -148,7 +150,8 @@ class File:
 
     def _read(self, count: int):
         """Read <count> samples at the current position (does not touch cur_samp)"""
-        return self.fmt.read(self.f, count)
+        samples = self.fmt.read(self.f, count)
+        return self.fmt.scale(samples) if self.scale else samples
 
     def forward(self, count: int, partial: bool = False):
         """Yield blocks of <count> samples until EOF.

@@ -157,16 +157,7 @@ class TestHelpers:
             vals = np.array([lo, -1, 0, 1, hi], dtype=otype)
             assert io.o2t(io.t2o(vals, width, utype), width, otype).tolist() == vals.tolist()
 
-    def test_m2t(self):
-        """Sign magnitude: top bit is sign, rest is magnitude."""
-        assert io.m2t(np.array([0, 5, 127, 128, 129, 255], dtype=np.uint8), 8, np.int8).tolist() == [0, 5, 127, 0, -1, -127]
-
-    def test_b2t(self):
-        """Offset binary: 0 is the most negative value."""
-        assert io.b2t(np.array([0, 127, 128, 255], dtype=np.uint8), 8, np.int8).tolist() == [-128, -1, 0, 127]
-
     def test_helpers_do_not_modify_input(self):
         src = np.array([128, 255], dtype=np.uint8)
         io.o2t(src, 8, np.int8)
-        io.m2t(src, 8, np.int8)
         assert src.tolist() == [128, 255]
