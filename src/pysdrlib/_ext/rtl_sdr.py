@@ -1,12 +1,13 @@
 """Build and load helpers for the RTL-SDR extension.
 
 Like HackRF, the extension is compiled WITHOUT linking librtlsdr (only the vendored rtl-sdr.h is needed),
-so packaging never builds the library. librtlsdr is found or built on the user's machine the first time
-`pysdrlib.rtl_sdr` is imported; see `utils.VendorLibrary`.
+so packaging never builds the library. librtlsdr is found or built on the user's machine (`pysdrlib build rtl_sdr`)
+when `pysdrlib.rtl_sdr` is first needed; see `utils.VendorLibrary`.
 """
 from . import utils
 
 LIB = utils.VendorLibrary(
+    driver="rtl_sdr",
     name="rtlsdr",
     source=utils.PATH_MOD / "rtl_sdr" / "vendor",   # CMake project wrapping the vendored librtlsdr
     files=("librtlsdr.so.0", "librtlsdr.so", "librtlsdr.0.dylib", "librtlsdr.dylib", "rtlsdr.dll"),

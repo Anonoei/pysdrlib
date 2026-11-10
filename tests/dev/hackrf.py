@@ -21,9 +21,9 @@ def _psd(samples):
 
 def oneshot():
     with hackrf.Device() as sdr:
-        sdr.set_freq(cf)
-        sdr.set_sample_rate(Fs)
-        sdr.set_rx_gain()
+        sdr.set_rx_freq(cf)
+        sdr.set_rx_sample_rate(Fs)
+        sdr.set_rx_gain_db()
         sdr.start_rx()
         time.sleep(1)
         samples = sdr.get_samples()
@@ -54,9 +54,9 @@ def live():
     fig.canvas.draw()
     plt.ion()
     with hackrf.Device() as sdr:
-        sdr.set_freq(cf)
-        sdr.set_sample_rate(Fs)
-        sdr.set_rx_gain()
+        sdr.set_rx_freq(cf)
+        sdr.set_rx_sample_rate(Fs)
+        sdr.set_rx_gain_db()
         sdr.start_rx()
         try:
             time.sleep(0.2)
@@ -81,7 +81,7 @@ def gain():
     sdr = hackrf.Device()
     print(json.dumps(sdr.CONFIG.json(), indent=4))
     sdr.state["open"] = True # pretending we have a device to test gain logic
-    sdr.set_rx_gain(80)
+    sdr.set_rx_gain_db(80)
 
 if __name__ == "__main__":
     # oneshot()

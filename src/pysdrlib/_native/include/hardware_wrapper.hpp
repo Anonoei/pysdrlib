@@ -3,6 +3,7 @@
 // Generic, device-agnostic pieces shared by every C++ driver wrapper.
 // Device-specific wrappers live in their own folder next to this one: _native/<device>/.
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -11,6 +12,7 @@
 
 #include "hardware_format.hpp"
 #include "hardware_rx.hpp"
+#include "hardware_tx.hpp"
 
 // Error carrying the vendor library's numeric error code.
 class HardwareError : public std::runtime_error {
@@ -50,23 +52,50 @@ public:
     // Buffered receive (the default way to read a device): with no callback set, each transfer is
     // converted to complex64 and queued on the streaming thread, without Python. `samples` is how many the
     // queue holds before it drops the oldest.
-    void set_rx_buffer(size_t samples) { rx_.configure(rx_sample_format(), samples); }
-    void reset_rx_stats() { rx_.reset_stats(); }
-    size_t rx_available() const { return rx_.available(); }
-    size_t read_rx(hw::cfloat* dst, size_t max_count) { return rx_.read(dst, max_count); }
-    hw::RingStats rx_stats() const { return rx_.stats(); }
+    //
+    // A device streaming several channels at once queues each in its own slot (slot k: the k-th channel of the
+    // stream); everything else uses slot 0.
+    static constexpr size_t MAX_RX_SLOTS = 8;
+    void set_rx_buffer(size_t samples, size_t slots = 1) {
+        if (slots < 1 || slots > MAX_RX_SLOTS) throw std::invalid_argument("rx slots must be 1-" + std::to_string(MAX_RX_SLOTS));
+        for (size_t k = 0; k < MAX_RX_SLOTS; k++)
+            if (k < slots || rx_[k].enabled()) rx_[k].configure(rx_sample_format(), k < slots ? samples : 0);
+        rx_slots_ = slots;
+    }
+    size_t rx_slots() const { return rx_slots_; }
+    void reset_rx_stats() { for (auto& r : rx_) r.reset_stats(); }
+    size_t rx_available(size_t slot = 0) const { return rx_.at(slot).available(); }
+    size_t read_rx(hw::cfloat* dst, size_t max_count, uint64_t* first = nullptr, size_t slot = 0) { return rx_.at(slot).read(dst, max_count, first); }
+    // Block (GIL released by the binding) until `samples` are queued or `timeout` seconds pass; returns how many are
+    size_t wait_rx(size_t samples, double timeout, size_t slot = 0) { return rx_.at(slot).wait(samples, timeout); }
+    // The driver's thread: `samples` were lost before reaching us (the hardware said so); readers see the gap
+    void skip_rx(size_t samples, size_t slot = 0) const { if (slot < MAX_RX_SLOTS) rx_[slot].skip(samples); }
+    hw::RingStats rx_stats(size_t slot = 0) const { return rx_.at(slot).stats(); }
 
     virtual void start_rx() = 0;
     virtual void stop_rx() = 0;
     virtual bool is_streaming() const = 0;
 
+    // Transmit (a transmitter overrides start_tx/stop_tx/is_transmitting/tx_error; see hw::bind_tx). Python writes
+    // complex64 into a queue per channel slot; the driver's transmit thread or callback reads it and encodes to the
+    // hardware's format without the GIL. Several channels go out sample for sample together (slot k: the k-th channel).
+    static constexpr size_t MAX_TX_SLOTS = 4;
+    void set_tx_buffer(size_t samples) { for (auto& q : tx_) q.configure(samples); }
+    size_t write_tx(const hw::cfloat* src, size_t n, double timeout, size_t slot = 0) { return tx_.at(slot).write(src, n, timeout); }
+    hw::TxQueue::Stats tx_stats(size_t slot = 0) const { return tx_.at(slot).stats(); }
+    virtual void start_tx() { throw std::logic_error("this device cannot transmit"); }
+    virtual void stop_tx() {}
+    virtual bool is_transmitting() const { return false; }
+    virtual std::string tx_error() const { return ""; }              // non-empty if the transmit stream died under us
+    virtual uint64_t tx_async_errors() const { return 0; }           // transmit problems the hardware reported
+
     // What a driver's streaming thread calls with each buffer: hands it to the callback if there is one,
     // else queues it (see set_rx_buffer), else returns -1 (stop streaming). Public so tests can drive the
     // real path without hardware.
-    int dispatch_rx(const void* data, size_t valid_bytes, size_t buffer_bytes) const {
-        if (rx_callback_) return rx_callback_(data, valid_bytes, buffer_bytes);
-        if (rx_.enabled()) {
-            rx_.push(data, valid_bytes);
+    int dispatch_rx(const void* data, size_t valid_bytes, size_t buffer_bytes, size_t slot = 0) const {
+        if (slot == 0 && rx_callback_) return rx_callback_(data, valid_bytes, buffer_bytes);
+        if (slot < MAX_RX_SLOTS && rx_[slot].enabled()) {
+            rx_[slot].push(data, valid_bytes);
             return 0;
         }
         return -1;
@@ -83,5 +112,7 @@ protected:
     HandleT handle_ = nullptr;
     // Only safe to drop once no streaming thread can call it, i.e. after the driver has stopped
     RxCallbackFn rx_callback_;
-    mutable hw::RxPipeline rx_;
+    mutable std::array<hw::RxPipeline, MAX_RX_SLOTS> rx_;
+    std::array<hw::TxQueue, MAX_TX_SLOTS> tx_;
+    size_t rx_slots_ = 1;
 };

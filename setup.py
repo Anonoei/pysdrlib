@@ -7,15 +7,11 @@ from setuptools import setup
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 import pysdrlib._ext.utils as ext_utils  # noqa: E402
-import pysdrlib._ext.hackrf as ext_hackrf  # noqa: E402
-import pysdrlib._ext.extio as ext_extio  # noqa: E402
-import pysdrlib._ext.rtl_sdr as ext_rtl_sdr  # noqa: E402
 
+# The samples extension, then every device's: any `_ext/<name>.py` with a get() (no list to keep up to date here)
 ext_modules = [
     ext_utils.samples_extension(),
-    ext_hackrf.get(),
-    ext_extio.get(),
-    ext_rtl_sdr.get(),
+    *ext_utils.driver_extensions(),
 ]
 
 setup(

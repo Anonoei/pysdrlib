@@ -328,3 +328,44 @@ class TestRoundTrip:
             formats.Formats[name].write(buf, [])
             assert buf.getvalue() == b""
             assert len(formats.Formats[name].read(_io.BytesIO(b""), -1)) == 0
+
+
+class TestScale:
+    """full_scale / scale: what a format's values mean as a device's +-1 samples"""
+    @pytest.mark.parametrize("name,full", [
+        ("i8t", 128), ("i16t", 32768), ("ci16t", 128), ("ci32t", 32768), ("ci8t", 8), ("i4t", 8), ("i8o", 128),
+        ("ui8", 127.5), ("ui16", 32767.5), ("f32", 1), ("f64", 1), ("cf64", 1), ("cf32", 1), ("cf128", 1),
+    ])
+    def test_full_scale(self, name, full):
+        assert formats.Formats[name].full_scale == full
+
+    def test_a_signed_integer_maps_its_extremes_to_plus_minus_one(self):
+        x = np.array([127 - 128j, 0, -64 + 64j], dtype=np.complex64)
+        y = formats.Formats.ci16t.scale(x)
+        assert y.dtype == np.complex64
+        np.testing.assert_allclose(y, [127 / 128 - 1j, 0, -0.5 + 0.5j])
+
+    def test_an_unsigned_integer_is_centred_first(self):
+        y = formats.Formats.ui8.scale(np.array([0, 255, 127], dtype=np.uint8))
+        assert y.dtype == np.float32
+        np.testing.assert_allclose(y, [-1, 1, -0.5 / 127.5])
+
+    def test_floats_keep_their_values_and_precision(self):
+        assert formats.Formats.f32.scale(np.array([0.25], np.float32)).tolist() == [0.25]
+        assert formats.Formats.cf64.scale(np.array([1 + 2j], np.complex64)).dtype == np.complex64
+        assert formats.Formats.cf128.scale(np.array([1 + 2j])).dtype == np.complex128
+        assert formats.Formats.f64.scale(np.array([0.5])).dtype == np.float64
+
+    def test_scale_inverts_a_device_conversion(self):
+        """A file of what a device delivered, scaled, is what the device's own conversion gives"""
+        from pysdrlib.base import convert
+        raw = np.array([[100, -100], [-128, 127]], dtype=np.int8)
+        stored = np.frombuffer(raw.tobytes(), dtype=np.int8).astype(np.float32).view(np.complex64)
+        np.testing.assert_allclose(formats.Formats.ci16t.scale(stored), convert.INT8.to_complex64(raw))
+
+    def test_writing_complex64_does_not_widen_it(self):
+        """cf64 on disk is the array's own bytes, with no double-precision copy in between"""
+        x = (np.arange(8) + 1j * np.arange(8)).astype(np.complex64)
+        buf = _io.BytesIO()
+        formats.Formats.cf64.write(buf, x)
+        assert buf.getvalue() == x.tobytes()

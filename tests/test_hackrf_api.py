@@ -1,4 +1,5 @@
 """HackRF's own Python behaviour over a fake driver. What every device does is in test_device_contract.py."""
+import numpy as np
 import pytest
 
 from devices import BY_NAME
@@ -6,7 +7,10 @@ from devices import BY_NAME
 # A device whose vendor library cannot be built here (missing system packages) is skipped, not failed
 pytest.importorskip("pysdrlib.hackrf", exc_type=ImportError)
 
-from pysdrlib.hackrf.config import ConfigHackRF as config
+from pysdrlib import err
+from pysdrlib.hackrf import Device as HackRF
+
+config = HackRF.CAPS
 from pysdrlib.hackrf.lib import err as lib_err
 
 
@@ -71,31 +75,31 @@ class TestSpecificGainPublic:
 
 class TestTotalGain:
     def test_rx_default_programs_the_lna_and_vga(self, sdr):
-        sdr.set_rx_gain()
-        assert calls(sdr, "set_lna_gain") == [(config.DEFAULT_GAIN_RX_IF,)]
-        assert calls(sdr, "set_vga_gain") == [(config.DEFAULT_GAIN_RX_BB,)]
+        sdr.set_rx_gain_db()
+        assert calls(sdr, "set_lna_gain") == [(config.stage("rx", "IF").default,)]
+        assert calls(sdr, "set_vga_gain") == [(config.stage("rx", "BB").default,)]
 
     def test_tx_uses_the_amp_only_when_the_txvga_cannot_supply_it(self, sdr):
-        sdr.set_tx_gain(45)   # the TXVGA reaches 47 dB on its own
-        assert not calls(sdr, "set_amp_enable") and calls(sdr, "set_txvga_gain")[-1] == (45,)
+        sdr.set_tx_gain_db(45)   # the TXVGA reaches 47 dB on its own: the amp is switched off, whatever it was
+        assert calls(sdr, "set_amp_enable") == [(False,)] and calls(sdr, "set_txvga_gain")[-1] == (45,)
         sdr.device.calls.clear()
-        sdr.set_tx_gain(58)   # max: the 11 dB amp plus 47 dB of TXVGA
+        sdr.set_tx_gain_db(58)   # max: the 11 dB amp plus 47 dB of TXVGA
         assert calls(sdr, "set_amp_enable") == [(True,)] and calls(sdr, "set_txvga_gain") == [(47,)]
 
 
-class TestConfig:
+class TestCaps:
     def test_limits(self):
-        assert (config.FREQ_MIN, config.FREQ_MAX) == (1_000_000, 6_000_000_000)
-        assert (config.SAMPLE_RATE_MIN, config.SAMPLE_RATE_MAX) == (2_000_000, 20_000_000)
+        assert [(r.lo, r.hi) for r in config.freq] == [(1_000_000, 6_000_000_000)]
+        assert [(r.lo, r.hi) for r in config.rates] == [(2_000_000, 20_000_000)]
 
     @pytest.mark.parametrize("name,step,lo,hi", [
         ("RX_RF", 11, 0, 11), ("RX_IF", 8, 0, 40), ("RX_BB", 2, 0, 62),
         ("TX_RF", 11, 0, 11), ("TX_IF", 1, 0, 47),
     ])
     def test_gain_ranges(self, name, step, lo, hi):
-        assert getattr(config, f"GAIN_{name}_STEP") == step
-        assert getattr(config, f"GAIN_{name}_MIN") == lo
-        assert getattr(config, f"GAIN_{name}_MAX") == hi
+        direction, stage = name.split("_")
+        spec = config.stage(direction, stage)
+        assert (spec.step, spec.min, spec.max) == (step, lo, hi)
 
 
 @pytest.mark.parametrize("name", [
@@ -105,3 +109,43 @@ class TestConfig:
 ])
 def test_error_classes(name):
     assert issubclass(getattr(lib_err, name), lib_err.HackRFError)
+
+
+class TestTransmit:
+    def test_start_sizes_the_queue_for_the_rate(self, sdr):
+        sdr.set_rx_sample_rate(10e6)
+        sdr.start_tx()
+        assert calls(sdr, "set_tx_buffer")[-1] == (int(type(sdr).TX_BUFFER_SECONDS * sdr.get_rx_sample_rate()),)
+        assert sdr.device.names()[-1] == "start_tx"
+        sdr.stop_tx()
+        assert sdr.device.names()[-1] == "stop_tx"
+
+    def test_write_needs_start_tx(self, sdr):
+        with pytest.raises(err.NotStreaming):
+            sdr.write(np.zeros(4, np.complex64))
+
+    def test_write_hands_over_complex64_whatever_it_was_given(self, sdr):
+        got = []
+        sdr.device._returns["write_tx"] = lambda x, timeout, slot=0: got.append(x) or len(x)
+        sdr.device._returns["tx_error"] = lambda: ""
+        sdr.start_tx()
+        assert sdr.write(np.ones(8, np.complex128)) == 8
+        assert got[0].dtype == np.complex64 and got[0].flags.c_contiguous
+
+    def test_write_reports_a_dead_transmitter(self, sdr):
+        sdr.device._returns["write_tx"] = lambda x, timeout, slot=0: 0
+        sdr.device._returns["tx_error"] = lambda: "STREAMING_STOPPED"
+        sdr.start_tx()
+        with pytest.raises(err.StreamStalled):
+            sdr.write(np.zeros(8, np.complex64))
+
+    def test_half_duplex_refuses_tx_while_receiving(self, sdr):
+        sdr.start_rx()
+        with pytest.raises(err.Busy):
+            sdr.start_tx()
+        assert "start_tx" not in sdr.device.names()
+
+    def test_half_duplex_refuses_rx_while_transmitting(self, sdr):
+        sdr.start_tx()
+        with pytest.raises(err.Busy):
+            sdr.start_rx()

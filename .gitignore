@@ -4,6 +4,7 @@ src/pysdrlib/_ext/cache
 
 *.c
 !vendor
+!src/pysdrlib/_native/**/*.c
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -34,3 +35,9 @@ logs/
 
 # Benchmark baselines/runs are per machine
 .benchmarks/
+
+# Built documentation
+docs/
+
+# Generated at build time (see _ext/uhd.py)
+src/pysdrlib/_native/uhd/generated/

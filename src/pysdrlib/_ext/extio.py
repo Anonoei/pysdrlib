@@ -2,11 +2,13 @@
 
 Like HackRF, the extension is compiled WITHOUT linking the vendor library, so packaging never builds
 it. `libsddc_core` (ExtIO_sddc's Core, built as a shared library) is found or built on the user's
-machine the first time `pysdrlib.extio` is imported; see `utils.VendorLibrary`.
+machine when `pysdrlib build extio` is run (or, with PYSDRLIB_BUILD=auto, the first time
+`pysdrlib.extio` is imported); see `utils.VendorLibrary`.
 """
 from . import utils
 
 LIB = utils.VendorLibrary(
+    driver="extio",
     name="sddc_core",
     source=utils.PATH_MOD / "extio" / "vendor",   # CMake project wrapping the vendored ExtIO_sddc/Core
     files=("libsddc_core.so", "libsddc_core.dylib"),

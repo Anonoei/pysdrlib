@@ -4,7 +4,9 @@ Three kinds of socket, all ZeroMQ:
 
     C2 (server -> ROUTER, client -> DEALER)      lifecycle: list / open / attach / claim / release / close / ping
     device control (ROUTER <-> DEALER)           one per hosted device: capabilities, state, method calls
-    device RX stream (PUB -> SUB)                one per hosted device: sample blocks
+    device RX stream (PUB -> SUB)                one per hosted device: sample blocks, every channel the device streams
+                                                 (or, for a client on the same host, notices of blocks in shared memory)
+    device TX stream (PUSH -> PULL)              one per hosted device: sample blocks to transmit (controller only)
 
 Requests and replies on the C2 and control sockets are single-frame JSON:
 
@@ -12,12 +14,22 @@ Requests and replies on the C2 and control sockets are single-frame JSON:
     reply    {"id": int, "ok": true,  "result": ...}
              {"id": int, "ok": false, "error": {"type": str, "msg": str}}
 
-Sample blocks are 3 frames: [topic, header, payload]. `topic` is the device id (SUB prefix filter),
-`header` is HEADER (below) and `payload` is `nsamples` interleaved I/Q samples in the layout the header
-describes: a `convert.SampleFormat`. By default that is the device's own native layout (8-bit for a
+Sample blocks are 3 frames: [topic, header, payload]. `topic` is the device id (SUB prefix filter) on the RX stream
+and the controller's token on the TX stream, `header` is HEADER (below) and `payload` is `nsamples` interleaved I/Q
+samples in the layout the header describes: a `convert.SampleFormat`. The header also says which channel the block is
+and the stream index of its first sample (samples since start_rx), so a client keeps channels apart and aligned, and
+sees where samples were lost. By default that is the device's own native layout (8-bit for a
 HackRF, ...), which is lossless and several times smaller than complex64; clients always hand the
-caller complex64. The format may change between blocks (the controller can switch it), so it is
-read from every header.
+caller complex64. The same goes for the TX stream: the controller sends blocks in the device's native layout
+by default (or any other wire format) and the server decodes whatever the header says. The format may change
+between blocks (the controller can switch it), so it is read from every header.
+
+A client on the same machine as the server can take the samples from shared memory instead (`shm.py`): per streaming
+channel the server keeps a ring of complex64 samples in a shared-memory segment that any number of clients read, each at
+its own pace. They subscribe to the topic `shm:<device id>` rather than the device id, and get a *notice* for each
+block published: 3 frames like a block, with FLAG_SHM in the header (channel, index of the first sample, count) and
+the name of the segment as the payload (empty: the server could not make one, so use the other topic). The server
+encodes and sends full blocks only while someone subscribes to the device id.
 
 Endpoints handed out by the server may contain `{host}`, which the client replaces with the host
 it used to reach the C2 socket (so a server bound to 0.0.0.0 doesn't need to know its own address).
@@ -32,13 +44,18 @@ from ..base import convert
 
 COMPLEX64_LE = np.dtype("<c8")
 
-VERSION = 2
+VERSION = 3
 
-# version, format kind, bits, storage, flags (FLAG_*), reserved, seq, timestamp (server time.time()), nsamples
-HEADER = struct.Struct("<6BQdI")
+# version, format kind, bits, storage, flags (FLAG_*), channel, seq, timestamp (server time.time()), nsamples, index
+# (stream index of the first sample). Version 2 (older servers) had no index and a reserved byte for the channel.
+HEADER = struct.Struct("<6BQdIQ")
+HEADER_V2 = struct.Struct("<6BQdI")
+NO_INDEX = (1 << 64) - 1
 KINDS = ("int", "uint", "float")
 FLAG_PACKED = 1
 FLAG_BIG_ENDIAN = 2
+FLAG_SHM = 4
+SHM_PREFIX = b"shm:"
 
 # Names accepted wherever a wire format is chosen. "native" is resolved per device (see `resolve_wire`).
 WIRE_FORMATS = {
@@ -55,12 +72,13 @@ WIRE_FORMATS = {
 MAX_BLOCK_SAMPLES = 131072
 
 # Device methods that are never callable remotely: lifecycle is C2's job and samples are streamed.
-BLOCKED_METHODS = frozenset({"open", "close", "get_samples"})
+BLOCKED_METHODS = frozenset({"open", "close", "get_samples", "read", "read_into", "read_available", "wait_available", "stream", "flush", "write"})
 
 # Errors are re-raised on the client as the same type if it is one of these
 _ERRORS = {
     cls.__name__: cls for cls in (
         err.InvalidValue, err.NoDevice, err.NotOpen, err.RemoteError, err.NotController, err.Busy, err.ProtocolError,
+        err.NotSupported, err.NotStreaming, err.Timeout, err.StreamStalled, err.Dropped,
         ValueError, TypeError, KeyError, AttributeError, NotImplementedError, RuntimeError, TimeoutError,
     )
 }
@@ -76,9 +94,11 @@ def jsonable(obj):
     raise TypeError(f"{type(obj).__name__} is not JSON serializable")
 
 def pack(msg: dict) -> bytes:
+    """JSON-encode a request or reply message"""
     return json.dumps(msg, default=jsonable, separators=(",", ":")).encode()
 
 def unpack(data: bytes) -> dict:
+    """Decode a message. Raises `err.ProtocolError` if it isn't a JSON object"""
     try:
         msg = json.loads(data)
     except ValueError as e:
@@ -88,9 +108,11 @@ def unpack(data: bytes) -> dict:
     return msg
 
 def ok(req_id, result=None) -> bytes:
+    """A success reply to request `req_id`"""
     return pack({"id": req_id, "ok": True, "result": result})
 
 def fail(req_id, exc: BaseException) -> bytes:
+    """An error reply to request `req_id`; the client re-raises it as the same pysdrlib error type"""
     return pack({"id": req_id, "ok": False, "error": {"type": type(exc).__name__, "msg": str(exc)}})
 
 def raise_error(error: dict):
@@ -121,21 +143,46 @@ def resolve_wire(name: str, device) -> convert.SampleFormat:
         return device.SAMPLE_FORMAT or convert.FLOAT32
     return wire_format(name)
 
-def pack_block(seq: int, timestamp: float, samples: np.ndarray, fmt: convert.SampleFormat = convert.FLOAT32):
+def pack_block(seq: int, timestamp: float, samples: np.ndarray, fmt: convert.SampleFormat = convert.FLOAT32, channel=0,
+               index=None):
     """complex64 samples -> (header bytes, payload buffer) in wire format `fmt`"""
     if fmt == convert.FLOAT32:
         payload = np.ascontiguousarray(samples, dtype=COMPLEX64_LE)    # no copy for the usual complex64
     else:
         payload = fmt.from_complex64(samples)
     flags = (FLAG_PACKED if fmt.packed else 0) | (FLAG_BIG_ENDIAN if fmt.byteorder == ">" else 0)
-    return HEADER.pack(VERSION, KINDS.index(fmt.kind), fmt.bits, fmt.storage, flags, 0, seq, timestamp, len(samples)), payload
+    return HEADER.pack(VERSION, KINDS.index(fmt.kind), fmt.bits, fmt.storage, flags, int(channel), seq, timestamp,
+                       len(samples), NO_INDEX if index is None else int(index)), payload
+
+def pack_notice(seq: int, timestamp: float, channel: int, index: int, count: int, name: str):
+    """-> (header bytes, payload bytes): a block of `count` samples from stream index `index` is in the shared-memory
+    segment `name` (see the module docs)"""
+    return HEADER.pack(VERSION, KINDS.index("float"), 32, 32, FLAG_SHM, int(channel), seq, timestamp, count, index), name.encode()
+
+def unpack_notice(header: bytes, payload):
+    """-> (seq, timestamp, channel, index, count, segment name) of a notice; `err.ProtocolError` if it isn't one"""
+    if len(header) != HEADER.size:
+        raise err.ProtocolError("bad notice header")
+    version, _, _, _, flags, channel, seq, timestamp, count, index = HEADER.unpack(header)
+    if version != VERSION or not flags & FLAG_SHM:
+        raise err.ProtocolError("not a shared-memory notice")
+    return seq, timestamp, channel, index, count, bytes(payload).decode()
 
 def unpack_block(header: bytes, payload) -> tuple[int, float, np.ndarray]:
-    """-> (seq, timestamp, complex64 samples)"""
-    if len(header) != HEADER.size:
+    """-> (seq, timestamp, complex64 samples). See unpack_block_ex for the channel and index"""
+    seq, timestamp, samples, _, _ = unpack_block_ex(header, payload)
+    return seq, timestamp, samples
+
+def unpack_block_ex(header: bytes, payload):
+    """-> (seq, timestamp, complex64 samples, channel, index of the first sample or None)"""
+    if len(header) == HEADER.size:
+        version, kind, bits, storage, flags, channel, seq, timestamp, n, index = HEADER.unpack(header)
+    elif len(header) == HEADER_V2.size:
+        version, kind, bits, storage, flags, channel, seq, timestamp, n = HEADER_V2.unpack(header)
+        index = NO_INDEX
+    else:
         raise err.ProtocolError("bad block header")
-    version, kind, bits, storage, flags, _, seq, timestamp, n = HEADER.unpack(header)
-    if version != VERSION or kind >= len(KINDS):
+    if version not in (2, VERSION) or kind >= len(KINDS):
         raise err.ProtocolError(f"unsupported block (version {version}, format kind {kind})")
     try:
         fmt = convert.SampleFormat(KINDS[kind], bits, storage, bool(flags & FLAG_PACKED),
@@ -145,8 +192,10 @@ def unpack_block(header: bytes, payload) -> tuple[int, float, np.ndarray]:
     if memoryview(payload).nbytes != n * fmt.bytes_per_sample:
         raise err.ProtocolError("block length mismatch")
     if fmt == convert.FLOAT32:
-        return seq, timestamp, np.frombuffer(payload, dtype=COMPLEX64_LE).astype(np.complex64, copy=False)
-    return seq, timestamp, fmt.to_complex64(payload)
+        samples = np.frombuffer(payload, dtype=COMPLEX64_LE).astype(np.complex64, copy=False)
+    else:
+        samples = fmt.to_complex64(payload)
+    return seq, timestamp, samples, channel, None if index == NO_INDEX else index
 
 def is_readonly(method: str) -> bool:
     """Methods a viewer (no controller token) may call"""

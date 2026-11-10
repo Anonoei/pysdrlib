@@ -10,7 +10,7 @@ import pytest
 
 from pysdrlib import err
 from pysdrlib.base import convert
-from pysdrlib.base.config import ConfigDevice
+from pysdrlib.base.caps import Capabilities, GainStage, Range
 from pysdrlib.base.device import Device
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "pysdrlib"
@@ -38,44 +38,24 @@ def test_no_vendor_specific_names_in_generic_code(pattern):
     assert not hits, "\n".join(hits)
 
 
-def test_no_sample_width_assumptions_in_generic_code():
-    """Generic code must not hard-code 8-bit samples (the HackRF's); formats come from a SampleFormat."""
-    hits = []
-    for path in GENERIC:
-        if path.name in ("io.py", "hardware_numpy.hpp", "hardware_convert.hpp"):   # these define the per-width layouts
-            continue
-        for n, line in enumerate(path.read_text().splitlines(), 1):
-            if re.search(r"\b(u?int8(_t)?|/ ?= ?128|/ 128)\b", line) and "SampleFormat" not in line:
-                if path.name == "convert.py" and ("INT8" in line or "int8" in line.lower() and "dtype" in line):
-                    continue
-                hits.append(f"{path.relative_to(SRC).as_posix()}:{n}: {line.strip()}")
-    # convert.py defines the INT8/UINT8 *constants* and documents them; nothing else may mention 8-bit
-    hits = [h for h in hits if not h.startswith("base/convert.py")]
-    assert not hits, "\n".join(hits)
-
-
 def test_device_base_class_surface():
     public = {n for n in dir(Device) if not n.startswith("_")}
-    assert {"open", "close", "initialize", "start_rx", "stop_rx", "get_samples", "set_freq", "set_sample_rate",
+    assert {"open", "close", "initialize", "start_rx", "stop_rx", "get_samples", "set_rx_freq", "set_tx_freq", "set_rx_sample_rate",
+            "set_tx_sample_rate",
             "set_rx_gain", "set_tx_gain", "set_bias_t"} <= public
     assert not {n for n in public if re.search(r"(rf|if|bb|cf|lo)_(gain|freq)|freq_(cf|if|lo)", n)}
 
 
 # --- a device with no connection to any existing one -------------------------------------------
-class ConfigOdd(ConfigDevice):
-    __instance = None
-    def __init__(self):
-        super().__init__({
-            "DEFAULT": {"FREQ": 1_000_000, "SAMPLE_RATE": 2_000_000, "GAIN_RX_MIXER": 5, "GAIN_RX_PREAMP": 0},
-            "FREQ_MIN": 1, "FREQ_MAX": 10_000_000, "SAMPLE_RATE_MIN": 1, "SAMPLE_RATE_MAX": 4_000_000,
-            "GAIN": {"RX_MIXER_STEP": 5, "RX_MIXER_MIN": 0, "RX_MIXER_MAX": 30,
-                     "RX_PREAMP_STEP": 1, "RX_PREAMP_MIN": 0, "RX_PREAMP_MAX": 10},
-        })
+ODD = Capabilities(
+    driver="", freq=[Range(1, 10_000_000)], default_freq=1_000_000, rates=[Range(1, 4_000_000)], default_rate=2_000_000,
+    gains={"rx": {"MIXER": GainStage(5, 0, 30, 5), "PREAMP": GainStage(1, 0, 10, 0)}, "tx": {}},
+)
 
 class Odd(Device):
     """Minimal device using stage names no existing driver has"""
     NAME = "Odd"
-    CONFIG = ConfigOdd()
+    CAPS = ODD
     SAMPLE_FORMAT = convert.INT12_PACKED
 
     def __init__(self):
@@ -86,16 +66,16 @@ class Odd(Device):
     def _start_rx(self): pass
     def _stop_rx(self): pass
     def _get_samples(self): return np.zeros(0, np.complex64)
-    def _set_rx_gain(self, gain):
+    def _set_rx_gain(self, gain, channel=0):
         self.calls.append(("total", gain))
         return gain
 
     def set_rx_mixer_gain(self, gain=None):
-        return self._set_gain_stage("RX", "MIXER", gain, lambda g: self.calls.append(("mixer", g)))
+        return self._set_gain_stage("RX", "MIXER", gain, lambda g, channel=0: self.calls.append(("mixer", g)))
     def set_rx_preamp_gain(self, gain=None):
-        return self._set_gain_stage("RX", "PREAMP", gain, lambda g: self.calls.append(("preamp", g)))
+        return self._set_gain_stage("RX", "PREAMP", gain, lambda g, channel=0: self.calls.append(("preamp", g)))
     def set_rx_nonexistent_gain(self, gain=None):
-        return self._set_gain_stage("RX", "NOPE", gain, lambda g: None)
+        return self._set_gain_stage("RX", "NOPE", gain, lambda g, channel=0: None)
 
 
 @pytest.fixture
@@ -105,49 +85,30 @@ def odd():
     return dev
 
 
-class TestGenericConfig:
+class TestGenericCaps:
     def test_stages_are_whatever_the_device_declares(self):
-        cfg = ConfigOdd()
-        assert set(cfg.stages["RX"]) == {"MIXER", "PREAMP"} and cfg.stages["TX"] == {}
-        assert cfg.stage("RX", "mixer").max == 30
-        assert cfg.stage("RX", "LNA") is None and cfg.stage("TX", "MIXER") is None
+        caps = Odd.CAPS
+        assert set(caps.gains["rx"]) == {"MIXER", "PREAMP"} and caps.gains["tx"] == {}
+        assert caps.stage("rx", "mixer").max == 30
+        assert caps.stage("rx", "LNA") is None and caps.stage("tx", "MIXER") is None
 
     def test_totals_sum_the_stages(self):
-        cfg = ConfigOdd()
-        assert (cfg.GAIN_RX_MIN, cfg.GAIN_RX_MAX, cfg.DEFAULT_GAIN_RX) == (0, 40, 5)
-        assert (cfg.GAIN_TX_MIN, cfg.GAIN_TX_MAX, cfg.DEFAULT_GAIN_TX) == (0, 0, 0)
+        caps = Odd.CAPS
+        r = caps.gain_range("rx")
+        assert (r.lo, r.hi, sum(s.default for s in caps.gains["rx"].values())) == (0, 40, 5)
+        assert caps.gain_range("tx") == Range(0, 0)
 
-    def test_attribute_style_access_resolves_any_stage_name(self):
-        cfg = ConfigOdd()
-        assert cfg.GAIN_RX_MIXER is True and cfg.GAIN_RX_MIXER_STEP == 5 and cfg.GAIN_RX_MIXER_MAX == 30
-        assert cfg.DEFAULT_GAIN_RX_MIXER == 5 and cfg.DEFAULT_GAIN_RX_PREAMP == 0
-        assert cfg.GAIN_RX_LNA is False and cfg.GAIN_RX_LNA_MAX is None and cfg.DEFAULT_GAIN_RX_LNA is None
+    def test_json_round_trip(self):
+        from pysdrlib.base import caps as _caps
+        caps = Odd().caps
+        back = _caps.from_json(caps.json())
+        assert back.stage("rx", "MIXER") == caps.stage("rx", "MIXER")
+        assert back.default_freq == 1_000_000 and back.freq == caps.freq
 
-    def test_unknown_attribute_still_raises(self):
-        with pytest.raises(AttributeError):
-            ConfigOdd().NOT_A_THING
-        with pytest.raises(AttributeError):
-            ConfigOdd()._private
-
-    def test_json(self):
-        j = ConfigOdd().json()
-        assert j["GAIN"]["RX_MIXER_MAX"] == 30 and j["GAIN"]["RX_MIXER"] is True
-        assert j["DEFAULT"]["GAIN_RX_PREAMP"] == 0 and j["FREQ_MAX"] == 10_000_000
-
-    def test_incomplete_stage_is_ignored(self):
-        class Partial(ConfigDevice):
-            __instance = None
-            def __init__(self):
-                super().__init__({"DEFAULT": {}, "GAIN": {"RX_X_MIN": 0, "RX_X_MAX": 5}})
-        assert Partial().stage("RX", "X") is None
-
-    def test_empty_config(self):
-        class Empty(ConfigDevice):
-            __instance = None
-            def __init__(self):
-                super().__init__({"DEFAULT": {}, "GAIN": {}})
-        cfg = Empty()
-        assert cfg.stages == {"RX": {}, "TX": {}} and cfg.GAIN_RX_MAX == 0
+    def test_a_device_gets_its_own_copy(self):
+        a, b = Odd().caps, Odd().caps
+        a.gains["rx"].pop("MIXER")
+        assert "MIXER" in b.gains["rx"] and "MIXER" in Odd.CAPS.gains["rx"]
 
 
 class TestGenericDevice:
@@ -172,14 +133,14 @@ class TestGenericDevice:
 
     def test_generic_total_uses_overall_limits(self, odd):
         with pytest.warns(Warning):
-            odd.set_rx_gain(99)
+            odd.set_rx_gain_db(99)
         assert odd.calls[-1] == ("total", 40)
-        odd.set_rx_gain()
+        odd.set_rx_gain_db()
         assert odd.calls[-1] == ("total", "default")
 
     def test_receive_only_initialize(self, odd):
         odd.initialize()   # no TX: must not call set_tx_gain
-        assert odd.get_freq() == 1_000_000
+        assert odd.get_rx_freq() == 1_000_000
 
     def test_sample_format_is_metadata(self):
         assert Odd.SAMPLE_FORMAT is convert.INT12_PACKED

@@ -11,8 +11,19 @@ from ..base import Formats
 from . import err
 
 class File:
-    def __init__(self, path=None, fmt: str | None = None):
+    """Read samples from a file like a device: `File(path, fmt)`, then `next`, `forward`, `seek`...
+
+    `fmt` names one of `pysdrlib.Formats` (e.g. `"cf64"`, `"ci16t"`; see `pysdrlib.base.formats`). Samples are returned as stored,
+    unless `scale=True`: then complex64 (or float32) with full scale at +-1, like a device's (see `Formats.scale`).
+    Usable as a context manager, which opens and closes it:
+
+        with File("capture.cfile", "cf64") as f:      # cf64: two float32 per sample
+            for block in f.forward(8192, partial=True):
+                ...
+    """
+    def __init__(self, path=None, fmt: str | None = None, scale: bool = False):
         self.log = logger.new("device.File")
+        self.scale = scale   # return samples scaled to +-1, like a device (otherwise as stored)
         self.fmt: Formats = None # type: ignore
         self.path: Path = None # type: ignore
         self.count = 8192
@@ -30,6 +41,7 @@ class File:
 
     # Invariant while open: the file position is cur_samp * fmt.bytes
     def open(self):
+        """Open the file for reading, at the current position"""
         self.log.trace("open()")
         if self.f is not None:
             self.log.warning("File is already open!")
@@ -37,6 +49,7 @@ class File:
             self.f = open(self.path, "rb")
             self._seek(self.cur_samp)
     def close(self):
+        """Close the file; the position is kept"""
         self.log.trace("close()")
         if self.f is None:
             self.log.warning("File is already closed!")
@@ -51,22 +64,27 @@ class File:
         self.close()
 
     def get_samples(self):
+        """The next `count` samples (see `set_sample_count`), as a device's `get_samples` would"""
         return self.next(self.count)
 
     # File specific interface
     def set_sample_count(self, count: int):
+        """Samples returned by `get_samples` (default 8192)"""
         self.log.trace("set_sample_count(%s)", count)
         self.count = count
 
     def set_fmt(self, fmt: str):
+        """Set the sample format by name (a `pysdrlib.Formats` member); the file length in samples follows"""
         self.log.trace("set_fmt(%s)", fmt)
         self.fmt = Formats[fmt]
         if not self._fsize == 0:
             self.max_samp = self._fsize // self.fmt.bytes
     def get_fmt(self):
+        """The sample format (a `pysdrlib.Formats` member)"""
         return self.fmt
 
     def set_path(self, path):
+        """Set the file to read. Raises `FileNotFoundError` if it doesn't exist"""
         self.log.trace("set_path(%s)", path)
         if not isinstance(path, Path):
             path = Path(path)
@@ -75,9 +93,11 @@ class File:
         if self.fmt is not None:
             self.max_samp = self._fsize // self.fmt.bytes
     def get_path(self):
+        """The file being read (a `pathlib.Path`)"""
         return self.path
 
     def reset(self):
+        """Go back to the first sample"""
         self.log.trace("reset()")
         self.cur_samp = 0
         if self.f is not None:
@@ -130,7 +150,8 @@ class File:
 
     def _read(self, count: int):
         """Read <count> samples at the current position (does not touch cur_samp)"""
-        return self.fmt.read(self.f, count)
+        samples = self.fmt.read(self.f, count)
+        return self.fmt.scale(samples) if self.scale else samples
 
     def forward(self, count: int, partial: bool = False):
         """Yield blocks of <count> samples until EOF.
@@ -142,6 +163,7 @@ class File:
         if partial and self.cur_samp < self.max_samp:
             yield self.next(count, partial=True)
     def reverse(self, count: int):
+        """Yield blocks of `count` samples from the current position back toward the start, each one before the last"""
         while self.cur_samp - count >= 0:
             # return self.prev(count)
             yield self.prev(count)

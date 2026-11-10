@@ -11,7 +11,9 @@ from devices import BY_NAME, HW
 
 pytest.importorskip("pysdrlib.extio", exc_type=ImportError)   # loads (or builds) libsddc_core
 from pysdrlib.extio import lib
-from pysdrlib.extio.config import ConfigRX888 as config
+from pysdrlib.extio import Device as RX888
+
+config = RX888.CAPS
 from pysdrlib.extio.lib import err as lib_err
 
 extio = lib.extio
@@ -26,8 +28,8 @@ def spec():
 def test_sample_rates_match_the_config():
     rates = extio.device().sample_rates()
     assert rates == sorted(rates)
-    assert (rates[0], rates[-1]) == (config.SAMPLE_RATE_MIN, config.SAMPLE_RATE_MAX)
-    assert config.DEFAULT_SAMPLE_RATE in rates
+    assert (rates[0], rates[-1]) == (config.rates[0].lo, config.rates[0].hi)
+    assert config.default_rate in rates
 
 
 def test_device_count():

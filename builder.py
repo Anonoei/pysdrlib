@@ -39,6 +39,7 @@ def main():
     actions.add_argument("-d", "--docs", action="store_true", help="generate docs")
     actions.add_argument("-u", "--upload", action="store_true", help="upload module [requires -r]")
     actions.add_argument("-c", "--compile", action="store_true")
+    actions.add_argument("-n", "--new-device", metavar="NAME", help="generate the skeleton of a new driver")
 
     parser.add_argument("-r", "--run", action="store_true", help="perform actions live")
 
@@ -103,6 +104,9 @@ def main():
             cmd += "dist/*"
         run(cmd)
 
+    def cmd_new_device(args):
+        run(f"{sys.executable} -m pysdrlib.scaffold {args.new_device}")
+
     def cmd_test(args):
         run("pytest")
 
@@ -129,6 +133,8 @@ def main():
                 shutil.rmtree(docs)
                 shutil.move(temp, docs)
 
+    if args.new_device:
+        cmd_new_device(args)
     if args.version is not None:
         cmd_version(args)
     if args.compile:

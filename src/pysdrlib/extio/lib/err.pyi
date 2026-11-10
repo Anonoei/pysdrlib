@@ -1,0 +1,13 @@
+"""Errors of the compiled extension, made when it is imported (see hardware_pybind.hpp)"""
+
+class ExtIOError(Exception):
+    ...
+
+class INVALID_PARAM(ExtIOError):
+    ...
+
+class NOT_FOUND(ExtIOError):
+    ...
+
+class NOT_OPEN(ExtIOError):
+    ...

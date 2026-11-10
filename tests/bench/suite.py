@@ -326,13 +326,13 @@ def _(quick):
 @bench("device.set_freq", "device")
 def _(quick):
     dev = _sim()
-    return Case(lambda: dev.set_freq(100e6))
+    return Case(lambda: dev.set_rx_freq(100e6))
 
 
 @bench("device.set_rx_gain", "device")
 def _(quick):
     dev = _sim()
-    return Case(lambda: dev.set_rx_gain(60))
+    return Case(lambda: dev.set_rx_gain_db(60))
 
 
 @bench("device.get_samples_empty", "device")

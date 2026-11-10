@@ -29,17 +29,6 @@ def t2o(buff, width, otype):
     b[b < 0] += 2**width - 1
     return b.astype(otype)
 
-def m2t(buff, width, otype):
-    """Sign Magnitude to two's compliment"""
-    b = np.asarray(buff).astype(np.int64)
-    neg = b >= 2**(width-1)
-    b[neg] = -(b[neg] - 2**(width-1))
-    return b.astype(otype)
-
-def b2t(buff, width, otype):
-    """Offset binary to two's compliment"""
-    return (np.asarray(buff).astype(np.int64) - 2**(width-1)).astype(otype)
-
 def _unpack_nibbles(io, count):
     """Read `count` 4-bit values (-1 = all). High nibble of each byte comes first.
 
@@ -133,6 +122,19 @@ class Format:
         raise RangeError(f"values must be within [{lo:g}, {hi:g}]")
 
     @classmethod
+    def full_scale(cls):
+        """The magnitude of a component that maps to 1.0 when scaled to +-1: 2^(bits-1) for signed integers, half the
+        range for unsigned ones (mid-scale is zero, see `offset`), 1.0 for floats"""
+        if not cls.integer():
+            return 1.0
+        return float(2 ** (cls.SIZE - 1)) if cls.limits()[0] < 0 else (2 ** cls.SIZE - 1) / 2
+
+    @classmethod
+    def offset(cls):
+        """The stored value that is zero when scaling: mid-scale for unsigned integers, else 0"""
+        return (2 ** cls.SIZE - 1) / 2 if cls.integer() and cls.limits()[0] == 0 else 0.0
+
+    @classmethod
     def bits(cls):
         """Return size of format in bits"""
         return cls.SIZE
@@ -153,7 +155,7 @@ class Format:
 # --- Two's compliment --- #
 ## Signed
 class i4_t(Format):
-    """Two's compliment int4. Meant for I/Q: one byte is one (I, Q) pair, I in the high nibble.
+    """Two's complement int4. Meant for I/Q: one byte is one (I, Q) pair, I in the high nibble.
     `count` and written data must therefore be even (see ci8_t)."""
     SIZE = 4
     @classmethod
@@ -168,39 +170,39 @@ class i4_t(Format):
         return -8.0, 7.0
 
 class i8_t(Format):
-    """Two's compliment int8, Eq. to C int8_t"""
+    """Two's complement int8: C `int8_t`"""
     SIZE = 8
     DTYPE = np.dtype(LE + "i1")
 
 class i16_t(Format):
-    """Two's compliment int16, Eq. to C int16_t"""
+    """Two's complement int16: C `int16_t`"""
     SIZE = 16
     DTYPE = np.dtype(LE + "i2")
 
 class i32_t(Format):
-    """Two's compliment int32, Eq. to C int32_t"""
+    """Two's complement int32: C `int32_t`"""
     SIZE = 32
     DTYPE = np.dtype(LE + "i4")
 
 ## Unsigned
 class ui8_t(Format):
-    """Unsigned int8, Eq. to C uint8_t"""
+    """Unsigned int8: C `uint8_t`"""
     SIZE = 8
     DTYPE = np.dtype(LE + "u1")
 
 class ui16_t(Format):
-    """Unsigned int16, Eq. to C uint16_t"""
+    """Unsigned int16: C `uint16_t`"""
     SIZE = 16
     DTYPE = np.dtype(LE + "u2")
 
 class ui32_t(Format):
-    """Unsigned int32, Eq. to C uint32_t"""
+    """Unsigned int32: C `uint32_t`"""
     SIZE = 32
     DTYPE = np.dtype(LE + "u4")
 
 # --- One's compliment --- #
 class i4_o(Format):
-    """One's compliment int4. Meant for I/Q: one byte is one (I, Q) pair, I in the high nibble.
+    """One's complement int4. Meant for I/Q: one byte is one (I, Q) pair, I in the high nibble.
     `count` and written data must therefore be even."""
     SIZE = 4
     @classmethod
@@ -213,48 +215,47 @@ class i4_o(Format):
     def limits(cls):
         return -7.0, 7.0
 
-class i8_o(Format):
-    """One's compliment int8"""
-    SIZE = 8
+class _OnesComplement(Format):
+    """A negative number is the bitwise NOT of its magnitude: symmetric range, and all-ones is a -0 that reads as 0"""
+    STORED: np.dtype = None # type: ignore   # unsigned, as stored on disk
+    SIGNED: type = None # type: ignore       # what it reads as
     @classmethod
     def read(cls, io, count):
-        return o2t(cls._read(io, count, dtype=np.uint8), cls.SIZE, np.int8)
+        return o2t(cls._read(io, count, dtype=cls.STORED), cls.SIZE, cls.SIGNED)
     @classmethod
     def write(cls, io, data):
-        io.write(t2o(_as_int(data, -127, 127, "one's compliment int8"), cls.SIZE, np.uint8).tobytes())
+        top = 2 ** (cls.SIZE - 1) - 1
+        io.write(t2o(_as_int(data, -top, top, f"one's compliment int{cls.SIZE}"), cls.SIZE, cls.STORED).tobytes())
     @classmethod
     def limits(cls):
-        return -127.0, 127.0
+        top = float(2 ** (cls.SIZE - 1) - 1)
+        return -top, top
 
-class i16_o(Format):
-    """One's compliment int16"""
+class i8_o(_OnesComplement):
+    """One's complement int8 (range -127..127; 0xFF is -0, read as 0)"""
+    SIZE = 8
+    STORED, SIGNED = np.dtype("u1"), np.int8
+
+class i16_o(_OnesComplement):
+    """One's complement int16 (range -32767..32767)"""
     SIZE = 16
-    @classmethod
-    def read(cls, io, count):
-        return o2t(cls._read(io, count, dtype=np.dtype(LE + "u2")), cls.SIZE, np.int16)
-    @classmethod
-    def write(cls, io, data):
-        out = t2o(_as_int(data, -32767, 32767, "one's compliment int16"), cls.SIZE, np.dtype(LE + "u2"))
-        io.write(out.tobytes())
-    @classmethod
-    def limits(cls):
-        return -32767.0, 32767.0
+    STORED, SIGNED = np.dtype(LE + "u2"), np.int16
 
 # ===============================================
 #     Floats
 # ===============================================
 class f16(Format):
-    """Eq. to C float16_t"""
+    """IEEE half precision: C `_Float16` (C23, GCC/Clang), numpy `float16`"""
     SIZE = 16
     DTYPE = np.dtype(LE + "f2")
 
 class f32(Format):
-    """Eq. to C float32_t"""
+    """IEEE single precision: C `float`"""
     SIZE = 32
     DTYPE = np.dtype(LE + "f4")
 
 class f64(Format):
-    """Eq. to C float64_t"""
+    """IEEE double precision: C `double`"""
     SIZE = 64
     DTYPE = np.dtype(LE + "f8")
 
@@ -272,46 +273,53 @@ class ComplexFormat(Format):
     def integer(cls):
         return cls.BASE.integer()
     @classmethod
+    def full_scale(cls):
+        return cls.BASE.full_scale()
+    @classmethod
+    def offset(cls):
+        return cls.BASE.offset()
+    @classmethod
     def read(cls, io, count):
         parts = cls.BASE.read(io, count * 2 if count >= 0 else -1)
         return parts.astype(np.float32 if cls.OUT == np.complex64 else np.float64).view(cls.OUT)
     @classmethod
     def write(cls, io, data):
-        x = np.asarray(data, dtype=np.complex128)
-        parts = np.empty(x.size * 2, dtype=np.float64)
-        parts[0::2] = x.real.ravel()
-        parts[1::2] = x.imag.ravel()
-        cls.BASE.write(io, parts)
+        # I and Q are the interleaved floats of the complex array itself (complex64 unless the format is cf128)
+        x = np.ascontiguousarray(np.asarray(data, dtype=cls.OUT))
+        cls.BASE.write(io, x.view(x.real.dtype).ravel())
 
 # --- Integer --- #
 class ci8_t(ComplexFormat):
-    """Complex int8 (i4, i4)"""
+    """Complex int8: I and Q are each a 4-bit two's complement value, one byte per sample (I in the high nibble)"""
     SIZE = 8
     BASE = i4_t
 
 class ci16_t(ComplexFormat):
-    """Complex int16 (i8, i8)"""
+    """Complex int16: I and Q are each an `int8_t`, two bytes per sample (`struct { int8_t i, q; }`)"""
     SIZE = 16
     BASE = i8_t
 
 class ci32_t(ComplexFormat):
-    """Complex int32 (i16, i16)"""
+    """Complex int32: I and Q are each an `int16_t`, four bytes per sample (`struct { int16_t i, q; }`)"""
     SIZE = 32
     BASE = i16_t
 
 # --- Float --- #
 class cf32(ComplexFormat):
-    """Complex float32 (f16, f16)"""
+    """Complex float32: I and Q are each a half-precision `_Float16`, four bytes per sample.
+    Not a GNU Radio `.cfile`: that is `cf64`"""
     SIZE = 32
     BASE = f16
 
 class cf64(ComplexFormat):
-    """Complex float64 (f32, f32)"""
+    """Complex float64: I and Q are each a `float`, eight bytes per sample (C `float _Complex`, C++ `std::complex<float>`,
+    numpy `complex64`). The GNU Radio `.cfile` layout"""
     SIZE = 64
     BASE = f32
 
 class cf128(ComplexFormat):
-    """Complex float128 (f64, f64)"""
+    """Complex float128: I and Q are each a `double`, sixteen bytes per sample (C `double _Complex`, numpy `complex128`).
+    Read as `complex128`, the only format that is"""
     SIZE = 128
     BASE = f64
     OUT = np.complex128

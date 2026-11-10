@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -36,6 +37,13 @@ public:
     void stop_rx() override;
     bool is_streaming() const override;
 
+    // Transmit: complex64 in; the libhackrf transmit callback encodes to int8 without the GIL.
+    // Half-duplex: start_tx() refuses while receiving and start_rx() while transmitting.
+    void start_tx() override;
+    void stop_tx() override;
+    bool is_transmitting() const override { return tx_active_.load(); }
+    std::string tx_error() const override;
+
     // Tuning
     void set_freq(uint64_t freq_hz);
     void set_sample_rate(double sample_rate_hz);
@@ -67,6 +75,10 @@ protected:
 
 private:
     static int rx_trampoline(hackrf_transfer* transfer);
+    static int tx_trampoline(hackrf_transfer* transfer);
+
+    std::atomic<bool> tx_active_{false};
+    std::vector<hw::cfloat> tx_scratch_;   // complex64 staging for one USB transfer
 };
 
 // Snapshot of attached devices.

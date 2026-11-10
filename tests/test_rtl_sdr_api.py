@@ -6,7 +6,9 @@ from devices import BY_NAME
 # A device whose vendor library cannot be built here (missing system packages) is skipped, not failed
 pytest.importorskip("pysdrlib.rtl_sdr", exc_type=ImportError)
 
-from pysdrlib.rtl_sdr.config import ConfigRTL_SDR as config
+from pysdrlib.rtl_sdr import Device as RTLSDR
+
+config = RTLSDR.CAPS
 
 
 @pytest.fixture
@@ -20,18 +22,18 @@ def calls(sdr, name):
 
 class TestSampleRate:
     def test_rates_in_the_gap_snap_to_the_nearest_edge_with_a_warning(self, sdr):
-        low, high = config.SAMPLE_RATE_GAP
+        low, high = RTLSDR.SAMPLE_RATE_GAP
         with pytest.warns(Warning):
-            assert sdr.set_sample_rate(400_000) == low
+            assert sdr.set_rx_sample_rate(400_000) == low
         with pytest.warns(Warning):
-            assert sdr.set_sample_rate(800_000) == high
+            assert sdr.set_rx_sample_rate(800_000) == high
         assert calls(sdr, "set_sample_rate") == [(low,), (high,)]
         assert sdr.device.of("set_rx_buffer")[-1] == (int(type(sdr).BUFFER_SECONDS * high),)
 
     def test_the_edges_are_valid(self, sdr):
-        low, high = config.SAMPLE_RATE_GAP
-        assert sdr.set_sample_rate(low) == low
-        assert sdr.set_sample_rate(high) == high
+        low, high = RTLSDR.SAMPLE_RATE_GAP
+        assert sdr.set_rx_sample_rate(low) == low
+        assert sdr.set_rx_sample_rate(high) == high
 
     def test_the_rate_the_hardware_settles_on_is_used(self, make_sdr, spec):
         spec.fake_returns["set_sample_rate"] = lambda v: v + 100
@@ -39,7 +41,7 @@ class TestSampleRate:
             sdr = make_sdr()
             sdr.open()
             with pytest.warns(Warning):
-                assert sdr.set_sample_rate(2_000_000) == 2_000_100
+                assert sdr.set_rx_sample_rate(2_000_000) == 2_000_100
         finally:
             spec.fake_returns["set_sample_rate"] = lambda v: v
 
@@ -51,12 +53,12 @@ class TestGain:
 
     def test_stage_is_clamped_with_a_warning(self, sdr):
         with pytest.warns(Warning):
-            sdr.set_rx_rf_gain(config.GAIN_RX_RF_MAX + 10)
-        assert calls(sdr, "set_rx_rf_gain")[-1] == (float(config.GAIN_RX_RF_MAX),)
+            sdr.set_rx_rf_gain(config.stage("rx", "RF").max + 10)
+        assert calls(sdr, "set_rx_rf_gain")[-1] == (float(config.stage("rx", "RF").max),)
 
     def test_total_gain_is_the_tuner_gain(self, sdr):
-        assert sdr.set_rx_gain() == {"rf": config.DEFAULT_GAIN_RX_RF}
-        assert sdr.set_rx_gain(40) == {"rf": 40}
+        assert sdr.set_rx_gain_db() == config.stage("rx", "RF").default and sdr.get_rx_gains_db() == {"RF": config.stage("rx", "RF").default}
+        assert sdr.set_rx_gain_db(40) == 40 and sdr.get_rx_gains_db() == {"RF": 40}
         assert calls(sdr, "set_rx_rf_gain")[-1] == (40.0,)
 
     def test_agc(self, sdr):

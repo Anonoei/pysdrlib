@@ -1,10 +1,7 @@
-"""Client/server access to SDRs over ZeroMQ. Needs `pip install pysdrlib[remote]`.
+from .._ext import utils as _utils
 
-    python -m pysdrlib server --bind tcp://0.0.0.0:5555
-    python -m pysdrlib client tcp://host:5555 list
+__doc__ = _utils.readme(__file__)
 
-    sdr = pysdrlib.device("remote", "tcp://host:5555", "hackrf")
-"""
 try:
     import zmq  # noqa: F401
 except ImportError as e:

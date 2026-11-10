@@ -14,21 +14,25 @@ class NativeDevice(Device):
         class MyDevice(NativeDevice):
             SAMPLE_FORMAT = convert.INT8
             def _open(self): return lib.mydev.open()
-            def _set_freq(self, freq): self.device.set_freq(int(freq))
+            def _set_rx_freq(self, freq, channel=0): self.device.set_freq(int(freq))
 
-    Receiving is watched (see `Watchdog`), each time `get_samples` is called:
+    Receiving is watched (see `Watchdog`), each time `get_samples` or `read` looks at the queue:
     - the device stops delivering for `stall_timeout` seconds: raises `err.StreamStalled`, once any
       samples still buffered have been returned
-    - samples were dropped, by the device or because `get_samples` was not called often enough: `warn.Dropped`
-    `stats` has the counts.
+    - samples were dropped, by the device or because they were not read in time: what `on_drop` says
+      ("warn": `warn.Dropped`, "raise": `err.Dropped`, "ignore", or a function called with the count and a message)
+    `stats` has the counts; `read(..., meta=True)` says where in the stream they were lost.
     """
     BUFFER_SECONDS = 0.5   # how much stream `get_samples` may fall behind by before dropping the oldest
     STALL_TIMEOUT = 1.0    # seconds without samples before the stream is considered stalled; None: never
+    TX_BUFFER_SECONDS = 0.25   # how much stream `write` may queue ahead of the radio before it blocks
 
     def __init__(self):
         super().__init__()
         self._watchdog = Watchdog(type(self).STALL_TIMEOUT)
         self._dropped_reported = 0
+        self.on_drop = "warn"
+        self._rx_base = 0          # stream index of the queue's sample 0 (the queue restarts when the rate changes)
 
     @property
     def stall_timeout(self):
@@ -47,7 +51,10 @@ class NativeDevice(Device):
 
     def _rate_changed(self):
         """Size the queue, and judge the stream, for the current sample rate; call when it changes"""
-        self.device.set_rx_buffer(int(type(self).BUFFER_SECONDS * self._Fs))
+        if self.state["rx"]:   # resizing the queue discards it and restarts its count: keep the stream's indices going
+            self._rx_base += self.device.rx_stats()["total"]
+            self._rx_discard = max(self._rx_discard, self._rx_base)
+        self.device.set_rx_buffer(int(type(self).BUFFER_SECONDS * self._Fs), len(self._rx_channels))   # a queue per channel
         self._dropped_reported = 0
         self._watchdog.set_rate(self._Fs)
 
@@ -55,6 +62,7 @@ class NativeDevice(Device):
         self.device.close()
 
     def _start_rx(self):
+        self._rx_base = 0
         self._rate_changed()
         self.device.reset_rx_stats()
         self._watchdog.start(self._Fs)   # before the device starts, so its startup counts
@@ -68,18 +76,76 @@ class NativeDevice(Device):
         self._check_stream(have_samples=len(samples) > 0)
         return samples
 
+    # --- the generic read path (Device.read) on the native queue --- #
+    # slot: the k-th of rx_channels (all queues are fed together, so their indices line up)
+    def _rx_wait(self, count, timeout, slot=0):
+        ready = self.device.wait_rx(int(count), float(timeout), slot)
+        self._check_stream(have_samples=ready > 0)
+        return ready
+    def _rx_read(self, count, slot=0):
+        x, first = self.device.read_rx_indexed(int(count), slot)
+        return x, self._rx_base + first
+    def _rx_read_into(self, out, timeout, slot=0):
+        # one native call: wait, read straight into `out`, and the counters the watchdog needs
+        n, first, *counters = self.device.read_rx_into(out, float(timeout), slot)
+        if slot:   # the stream is judged by its first queue (all are fed together)
+            counters = self.device.rx_counters()
+        self._check_counters(*counters, have_samples=n > 0)
+        return n, self._rx_base + first
+    def _rx_position(self, slot=0):
+        _, total, _, _, age = self.device.rx_counters(slot)
+        return self._rx_base + total, None if age < 0 else age
+    def _rx_flush(self, slot=0):
+        return len(self.device.read_rx(None, slot))
+
+    # --- transmitting (Device.write) on the native transmit queues, one per channel of the stream --- #
+    # The extension's transmit thread (or callback) encodes complex64 to the hardware's format without the GIL
+    def _start_tx(self):
+        self.device.set_tx_buffer(int(self.TX_BUFFER_SECONDS * self._Fs))
+        self.device.start_tx()
+    def _stop_tx(self):
+        self.device.stop_tx()
+    def _tx_write(self, samples, timeout, slot=0):
+        return self.device.write_tx(samples, timeout, slot)
+    def _tx_check(self):
+        tx_error = self.device.tx_error()
+        if tx_error:
+            raise err.StreamStalled(f"{type(self).NAME} stopped transmitting: {tx_error}")
+    def _tx_stats(self, slot=0):
+        return self.device.tx_stats(slot)
+
+    @property
+    def tx_stats(self):
+        """{"written", "sent", "underruns", "pending", "async_errors"} samples counted since start_tx, for the first
+        transmit channel (`get_tx_stats(channel)` for others). underruns: samples of silence sent because `write` was
+        not keeping up"""
+        return self._tx_stats(0)
+
+    def _report_drop(self, count, message):
+        policy = self.on_drop
+        if callable(policy):
+            policy(count, message)
+        elif policy == "raise":
+            raise err.Dropped(message)
+        elif policy == "warn":
+            warn.Dropped(message)
+        elif policy != "ignore":
+            raise ValueError(f"on_drop is 'warn', 'raise', 'ignore' or a function, not {policy!r}")
+
     def _check_stream(self, have_samples):
-        native = self.device.rx_stats()
-        self._watchdog.observe(native["samples"], native["age"], native["max_chunk"])
+        self._check_counters(*self.device.rx_counters(), have_samples=have_samples)
+
+    def _check_counters(self, samples, total, dropped, max_chunk, age, have_samples):
+        """Judge the stream by the extension's counters (`rx_counters`): report drops and shortfalls, raise on a stall"""
+        self._watchdog.observe(samples, None if age < 0 else age, max_chunk)
         report = self._watchdog.poll()
-        dropped = native["dropped"]
         if dropped > self._dropped_reported:
-            warn.Dropped(f"{type(self).NAME}: {dropped - self._dropped_reported:,} samples dropped because "
-                         f"get_samples was not called within {type(self).BUFFER_SECONDS}s")
-            self._dropped_reported = dropped
+            count, self._dropped_reported = dropped - self._dropped_reported, dropped
+            self._report_drop(count, f"{type(self).NAME}: {count:,} samples dropped because they were not read "
+                                     f"within {type(self).BUFFER_SECONDS}s")
         if report.shortfall_start:   # once per episode; stats.missing keeps the total
-            warn.Dropped(f"{type(self).NAME}: delivering fewer samples than {self._Fs:,.0f} samples/s requires "
-                         f"(about {report.missing:,} missing in the last window)")
+            self._report_drop(report.missing, f"{type(self).NAME}: delivering fewer samples than {self._Fs:,.0f} "
+                                              f"samples/s requires (about {report.missing:,} missing in the last window)")
         if report.stalled and not have_samples:
             stats = self.stats
             raise err.StreamStalled(

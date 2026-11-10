@@ -11,7 +11,9 @@ from devices import BY_NAME, HW
 
 pytest.importorskip("pysdrlib.rtl_sdr", exc_type=ImportError)   # loads (or builds) librtlsdr
 from pysdrlib.rtl_sdr import lib
-from pysdrlib.rtl_sdr.config import ConfigRTL_SDR as config
+from pysdrlib.rtl_sdr import Device as RTLSDR
+
+config = RTLSDR.CAPS
 from pysdrlib.rtl_sdr.lib import err as lib_err
 
 rtl = lib.rtl_sdr
@@ -68,7 +70,7 @@ class TestHardware:
         assert dev.set_rx_rf_gain(1000.0) == max(steps)
 
     def test_sample_rate(self, dev):
-        assert dev.set_sample_rate(config.DEFAULT_SAMPLE_RATE) == config.DEFAULT_SAMPLE_RATE
+        assert dev.set_sample_rate(config.default_rate) == config.default_rate
         with pytest.raises(lib_err.INVALID_PARAM):
             dev.set_sample_rate(500_000)
 

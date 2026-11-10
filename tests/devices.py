@@ -32,6 +32,15 @@ class Spec:
     present: Callable = None        # native module -> number of attached devices
     configure: Callable = None      # native device -> None: tune it so it streams
     atol: float = 0                 # how far converted SAMPLES may be from the originals (quantization)
+    freq_call: str = "set_freq"             # the driver call that tunes the receiver (its first argument is the frequency)
+    rate_call: str = "set_sample_rate"      # ... and sets its sample rate
+
+    def freqs(self, sdr):
+        """The frequencies the driver was asked for, in order"""
+        return [args[0] for args in sdr.device.of(self.freq_call)]
+
+    def rates(self, sdr):
+        return [args[0] for args in sdr.device.of(self.rate_call)]
 
     def _import(self, name):
         try:
@@ -53,8 +62,9 @@ class Spec:
         return getattr(self.device_module, self.cls)
 
     @property
-    def config(self):
-        return self.device_class.CONFIG
+    def caps(self):
+        """The device class's declared capabilities (`CAPS`)"""
+        return self.device_class.CAPS
 
     @property
     def lib(self):
@@ -91,6 +101,7 @@ class FakeDevice:
         self.format = fmt
         self.clock = time.monotonic        # a test may replace it, with the watchdog's
         self._ring = RotatingBuffer()
+        self._rings = [self._ring]          # one per slot (channel of a multi-channel stream), fed together
         self._reset_counts()
 
     def _reset_counts(self):
@@ -112,26 +123,49 @@ class FakeDevice:
         self.calls.append(("set_rx_callback",))
 
     # --- the buffered receive path --- #
-    def set_rx_buffer(self, samples):
-        self.calls.append(("set_rx_buffer", samples))
-        self._ring.reset(samples)
+    def set_rx_buffer(self, samples, slots=1):
+        self.calls.append(("set_rx_buffer", samples) if slots == 1 else ("set_rx_buffer", samples, slots))
+        self._rings = [self._ring] + [RotatingBuffer() for _ in range(slots - 1)]
+        for ring in self._rings:
+            ring.reset(samples)
 
     def reset_rx_stats(self):
         self.calls.append(("reset_rx_stats",))
         self._reset_counts()
 
-    def read_rx(self, count=None):
-        return self._ring.read(count)
+    def read_rx(self, count=None, slot=0):
+        return self._rings[slot].read(count)
 
-    def rx_stats(self):
-        return {"samples": self._samples, "dropped": self._ring.dropped, "pending": self._ring.available,
+    def read_rx_indexed(self, count, slot=0):
+        return self._rings[slot].read_indexed(count)
+
+    def wait_rx(self, samples, timeout, slot=0):
+        return self._rings[slot].wait(samples, timeout)
+
+    def read_rx_into(self, out, timeout, slot=0):
+        ring = self._rings[slot]
+        ring.wait(len(out), timeout)
+        x, first = ring.read_indexed(len(out))
+        out[:len(x)] = x
+        return (len(x), first, *self.rx_counters(slot))
+
+    def rx_counters(self, slot=0):
+        s = self.rx_stats(slot)
+        return (s["samples"], s["total"], s["dropped"], s["max_chunk"], -1.0 if s["age"] is None else s["age"])
+
+    def rx_stats(self, slot=0):
+        ring = self._rings[slot]
+        return {"samples": self._samples, "total": ring.total, "dropped": ring.dropped, "pending": ring.available,
                 "max_chunk": self._max_chunk, "calls": self._calls, "busy": 0.0,
                 "age": None if self._last is None else self.clock() - self._last}
 
-    def deliver(self, raw, valid=None):
-        """The driver delivering one transfer of raw bytes (`valid` of them are good)"""
+    def deliver(self, raw, valid=None, slot=None):
+        """The driver delivering one transfer of raw bytes (`valid` of them are good), to one slot or (None) to every
+        slot, as a multi-channel driver does (each channel's own samples: here the same ones)"""
         samples = self.format.to_complex64(raw, valid)
-        self._ring.update(samples)
+        for k, ring in enumerate(self._rings):
+            if slot is None or k == slot:
+                ring.update(samples)
         self._samples += len(samples)
         self._max_chunk = max(self._max_chunk, len(samples))
         self._calls += 1
@@ -170,6 +204,23 @@ def _extio_configure(device):
     device.set_freq(7_100_000)
     device.set_sample_rate(8e6)
 
+def _uhd_configure(device):
+    device.set_rx_rate(10e6, 0)
+    device.set_rx_freq(100_000_000, 0)
+
+_uhd_rate = {"value": 10e6}   # the rate the fake radio is running at
+
+UHD_FAKE = {
+    "set_rx_rate": lambda rate, c=0: _uhd_rate.update(value=rate),
+    "get_rx_rate": lambda c=0: _uhd_rate["value"], "get_master_clock_rate": lambda: 40e6,
+    "num_rx_channels": lambda: 2, "num_tx_channels": lambda: 2,
+    "rx_bandwidth_range": lambda c=0: (200e3, 56e6), "tx_bandwidth_range": lambda c=0: (200e3, 56e6),
+    "set_rx_bandwidth": lambda bw, c=0: bw, "set_tx_bandwidth": lambda bw, c=0: bw,
+    "rx_antennas": lambda c=0: ["TX/RX", "RX2"], "tx_antennas": lambda c=0: ["TX/RX"],
+    "clock_sources": lambda: ["internal", "external", "gpsdo"], "info": lambda: {"mboard_serial": "ABC123"},
+    "get_time_source": lambda: "internal", "mboard_sensors": lambda: {}, "rx_sensors": lambda c=0: {}, "tx_sensors": lambda c=0: {},
+}
+
 RX888_RATES = [2e6, 4e6, 8e6, 16e6, 32e6]
 
 SPECS = [
@@ -178,6 +229,13 @@ SPECS = [
          rate=10e6,
          closed_calls=(("start_rx",), ("stop_rx",), ("set_freq", 100_000_000), ("set_lna_gain", 8)),
          present=_hackrf_present, configure=_hackrf_configure),
+    Spec("uhd", "B210", "uhd",
+         encode=lambda iq: (iq.view(np.float32) * 32768).clip(-32768, 32767).astype(np.int16),
+         rate=10e6, atol=1 / 32768, freq_call="set_rx_freq", rate_call="set_rx_rate",
+         fake_returns=UHD_FAKE,
+         closed_calls=(("start_rx",), ("stop_rx",), ("set_rx_freq", 100_000_000, 0), ("set_rx_gain", 10.0, 0),
+                       ("set_rx_agc", True, 0)),
+         present=lambda native: len(native.find()), configure=_uhd_configure),
     Spec("extio", "RX888", "rx888",
          encode=lambda iq: iq.view(np.float32),
          rate=8e6,

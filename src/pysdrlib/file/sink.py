@@ -34,12 +34,14 @@ class FileSink:
         return f"FileSink ({self.count},{self.fmt.name}): {self.path}"
 
     def open(self):
+        """Open the file for writing (truncating it unless `append=True`)"""
         self.log.trace("open()")
         if self.f is not None:
             self.log.warning("File is already open!")
         else:
             self.f = open(self.path, "ab" if self.append else "wb")
     def close(self):
+        """Close the file, logging a warning if `clip=True` saturated any samples"""
         self.log.trace("close()")
         if self.f is None:
             self.log.warning("File is already closed!")
@@ -99,5 +101,6 @@ class FileSink:
         return (out.view(arr.dtype) if is_complex else out), nbad
 
     def flush(self):
+        """Write buffered samples to disk"""
         if self.f is not None:
             self.f.flush()

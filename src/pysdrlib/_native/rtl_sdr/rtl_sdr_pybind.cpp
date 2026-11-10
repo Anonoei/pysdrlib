@@ -8,29 +8,18 @@
 
 namespace py = pybind11;
 
-namespace {
-
-struct Errors {
-    static constexpr const char* module = "pysdrlib.rtl_sdr.lib.err";
-    static const char* class_for(int code) {
-        switch (code) {
-            case RTLSDR_ERROR_INVALID_PARAM: return "INVALID_PARAM";
-            case RTLSDR_ERROR_NOT_FOUND:     return "NOT_FOUND";
-            case RTLSDR_ERROR_NOT_OPEN:      return "NOT_OPEN";
-            case RTLSDR_ERROR_OPEN_FAILED:   return "OPEN_FAILED";
-            case RTLSDR_ERROR_BUSY:          return "BUSY";
-            default:                         return "RTLSDRError";
-        }
-    }
-};
-
-}  // namespace
-
 PYBIND11_MODULE(_rtl_sdr, m) {
     m.doc() = "RTL-SDR bindings (pybind11)";
 
     // librtlsdr errors -> the pysdrlib.rtl_sdr.lib.err hierarchy
-    hw::register_errors<Errors>();
+    hw::register_errors(m, "RTLSDRError", {
+        {RTLSDR_ERROR_INVALID_PARAM, "INVALID_PARAM", ""},
+        {RTLSDR_ERROR_NOT_FOUND, "NOT_FOUND", ""},
+        {RTLSDR_ERROR_NOT_OPEN, "NOT_OPEN", ""},
+        {RTLSDR_ERROR_OPEN_FAILED, "OPEN_FAILED",
+         "The dongle is there but could not be opened: no permission, or something else has it"},
+        {RTLSDR_ERROR_BUSY, "BUSY", ""},
+    });
 
     hw::bind_device<RTLSDRDevice>(m, "device")
         // tuning

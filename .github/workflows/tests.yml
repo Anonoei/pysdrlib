@@ -41,12 +41,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libusb-1.0-0-dev libfftw3-dev
 
-      - name: Install package (builds native extensions)
+      - name: Install package
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
       # Hardware tests are opt-in (PYSDRLIB_HW=1) and benchmarks are
       # deselected by default in pyproject.toml, so this runs on fakes only.
+      # Importing a driver no longer builds its extension; PYSDRLIB_BUILD=auto
+      # builds each one on first use, as CI relied on before.
       - name: Run tests
+        env:
+          PYSDRLIB_BUILD: auto
         run: python -m pytest -v
