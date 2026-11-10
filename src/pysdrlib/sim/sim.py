@@ -19,15 +19,19 @@ import numpy as np
 
 from ..base.buffer import RotatingBuffer
 from ..base import convert
+from ..base.caps import Capabilities, GainStage, Range
 from ..base.device import Device
-
-from .config import ConfigSim as config
 
 MAX_BUFFER_SAMPLES = 2**24
 
 class Sim(Device):
     NAME = "Simulated"
-    CONFIG = config
+    CAPS = Capabilities(
+        driver="",
+        freq=[Range(1, 10_000_000_000)], default_freq=100_000_000,
+        rates=[Range(1_000, 200_000_000)], default_rate=10_000_000,
+        gains={"rx": {"IF": GainStage(1, 0, 40, 16), "BB": GainStage(2, 0, 62, 16)}, "tx": {}},
+    )
     CAN_TRANSMIT = False
     DUPLEX = False
 
@@ -58,7 +62,7 @@ class Sim(Device):
         self._raw = None
         self._thread = None
         self._stop = threading.Event()
-        self._gain = {"if": config.DEFAULT_GAIN_RX_IF, "bb": config.DEFAULT_GAIN_RX_BB}
+        self._gain = {n.lower(): s.default for n, s in self.CAPS.gains["rx"].items()}
         self._make_block()
 
     # --- simulation interface --- #
@@ -176,25 +180,26 @@ class Sim(Device):
         for buffer in self.buffers:
             buffer.reset(min(int(0.5 * self._Fs), MAX_BUFFER_SAMPLES))
 
-    def _set_sample_rate(self, Fs):
+    def _set_rx_sample_rate(self, Fs, channel=0):
         self._make_block()
         if not self.state["rx"]:
             self._resize_buffer()
-    def _set_freq(self, freq):
+    def _set_rx_freq(self, freq, channel=0):
         pass
 
     # Generic gain splits a total across the stages; the stages are the device-specific controls.
-    def _set_rx_gain(self, gain):
+    def _set_rx_gain(self, gain, channel=0):
         rtr = {"if": None, "bb": None}
+        stages = self.CAPS.gains["rx"]
         if gain == "default":
-            if_gain, bb_gain = config.DEFAULT_GAIN_RX_IF, config.DEFAULT_GAIN_RX_BB
+            if_gain, bb_gain = stages["IF"].default, stages["BB"].default
         else:
-            if_gain = min(gain, config.GAIN_RX_IF_MAX)
-            bb_gain = min(gain - if_gain, config.GAIN_RX_BB_MAX)
+            if_gain = min(gain, stages["IF"].max)
+            bb_gain = min(gain - if_gain, stages["BB"].max)
         rtr["if"] = self.set_rx_if_gain(if_gain)
         rtr["bb"] = self.set_rx_bb_gain(bb_gain)
         return rtr
-    def _set_rx_if_gain(self, gain):
+    def _set_rx_if_gain(self, gain, channel=0):
         self._gain["if"] = gain
-    def _set_rx_bb_gain(self, gain):
+    def _set_rx_bb_gain(self, gain, channel=0):
         self._gain["bb"] = gain

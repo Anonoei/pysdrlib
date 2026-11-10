@@ -2,15 +2,26 @@ import dataclasses
 
 from ..base.native import NativeDevice
 from ..base import convert
-from ..base.caps import Range
+from ..base.caps import Capabilities, GainStage, Range
 from .. import err
 
-from .config import ConfigRTL_SDR as config
 from . import lib
 
 class RTLSDR(NativeDevice):
     NAME = "RTL-SDR"
-    CONFIG = config
+    # The R820T/R820T2/R828D tuner on nearly every current dongle. The older E4000 (52 - 2200 MHz, with a gap) and
+    # FC00xx tuners differ; the driver rejects what they can't tune.
+    # The RTL2832U accepts 225,001 - 300,000 and 900,001 - 3,200,000 Hz (`SAMPLE_RATE_GAP` is between them). Over
+    # about 2.56 MHz a dongle on USB 2.0 usually drops samples.
+    # Tuner gain in dB. It moves in uneven steps (R820T: 0, 0.9, 1.4, 2.7, ... 49.6), which the driver snaps to the
+    # nearest of (the real table is read once open).
+    CAPS = Capabilities(
+        driver="",
+        freq=[Range(24_000_000, 1_766_000_000)], default_freq=100_000_000,
+        rates=[Range(225_001, 3_200_000)], default_rate=2_400_000,
+        gains={"rx": {"RF": GainStage(0, 0, 50, 30)}, "tx": {}},
+    )
+    SAMPLE_RATE_GAP = (300_000, 900_001)   # rates between these are not accepted (exclusive low, inclusive high)
     CAN_TRANSMIT = False
     DUPLEX = False
     SAMPLE_FORMAT = convert.UINT8 # the RTL2832U delivers interleaved unsigned 8-bit I/Q, offset binary
@@ -35,8 +46,8 @@ class RTLSDR(NativeDevice):
         except lib.err.OPEN_FAILED as exc:
             raise err.NoDevice(str(exc)) from exc
 
-    def _set_sample_rate(self, Fs):
-        low, high = type(self).CONFIG.SAMPLE_RATE_GAP
+    def _set_rx_sample_rate(self, Fs, channel=0):
+        low, high = self.SAMPLE_RATE_GAP
         if low < Fs < high: # the hardware has no rates between these
             snapped = low if Fs - low < high - Fs else high
             self._invalid(f"Sample rate must be at most {low:,} or at least {high:,}, using {snapped:,}")
@@ -46,7 +57,7 @@ class RTLSDR(NativeDevice):
             self._invalid(f"Sample rate {Fs:,} is not available, using {actual:,}")
             self._Fs = actual
         self._rate_changed()
-    def _set_freq(self, freq):
+    def _set_rx_freq(self, freq, channel=0):
         self.device.set_freq(int(freq))
 
     # The tuner has a single gain control, with discrete steps; the driver snaps to the nearest.
@@ -55,11 +66,11 @@ class RTLSDR(NativeDevice):
         """Tuner gain, 0-49.6 dB. Turns automatic gain off"""
         return self._set_gain_stage("RX", "RF", gain, self._set_rx_rf_gain)
 
-    def _set_rx_gain(self, gain):
+    def _set_rx_gain(self, gain, channel=0):
         if gain == "default":
-            gain = type(self).CONFIG.DEFAULT_GAIN_RX_RF
+            gain = self.caps.stage("rx", "RF").default
         return {"rf": self.set_rx_rf_gain(gain)}
-    def _set_rx_rf_gain(self, gain):
+    def _set_rx_rf_gain(self, gain, channel=0):
         self.device.set_rx_rf_gain(float(gain))
 
     def set_agc(self, enable):
@@ -85,9 +96,9 @@ class RTLSDR(NativeDevice):
 
     # --- generic controls --- #
     def _capabilities(self, caps):
-        conf = type(self).CONFIG
-        low, high = conf.SAMPLE_RATE_GAP
-        caps.rates = [Range(conf.SAMPLE_RATE_MIN, low), Range(high, conf.SAMPLE_RATE_MAX)]
+        low, high = self.SAMPLE_RATE_GAP
+        lo, hi = caps.rates[0].lo, caps.rates[-1].hi
+        caps.rates = [Range(lo, low), Range(high, hi)]
         caps.gain_modes["rx"] = ["manual", "auto"]
         try:
             tuner = self.device.tuner
@@ -105,5 +116,5 @@ class RTLSDR(NativeDevice):
             pass
         return caps
 
-    def _set_gain_mode(self, direction, mode):
+    def _set_gain_mode(self, direction, mode, channel=0):
         self.device.set_agc(mode == "auto")

@@ -38,13 +38,13 @@ def main():
 
         section("per-channel controls (read back from the hardware)")
         sdr.initialize(cf=100e6, Fs=2e6)
-        sdr.set_freq(433e6, channel=1)
+        sdr.set_rx_freq(433e6, channel=1)
         print("set_freq(433 MHz, channel=1) -> RX LO ch0/ch1:", raw.get_rx_freq(0), raw.get_rx_freq(1),
-              "| generic get_freq(0):", sdr.get_freq(0))
-        sdr.set_freq(915e6, direction="tx")
+              "| generic get_freq(0):", sdr.get_rx_freq(0))
+        sdr.set_tx_freq(915e6)
         print("set_freq(915 MHz, direction='tx') -> TX ch0/ch1:", raw.get_tx_freq(0), raw.get_tx_freq(1),
               "| RX still", raw.get_rx_freq(0))
-        sdr.set_sample_rate(4e6, direction="tx")
+        sdr.set_tx_sample_rate(4e6)
         print("set_sample_rate(4 MS/s, direction='tx') -> TX rates", raw.get_tx_rate(0), raw.get_tx_rate(1),
               "| RX", raw.get_rx_rate(0), raw.get_rx_rate(1))
         sdr.set_gain(10, channel=0); sdr.set_gain(50, channel=1)
@@ -59,7 +59,7 @@ def main():
 
         for rate in a.rates:
             section(f"both RX channels at {rate/1e6:g} MS/s for {a.seconds:g} s")
-            sdr.set_sample_rate(rate, direction="rx")
+            sdr.set_rx_sample_rate(rate, direction="rx")
             block = int(min(1 << 18, rate * 0.05))
             with sdr.stream(block, timeout=2, meta=True, channel=(0, 1)) as s:
                 n, lost, misaligned, t0 = 0, 0, 0, time.monotonic()
@@ -75,14 +75,14 @@ def main():
 
         section("coherence: both channels on one signal")
         rate = 2e6
-        sdr.set_sample_rate(rate, direction="rx")
+        sdr.set_rx_sample_rate(rate, direction="rx")
         sdr.start_rx(channels=(0, 1))
         if a.station:
             station = a.station
         else:
             station, on, off = find_station(sdr, rate, tuple(a.band))
             print(f"signal at {station/1e6:.1f} MHz ({on - off:.1f} dB above its surroundings, channel 0)")
-        sdr.set_freq(station, flush=True)
+        sdr.set_rx_freq(station, flush=True)
         phases, mags = [], []
         for _ in range(20):
             x = sdr.read(65536, timeout=2, channel=(0, 1))
@@ -98,7 +98,7 @@ def main():
 
         if not a.no_tx and c.channels.get("tx", 0) >= 2:
             section("TX on both channels: silence at the least gain")
-            sdr.set_sample_rate(1e6, direction="tx")
+            sdr.set_tx_sample_rate(1e6)
             for ch in (0, 1):
                 sdr.set_gain(0, channel=ch, direction="tx")
             sdr.start_tx(channels=(0, 1))

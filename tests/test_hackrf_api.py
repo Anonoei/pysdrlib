@@ -8,7 +8,9 @@ from devices import BY_NAME
 pytest.importorskip("pysdrlib.hackrf", exc_type=ImportError)
 
 from pysdrlib import err
-from pysdrlib.hackrf.config import ConfigHackRF as config
+from pysdrlib.hackrf import Device as HackRF
+
+config = HackRF.CAPS
 from pysdrlib.hackrf.lib import err as lib_err
 
 
@@ -74,8 +76,8 @@ class TestSpecificGainPublic:
 class TestTotalGain:
     def test_rx_default_programs_the_lna_and_vga(self, sdr):
         sdr.set_rx_gain()
-        assert calls(sdr, "set_lna_gain") == [(config.DEFAULT_GAIN_RX_IF,)]
-        assert calls(sdr, "set_vga_gain") == [(config.DEFAULT_GAIN_RX_BB,)]
+        assert calls(sdr, "set_lna_gain") == [(config.stage("rx", "IF").default,)]
+        assert calls(sdr, "set_vga_gain") == [(config.stage("rx", "BB").default,)]
 
     def test_tx_uses_the_amp_only_when_the_txvga_cannot_supply_it(self, sdr):
         sdr.set_tx_gain(45)   # the TXVGA reaches 47 dB on its own: the amp is switched off, whatever it was
@@ -85,19 +87,19 @@ class TestTotalGain:
         assert calls(sdr, "set_amp_enable") == [(True,)] and calls(sdr, "set_txvga_gain") == [(47,)]
 
 
-class TestConfig:
+class TestCaps:
     def test_limits(self):
-        assert (config.FREQ_MIN, config.FREQ_MAX) == (1_000_000, 6_000_000_000)
-        assert (config.SAMPLE_RATE_MIN, config.SAMPLE_RATE_MAX) == (2_000_000, 20_000_000)
+        assert [(r.lo, r.hi) for r in config.freq] == [(1_000_000, 6_000_000_000)]
+        assert [(r.lo, r.hi) for r in config.rates] == [(2_000_000, 20_000_000)]
 
     @pytest.mark.parametrize("name,step,lo,hi", [
         ("RX_RF", 11, 0, 11), ("RX_IF", 8, 0, 40), ("RX_BB", 2, 0, 62),
         ("TX_RF", 11, 0, 11), ("TX_IF", 1, 0, 47),
     ])
     def test_gain_ranges(self, name, step, lo, hi):
-        assert getattr(config, f"GAIN_{name}_STEP") == step
-        assert getattr(config, f"GAIN_{name}_MIN") == lo
-        assert getattr(config, f"GAIN_{name}_MAX") == hi
+        direction, stage = name.split("_")
+        spec = config.stage(direction, stage)
+        assert (spec.step, spec.min, spec.max) == (step, lo, hi)
 
 
 @pytest.mark.parametrize("name", [
@@ -111,9 +113,9 @@ def test_error_classes(name):
 
 class TestTransmit:
     def test_start_sizes_the_queue_for_the_rate(self, sdr):
-        sdr.set_sample_rate(10e6)
+        sdr.set_rx_sample_rate(10e6)
         sdr.start_tx()
-        assert calls(sdr, "set_tx_buffer")[-1] == (int(type(sdr).TX_BUFFER_SECONDS * sdr.Fs),)
+        assert calls(sdr, "set_tx_buffer")[-1] == (int(type(sdr).TX_BUFFER_SECONDS * sdr.get_rx_sample_rate()),)
         assert sdr.device.names()[-1] == "start_tx"
         sdr.stop_tx()
         assert sdr.device.names()[-1] == "stop_tx"

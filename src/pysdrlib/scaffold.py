@@ -50,49 +50,24 @@ def find():
     return []   # TODO: DeviceInfo("@NAME@", label, serial, index, open_args) for each unit
 '''
 
-CONFIG = '''from ..base.config import ConfigDevice
-
-class _Config@CLASS@(ConfigDevice):
-    __instance = None
-
-    def __init__(self):
-        super().__init__(
-            {
-                "DEFAULT": {
-                    "FREQ":        100_000_000,   # TODO: the limits and defaults of the real radio
-                    "SAMPLE_RATE":   2_000_000,
-
-                    "GAIN_RX_MAIN": 20,
-                },
-                "FREQ_MIN":       1_000_000,
-                "FREQ_MAX":   6_000_000_000,
-                "SAMPLE_RATE_MIN":   250_000,
-                "SAMPLE_RATE_MAX": 20_000_000,
-                # One entry per gain stage, named as the radio calls it: <DIRECTION>_<STAGE>_<STEP|MIN|MAX>.
-                # A transmitter adds TX_<STAGE>_* and sets CAN_TRANSMIT.
-                "GAIN": {
-                    "RX_MAIN_STEP": 1,
-                    "RX_MAIN_MIN":  0,
-                    "RX_MAIN_MAX": 40,
-                },
-            }
-        )
-
-Config@CLASS@ = _Config@CLASS@()
-'''
-
 DEVICE = '''from ..base.native import NativeDevice
 from ..base import convert
-from ..base.caps import Range
+from ..base.caps import Capabilities, GainStage, Range
 from .. import err
 
-from .config import Config@CLASS@ as config
 from . import lib
 
 class @CLASS@(NativeDevice):
     """@CLASS@: TODO one line on the radio, then what a user needs to know that `caps` doesn't say"""
     NAME = "@CLASS@"
-    CONFIG = config
+    # TODO: the limits and defaults of the real radio, and one gain stage per entry, named as the radio calls it:
+    # GainStage(step, min, max, default). A transmitter adds a "tx" dict and sets CAN_TRANSMIT.
+    CAPS = Capabilities(
+        driver="",
+        freq=[Range(1_000_000, 6_000_000_000)], default_freq=100_000_000,
+        rates=[Range(250_000, 20_000_000)], default_rate=2_000_000,
+        gains={"rx": {"MAIN": GainStage(1, 0, 40, 20)}, "tx": {}},
+    )
     CAN_TRANSMIT = False
     DUPLEX = False
     SAMPLE_FORMAT = convert.INT16   # TODO: the raw stream the extension delivers (convert.INT8, UINT8, FLOAT32...)
@@ -114,13 +89,13 @@ class @CLASS@(NativeDevice):
             raise err.NoDevice("No @CLASS@ devices found!") from exc
 
     # --- tuning --- #
-    def _set_sample_rate(self, Fs):
+    def _set_rx_sample_rate(self, Fs, channel=0):
         self.device.set_sample_rate(Fs)
         self._rate_changed()   # sizes the receive queue for the new rate
-    def _set_freq(self, freq):
+    def _set_rx_freq(self, freq, channel=0):
         self.device.set_freq(int(freq))
 
-    # --- gain: one hook per stage in config.py applies it (set_rx_main_gain is made from the config) --- #
+    # --- gain: one hook per stage in CAPS applies it (set_rx_main_gain is made from CAPS) --- #
     # `set_gain(total)` splits a total across the stages; `set_rx_gain` is the same; the stage setter sets one.
     def _set_rx_main_gain(self, gain, channel=0):
         self.device.set_rx_gain(float(gain))
@@ -128,7 +103,7 @@ class @CLASS@(NativeDevice):
     def _set_bias_t(self, bias):
         raise err.NotSupported(f"{type(self).NAME} has no bias tee")
 
-    # --- what this unit can do, beyond CONFIG: see pysdrlib.base.caps --- #
+    # --- what this unit can do, beyond CAPS: see pysdrlib.base.caps --- #
     def _capabilities(self, caps):
         # caps.bandwidths = {"rx": [Range(lo, hi)], "tx": []}
         # caps.antennas = {"rx": [...], "tx": []}
@@ -140,16 +115,22 @@ class @CLASS@(NativeDevice):
 DEVICE_PY = '''import numpy as np
 
 from ..base.device import Device as _Device
-from ..base.caps import Range
+from ..base.caps import Capabilities, GainStage, Range
 from .. import err
 
-from .config import Config@CLASS@ as config
 
 class @CLASS@(_Device):
     """@CLASS@: TODO one line on the radio. A Device in Python: it provides the samples itself, `read()` and the rest
     are built on `_get_samples`. (A driver on a compiled extension is a NativeDevice: see pysdrlib.contributing)"""
     NAME = "@CLASS@"
-    CONFIG = config
+    # TODO: the limits and defaults of the real radio, and one gain stage per entry, named as the radio calls it:
+    # GainStage(step, min, max, default). A transmitter adds a "tx" dict and sets CAN_TRANSMIT.
+    CAPS = Capabilities(
+        driver="",
+        freq=[Range(1_000_000, 6_000_000_000)], default_freq=100_000_000,
+        rates=[Range(250_000, 20_000_000)], default_rate=2_000_000,
+        gains={"rx": {"MAIN": GainStage(1, 0, 40, 20)}, "tx": {}},
+    )
     CAN_TRANSMIT = False
     DUPLEX = False
 
@@ -161,9 +142,9 @@ class @CLASS@(_Device):
     def _close(self):
         pass
 
-    def _set_sample_rate(self, Fs):
+    def _set_rx_sample_rate(self, Fs, channel=0):
         pass   # TODO
-    def _set_freq(self, freq):
+    def _set_rx_freq(self, freq, channel=0):
         pass   # TODO
 
     def _start_rx(self):
@@ -174,7 +155,7 @@ class @CLASS@(_Device):
         """Whatever has arrived since the last call, as complex64 (possibly none)"""
         return np.empty(0, dtype=np.complex64)   # TODO
 
-    def _set_rx_main_gain(self, gain, channel=0):   # applies the stage; set_rx_main_gain is made from the config
+    def _set_rx_main_gain(self, gain, channel=0):   # applies the stage; set_rx_main_gain is made from CAPS
         pass   # TODO
 
     def _set_bias_t(self, bias):
@@ -402,7 +383,6 @@ def files(name, cls, native=True):
     names = {"NAME": name, "CLASS": cls, "UPPER": name.upper()}
     out = {
         f"{name}/__init__.py": INIT if native else INIT_PY,
-        f"{name}/config.py": CONFIG,
         f"{name}/{name}.py": DEVICE if native else DEVICE_PY,
         f"{name}/README.md": README,
     }
@@ -438,7 +418,7 @@ def new_driver(name, cls=None, native=True, root=None):
 
 def next_steps(name, cls, native=True):
     steps = [
-        f"1. Fill in every TODO: src/pysdrlib/{name}/config.py first (the radio's limits and gain stages), then {name}.py"
+        f"1. Fill in every TODO: src/pysdrlib/{name}/{name}.py, starting with CAPS (the radio's limits and gain stages)"
         + (f", then the C++ in src/pysdrlib/_native/{name}/ and _ext/{name}.py (make get() return the extension)." if native else "."),
         "2. Check it as you go:  python -c \"from pysdrlib import testing; "
         f"print(*testing.check_package('{name}'), sep='\\n')\"",

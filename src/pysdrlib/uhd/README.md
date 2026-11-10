@@ -5,7 +5,7 @@ Ettus USRP B2xx (B200/B210) through UHD's C API.
 ```python
 import pysdrlib
 sdr = pysdrlib.open("uhd")                 # or pysdrlib.find("uhd")[0].open()
-sdr.set_freq(915e6); sdr.set_sample_rate(10e6); sdr.set_rx_gain(40)
+sdr.set_rx_freq(915e6); sdr.set_rx_sample_rate(10e6); sdr.set_rx_gain(40)
 sdr.start_rx(); x = sdr.read(1_000_000)    # complex64
 
 sdr.start_tx(); sdr.write(tone)            # complex64, full scale is +-1; sdr.tx_stats
@@ -27,10 +27,10 @@ The master clock is chosen from the sample rate (an even multiple of it in the A
 `master_clock_rate` is set; changing it pauses the streams.
 
 **Two channels.** A B210 has two RX and two TX channels (frontends A and B; a B200 has one). Every control takes
-`channel`, tuning also `direction`:
+`channel`:
 ```python
 sdr.set_gain(50, channel=1); sdr.set_antenna("TX/RX", channel=1)
-sdr.set_freq(915e6, direction="tx")                 # RX stays where it was
+sdr.set_tx_freq(915e6)                 # RX stays where it was
 sdr.start_rx(channels=(0, 1)); x = sdr.read(65536, channel=(0, 1))     # (2, 65536): the same instants
 sdr.start_tx(channels=(0, 1)); sdr.write(np.stack((a, b)))              # sent sample for sample together
 ```

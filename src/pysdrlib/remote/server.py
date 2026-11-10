@@ -121,7 +121,6 @@ class DeviceWorker:
             "name": cls.NAME,
             "can_transmit": cls.CAN_TRANSMIT,
             "duplex": cls.DUPLEX,
-            "config": cls.CONFIG.json() if cls.CONFIG is not None else None,
             "methods": methods,
             "native_wire": protocol.wire_name(protocol.resolve_wire("native", self.device)),
             "endpoints": self.endpoints,
@@ -133,7 +132,7 @@ class DeviceWorker:
             return {
                 "id": self.id, "type": self.type, "name": type(self.device).NAME,
                 "state": dict(self.device.state),
-                "cf": self.device.get_freq(), "Fs": self.device.get_sample_rate(),
+                "cf": self.device.get_rx_freq(), "Fs": self.device.get_rx_sample_rate(),
                 "controlled": self.token is not None,
                 "wire": protocol.wire_name(self.wire),
                 "rx_channels": list(getattr(self.device, "rx_channels", (0,))),

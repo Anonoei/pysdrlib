@@ -2,11 +2,12 @@ import numpy as np
 
 from ..base.native import NativeDevice
 from ..base import convert
-from ..base.caps import Range, Setting
+from ..base.caps import Capabilities, GainStage, Range, Setting
 from .. import err
 
-from .config import ConfigB210 as config
 from . import images, lib
+
+TIME_SOURCES = ("none", "internal", "external", "gpsdo")
 
 class B210(NativeDevice):
     """Ettus USRP B200/B210 (and compatible) through UHD. Two channels each way on a B210 (frontends A and B), one on a
@@ -20,7 +21,19 @@ class B210(NativeDevice):
     `set_gain`/`set_rx_gain`/`set_tx_gain`.
     """
     NAME = "UHD B210"
-    CONFIG = config
+    # 61.44 MS/s with one channel, 30.72 MS/s with two (USB 3 carries sc16 at that rate). The gain is the AD9361 PGA,
+    # the only gain the B210 exposes through UHD
+    CAPS = Capabilities(
+        driver="",
+        freq=[Range(50_000_000, 6_000_000_000)], default_freq=915_000_000,
+        rates=[Range(200_000, 61_440_000)], default_rate=10_000_000,
+        gains={"rx": {"PGA": GainStage(1, 0, 76, 40)}, "tx": {"PGA": GainStage(0.25, 0, 89.75, 40)}},
+    )
+    SAMPLE_RATE_MAX_DUAL = 30_720_000
+    MASTER_CLOCK_MIN = 5_000_000
+    MASTER_CLOCK_MAX = 61_440_000
+    MASTER_CLOCK_MAX_DUAL = 30_720_000   # with two channels in a stream (UHD refuses more)
+    MASTER_CLOCK_GOOD_MIN = 25_000_000   # below this the AD9361's converters are outside their best range
     CAN_TRANSMIT = True
     DUPLEX = True
     SAMPLE_FORMAT = convert.INT16   # UHD delivers sc16 (interleaved signed 16-bit I/Q)
@@ -29,10 +42,12 @@ class B210(NativeDevice):
     RETUNE_SETTLE = 0.002
 
     SETTINGS = {
-        "dc_offset_auto": Setting(bool, "Automatic DC offset correction of the receiver", "_set_dc_offset_auto", default=True),
-        "iq_balance_auto": Setting(bool, "Automatic IQ imbalance correction of the receiver", "_set_iq_balance_auto", default=True),
+        "dc_offset_auto": Setting(bool, "Automatic DC offset correction of the receiver", "_set_dc_offset_auto", default=True,
+                                  per_channel=True),
+        "iq_balance_auto": Setting(bool, "Automatic IQ imbalance correction of the receiver", "_set_iq_balance_auto", default=True,
+                                   per_channel=True),
         "time_source": Setting(str, "Source of the device's PPS time reference", "_set_time_source",
-                               choices=config.TIME_SOURCES, getter="_get_time_source", default="none"),
+                               choices=TIME_SOURCES, getter="_get_time_source", default="none"),
         "master_clock_rate": Setting(float, "Master clock rate [Hz] (0: automatic, chosen from the sample rate)",
                                      "_set_master_clock_rate", getter="_get_master_clock_rate", default=0.0),
     }
@@ -65,18 +80,17 @@ class B210(NativeDevice):
         With two channels in a stream (`channels`, default the streams' own) the clock may be at most 30.72 MHz: then
         the largest power-of-two multiple under that, even below 25 MHz.
         UHD's own choice fails when RX and TX rates are set one after the other, and picks odd decimations."""
-        cfg = type(self).CONFIG
         if channels is None:
             channels = max(len(self._rx_channels), len(self._tx_channels))
-        top = cfg.MASTER_CLOCK_MAX_DUAL if channels > 1 else cfg.MASTER_CLOCK_MAX
+        top = self.MASTER_CLOCK_MAX_DUAL if channels > 1 else self.MASTER_CLOCK_MAX
         current = self.device.get_master_clock_rate()
         ratio = current / Fs
         if current <= top + 1 and ratio >= 1 - 1e-6 and abs(ratio - round(ratio)) < 1e-6 and (round(ratio) == 1 or round(ratio) % 2 == 0):
             return current
         mcr = float(Fs)
-        while mcr < cfg.MASTER_CLOCK_GOOD_MIN and mcr * 2 <= top + 1:
+        while mcr < self.MASTER_CLOCK_GOOD_MIN and mcr * 2 <= top + 1:
             mcr *= 2
-        return mcr if cfg.MASTER_CLOCK_MIN - 1 <= mcr <= top + 1 else None   # 1 Hz: rates read back are not exact
+        return mcr if self.MASTER_CLOCK_MIN - 1 <= mcr <= top + 1 else None   # 1 Hz: rates read back are not exact
 
     def _fit_clock(self, channels):
         """Before streaming `channels` channels: a master clock they allow at the current rates (rates re-applied)"""
@@ -85,7 +99,7 @@ class B210(NativeDevice):
         mcr = self._master_clock_for(self._Fs, channels)
         if mcr is None:
             self._invalid(f"{channels} channels at {self._Fs:,.0f} S/s: no master clock fits "
-                          f"(at most {type(self).CONFIG.MASTER_CLOCK_MAX_DUAL:,} Hz with two channels)")
+                          f"(at most {self.MASTER_CLOCK_MAX_DUAL:,} Hz with two channels)")
             return
         if mcr != self.device.get_master_clock_rate():
             self._change_master_clock(mcr)
@@ -114,41 +128,48 @@ class B210(NativeDevice):
     def _channels(self, direction):
         return range(self.device.num_rx_channels() if direction == "rx" else self.device.num_tx_channels())
 
-    def _set_sample_rate(self, Fs, direction=None, channel=0):
-        """Every channel of the direction(s) at `Fs` (a stream's channels run at one rate). Returns the rate set"""
-        dirs = ("rx", "tx") if direction is None else (direction,)
-        if not self._mcr_pinned:
-            mcr = self._master_clock_for(Fs)
-            if mcr is not None and mcr != self.device.get_master_clock_rate():
-                self._change_master_clock(mcr)
-                for other in {"rx", "tx"} - set(dirs):   # the clock moved under the other direction: put it back
-                    rate = self._tuning.get(("rate", other, 0))
-                    if rate:
-                        for ch in self._channels(other):
-                            (self.device.set_rx_rate if other == "rx" else self.device.set_tx_rate)(float(rate), ch)
-        if direction is None:
-            self.device.set_sample_rate(float(Fs))   # RX and TX of channel 0 together
-        for d in dirs:
-            for ch in self._channels(d):
-                if direction is not None or ch:
-                    (self.device.set_rx_rate if d == "rx" else self.device.set_tx_rate)(float(Fs), ch)
-        if "rx" in dirs:
-            self._Fs = self.device.get_rx_rate(0)
-            if len(self._rx_channels) > 1 and self._Fs > type(self).CONFIG.SAMPLE_RATE_MAX_DUAL:
-                self._invalid(f"{self._Fs:,.0f} S/s on {len(self._rx_channels)} channels is more than USB carries "
-                              f"(at most {type(self).CONFIG.SAMPLE_RATE_MAX_DUAL:,})")
-            self._rate_changed()
-            return self._Fs
+    def _fit_rate_clock(self, Fs, direction):
+        """Before setting `direction`'s rate to `Fs`: a master clock that gives it (unless the user pinned one). The
+        clock moved under the other direction, so its rate is put back, if the new clock can still give it (when not,
+        e.g. both directions are being set to a new rate, the caller sets it next)"""
+        if self._mcr_pinned:
+            return
+        mcr = self._master_clock_for(Fs)
+        if mcr is None or mcr == self.device.get_master_clock_rate():
+            return
+        self._change_master_clock(mcr)
+        other = "tx" if direction == "rx" else "rx"
+        rate = self._tuning.get(("rate", other, 0))
+        ratio = mcr / rate if rate else 0
+        if rate and abs(ratio - round(ratio)) < 1e-6 and (round(ratio) == 1 or round(ratio) % 2 == 0):
+            for ch in self._channels(other):
+                (self.device.set_rx_rate if other == "rx" else self.device.set_tx_rate)(float(rate), ch)
+
+    def _set_rx_sample_rate(self, Fs, channel=0):
+        """Every receive channel at `Fs` (a stream's channels run at one rate). Returns the rate set"""
+        self._fit_rate_clock(Fs, "rx")
+        for ch in self._channels("rx"):
+            self.device.set_rx_rate(float(Fs), ch)
+        self._Fs = self.device.get_rx_rate(0)
+        if len(self._rx_channels) > 1 and self._Fs > self.SAMPLE_RATE_MAX_DUAL:
+            self._invalid(f"{self._Fs:,.0f} S/s on {len(self._rx_channels)} channels is more than USB carries "
+                          f"(at most {self.SAMPLE_RATE_MAX_DUAL:,})")
+        self._rate_changed()
+        return self._Fs
+    def _set_tx_sample_rate(self, Fs, channel=0):
+        self._fit_rate_clock(Fs, "tx")
+        for ch in self._channels("tx"):
+            self.device.set_tx_rate(float(Fs), ch)
         return self.device.get_tx_rate(0)
-    def _set_freq(self, freq, direction=None, channel=0):
-        """Every channel of the direction(s): they share the synthesizer, but each has its own DSP tuning, and two
-        channels tuned apart by a fraction of a hertz drift in phase (not coherent)"""
-        if direction is None:
-            self.device.set_freq(int(freq))   # RX and TX of channel 0
-        for d in (("rx", "tx") if direction is None else (direction,)):
-            for ch in self._channels(d):
-                if direction is not None or ch:
-                    (self.device.set_rx_freq if d == "rx" else self.device.set_tx_freq)(float(freq), ch)
+
+    # Every channel of the direction: they share the synthesizer, but each has its own DSP tuning, and two channels
+    # tuned apart by a fraction of a hertz drift in phase (not coherent)
+    def _set_rx_freq(self, freq, channel=0):
+        for ch in self._channels("rx"):
+            self.device.set_rx_freq(float(freq), ch)
+    def _set_tx_freq(self, freq, channel=0):
+        for ch in self._channels("tx"):
+            self.device.set_tx_freq(float(freq), ch)
 
     # --- gain: one stage per direction --- #
 
@@ -167,7 +188,7 @@ class B210(NativeDevice):
         caps.channels = {"rx": d.num_rx_channels(), "tx": d.num_tx_channels()}
         # one synthesizer per direction; a stream's channels share its rate; the rest is per channel
         caps.shared = {"freq": "direction", "rate": "direction", "gain": "channel", "bandwidth": "channel", "antenna": "channel"}
-        # Frequency and rates stay CONFIG's: UHD's own ranges include the DSP's reach beyond the frontend, and the
+        # Frequency and rates stay CAPS': UHD's own ranges include the DSP's reach beyond the frontend, and the
         # rates it lists are only those the current master clock gives
         caps.bandwidths = {"rx": [Range(*d.rx_bandwidth_range(0))], "tx": [Range(*d.tx_bandwidth_range(0))]}
         caps.gain_modes = {"rx": ["manual", "auto"], "tx": ["manual"]}
@@ -192,9 +213,9 @@ class B210(NativeDevice):
 
     # --- which channels stream --- #
     def _set_rx_channels(self, channels):
-        if len(channels) > 1 and self._Fs > type(self).CONFIG.SAMPLE_RATE_MAX_DUAL:
+        if len(channels) > 1 and self._Fs > self.SAMPLE_RATE_MAX_DUAL:
             self._invalid(f"{len(channels)} channels at {self._Fs:,.0f} S/s is more than USB carries "
-                          f"(at most {type(self).CONFIG.SAMPLE_RATE_MAX_DUAL:,} each)")
+                          f"(at most {self.SAMPLE_RATE_MAX_DUAL:,} each)")
         self._fit_clock(max(len(channels), len(self._tx_channels)))
         self.device.set_rx_channels(list(channels))
     def _set_tx_channels(self, channels):
@@ -218,7 +239,9 @@ class B210(NativeDevice):
         if rate:
             self._change_master_clock(rate)
         if self.state["open"]:
-            self.set_sample_rate(self._Fs)
+            self.set_rx_sample_rate(self._Fs)
+            if ('rate', 'tx', 0) in self._tuning:
+                self.set_tx_sample_rate(self._tuning[('rate', 'tx', 0)])
     def _get_master_clock_rate(self):
         return self.device.get_master_clock_rate()
 

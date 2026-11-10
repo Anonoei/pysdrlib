@@ -6,7 +6,7 @@
     pysdrlib client tcp://host:5555 rx hackrf --freq 100e6 --rate 10e6 -o out.cfile -t 5
     pysdrlib client tcp://host:5555 watch hackrf-0 -o out.cfile -t 5
     pysdrlib client tcp://host:5555 tx hackrf -i out.cfile --freq 915e6 --rate 2e6 --tx-gain 0 --tx-wire int8
-    pysdrlib client tcp://host:5555 set hackrf-0 freq=101e6 rx_lna_gain=16
+    pysdrlib client tcp://host:5555 set hackrf-0 rx_freq=101e6 rx_lna_gain=16
 
 Recordings and transmit files are raw complex64 (GNU Radio `.cfile`).
 --rx-wire / --tx-wire choose the format samples cross the network in (native = the device's own layout).
@@ -71,7 +71,7 @@ def build_parser():
 
     st = cmd.add_parser("set", help="change settings on a hosted device (takes control briefly)")
     st.add_argument("device")
-    st.add_argument("settings", nargs="+", metavar="KEY=VALUE", help="calls set_<key>(value): freq, sample_rate, rx_gain, rx_lna_gain, ...")
+    st.add_argument("settings", nargs="+", metavar="KEY=VALUE", help="calls set_<key>(value): rx_freq, tx_freq, rx_sample_rate, rx_gain, rx_lna_gain, ...")
 
     t = cmd.add_parser("tx", help="open a new device, configure it and transmit a file")
     t.add_argument("type", help="device type, e.g. hackrf")
@@ -199,7 +199,7 @@ def run_client(args):
                           init_kwargs=dict(_setting(i) for i in args.init)) as dev:
             dev.initialize(cf=args.freq, Fs=args.rate, rx_gain=args.rx_gain)
             _apply(dev, [_setting(s) for s in args.set])
-            print(f"{dev.id}: cf={dev.CF:,.0f} Fs={dev.Fs:,.0f} wire={dev.wire}")
+            print(f"{dev.id}: cf={dev.get_rx_freq():,.0f} Fs={dev.get_rx_sample_rate():,.0f} wire={dev.wire}")
             dev.start_rx()
             try:
                 _record(dev, args)
@@ -220,7 +220,7 @@ def run_client(args):
                           init_kwargs=dict(_setting(i) for i in args.init)) as dev:
             dev.initialize(cf=args.freq, Fs=args.rate, tx_gain=args.tx_gain)
             _apply(dev, [_setting(x) for x in args.set])
-            print(f"{dev.id}: cf={dev.CF:,.0f} Fs={dev.Fs:,.0f} tx_wire={dev.tx_wire_name}")
+            print(f"{dev.id}: cf={dev.get_rx_freq():,.0f} Fs={dev.get_rx_sample_rate():,.0f} tx_wire={dev.tx_wire_name}")
             _transmit(dev, args)
 
 def main(argv=None):

@@ -6,7 +6,9 @@ from devices import BY_NAME
 # A device whose vendor library cannot be built here (missing system packages) is skipped, not failed
 pytest.importorskip("pysdrlib.extio", exc_type=ImportError)
 
-from pysdrlib.extio.config import ConfigRX888 as config
+from pysdrlib.extio import Device as RX888
+
+config = RX888.CAPS
 
 
 @pytest.fixture
@@ -20,12 +22,12 @@ def calls(sdr, name):
 
 class TestSampleRate:
     def test_a_supported_rate_is_kept(self, sdr):
-        assert sdr.set_sample_rate(16e6) == 16e6
+        assert sdr.set_rx_sample_rate(16e6) == 16e6
 
     def test_an_unsupported_rate_snaps_to_the_nearest_with_a_warning(self, sdr):
         with pytest.warns(Warning):
-            assert sdr.set_sample_rate(5e6) == 4e6
-        assert sdr.Fs == 4e6
+            assert sdr.set_rx_sample_rate(5e6) == 4e6
+        assert sdr.get_rx_sample_rate() == 4e6
         assert sdr.device.of("set_rx_buffer")[-1] == (int(type(sdr).BUFFER_SECONDS * 4e6),)   # sized for the rate it got
 
 
@@ -38,20 +40,20 @@ class TestGain:
 
     def test_stage_is_clamped_with_a_warning(self, sdr):
         with pytest.warns(Warning):
-            sdr.set_rx_if_gain(config.GAIN_RX_IF_MAX + 10)
-        assert calls(sdr, "set_rx_if_gain")[-1] == (float(config.GAIN_RX_IF_MAX),)
+            sdr.set_rx_if_gain(config.stage("rx", "IF").max + 10)
+        assert calls(sdr, "set_rx_if_gain")[-1] == (float(config.stage("rx", "IF").max),)
 
     def test_default_total_gain(self, sdr):
         assert sdr.set_rx_gain() == {"rf": 0, "if": 0}
 
     def test_total_gain_fills_the_if_stage_then_the_rf_stage(self, sdr):
-        sdr.set_rx_gain(config.GAIN_RX_IF_MAX + 5)
-        assert calls(sdr, "set_rx_if_gain")[-1] == (float(config.GAIN_RX_IF_MAX),)
+        sdr.set_rx_gain(config.stage("rx", "IF").max + 5)
+        assert calls(sdr, "set_rx_if_gain")[-1] == (float(config.stage("rx", "IF").max),)
         assert calls(sdr, "set_rx_rf_gain")[-1] == (5.0,)
 
     def test_total_gain_below_the_if_range_attenuates(self, sdr):
-        sdr.set_rx_gain(config.GAIN_RX_IF_MIN - 3)
-        assert calls(sdr, "set_rx_if_gain")[-1] == (float(config.GAIN_RX_IF_MIN),)
+        sdr.set_rx_gain(config.stage("rx", "IF").min - 3)
+        assert calls(sdr, "set_rx_if_gain")[-1] == (float(config.stage("rx", "IF").min),)
         assert calls(sdr, "set_rx_rf_gain")[-1] == (-3.0,)
 
 

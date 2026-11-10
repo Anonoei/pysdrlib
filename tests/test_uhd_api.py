@@ -8,7 +8,9 @@ pytest.importorskip("pysdrlib.uhd", exc_type=ImportError)
 
 from pysdrlib import err
 from pysdrlib.uhd import images
-from pysdrlib.uhd.config import ConfigB210 as config
+from pysdrlib.uhd import Device as B210
+
+config = B210.CAPS
 from pysdrlib.uhd.lib import err as lib_err
 
 
@@ -54,13 +56,13 @@ class TestGain:
 
     def test_rx_gain_is_clamped(self, sdr):
         with pytest.warns(Warning):
-            assert sdr.set_rx_pga_gain(500) == config.GAIN_RX_PGA_MAX
+            assert sdr.set_rx_pga_gain(500) == config.stage("rx", "PGA").max
 
     def test_generic_gain_is_the_pga(self, sdr):
         sdr.set_rx_gain(30)
         sdr.set_tx_gain(None)
         assert calls(sdr, "set_rx_gain")[-1] == (30.0, 0)
-        assert calls(sdr, "set_tx_gain")[-1] == (float(config.DEFAULT_GAIN_TX_PGA), 0)
+        assert calls(sdr, "set_tx_gain")[-1] == (float(config.stage("tx", "PGA").default), 0)
 
     def test_agc_is_a_receive_gain_mode(self, sdr):
         assert sdr.gain_modes("rx") == ["manual", "auto"] and sdr.gain_modes("tx") == ["manual"]
@@ -131,7 +133,7 @@ class TestMasterClock:
         sdr.device._returns["get_master_clock_rate"] = lambda: 7e6
         sdr.device._returns["is_streaming"] = lambda: True
         sdr.device._returns["is_transmitting"] = lambda: True
-        sdr.set_sample_rate(10e6)
+        sdr.set_rx_sample_rate(10e6)
         names = sdr.device.names()
         i = names.index("set_master_clock_rate")
         assert names[i - 2:i] == ["stop_tx", "stop_rx"] and names[i + 1:i + 3] == ["start_rx", "start_tx"]
@@ -139,16 +141,16 @@ class TestMasterClock:
     def test_pinned_clock_is_left_alone(self, sdr):
         sdr.set_setting("master_clock_rate", 32e6)
         sdr.device.calls.clear()
-        sdr.set_sample_rate(10e6)
+        sdr.set_rx_sample_rate(10e6)
         assert "set_master_clock_rate" not in sdr.device.names()
         sdr.set_setting("master_clock_rate", 0)       # automatic again
 
 
 class TestTransmit:
     def test_start_sizes_the_queue_for_the_rate(self, sdr):
-        sdr.set_sample_rate(10e6)
+        sdr.set_rx_sample_rate(10e6)
         sdr.start_tx()
-        assert calls(sdr, "set_tx_buffer")[-1] == (int(type(sdr).TX_BUFFER_SECONDS * sdr.Fs),)
+        assert calls(sdr, "set_tx_buffer")[-1] == (int(type(sdr).TX_BUFFER_SECONDS * sdr.get_rx_sample_rate()),)
         assert sdr.device.names()[-1] == "start_tx"
         sdr.stop_tx()
         assert sdr.device.names()[-1] == "stop_tx"
@@ -196,8 +198,8 @@ class TestImages:
 
 
 def test_config_limits_are_the_b210s():
-    assert config.FREQ_MIN == 50e6 and config.FREQ_MAX == 6e9
-    assert config.GAIN_RX_PGA_MAX == 76 and config.GAIN_TX_PGA_MAX == 89.75 and config.GAIN_TX_PGA_STEP == 0.25
+    assert (config.freq[0].lo, config.freq[0].hi) == (50e6, 6e9)
+    assert config.stage("rx", "PGA").max == 76 and config.stage("tx", "PGA").max == 89.75 and config.stage("tx", "PGA").step == 0.25
 
 
 def test_error_classes_derive_from_UHDError():

@@ -25,47 +25,51 @@ def calls(d, name):
 
 class TestTuning:
     def test_a_frequency_moves_its_directions_synthesizer(self, b210):
-        assert b210.set_freq(433e6, channel=1) == 433e6
-        assert (433e6, 1) in calls(b210, "set_rx_freq") and (433e6, 1) in calls(b210, "set_tx_freq")
+        assert b210.set_rx_freq(433e6, channel=1) == 433e6
+        assert (433e6, 1) in calls(b210, "set_rx_freq") and not calls(b210, "set_tx_freq")   # the receiver only
         for ch in (0, 1):   # one LO per direction: channel 0 moved too
-            assert b210.get_freq(ch) == 433e6 and b210.get_freq(ch, direction="tx") == 433e6
+            assert b210.get_rx_freq(ch) == 433e6 and b210.get_tx_freq(ch) is None
+        b210.set_tx_freq(433e6, channel=1)
+        for ch in (0, 1):
+            assert b210.get_tx_freq(ch) == 433e6
 
     def test_every_channel_is_tuned_alike(self, b210):
-        b210.set_freq(100e6)   # channel 1's DSP too: tuned apart by a fraction of a hertz, they drift in phase
-        assert calls(b210, "set_freq")[-1] == (100_000_000,)
-        assert (100e6, 1) in calls(b210, "set_rx_freq") and (100e6, 1) in calls(b210, "set_tx_freq")
+        b210.set_rx_freq(100e6)   # channel 1's DSP too: tuned apart by a fraction of a hertz, they drift in phase
+        assert (100e6, 0) in calls(b210, "set_rx_freq") and (100e6, 1) in calls(b210, "set_rx_freq")
+        b210.set_tx_freq(100e6)
+        assert (100e6, 0) in calls(b210, "set_tx_freq") and (100e6, 1) in calls(b210, "set_tx_freq")
 
     def test_one_direction(self, b210):
-        b210.set_freq(100e6)
+        b210.set_rx_freq(100e6)
         b210.device.calls.clear()
-        b210.set_freq(915e6, direction="tx")
+        b210.set_tx_freq(915e6)
         assert calls(b210, "set_tx_freq") == [(915e6, 0), (915e6, 1)] and not calls(b210, "set_rx_freq")
-        assert b210.get_freq() == 100e6 and b210.CF == 100e6
-        assert b210.get_freq(1, direction="tx") == 915e6
+        assert b210.get_rx_freq() == 100e6 and b210.get_rx_freq() == 100e6
+        assert b210.get_tx_freq(1) == 915e6
 
     def test_rates_per_direction(self, b210):
-        b210.set_sample_rate(10e6)
-        assert b210.set_sample_rate(4e6, direction="tx") == 4e6
+        b210.set_rx_sample_rate(10e6)
+        assert b210.set_tx_sample_rate(4e6) == 4e6
         assert calls(b210, "set_tx_rate")[-2:] == [(4e6, 0), (4e6, 1)]   # every channel of the stream
-        assert b210.Fs == 10e6 and b210.get_sample_rate(direction="tx", channel=1) == 4e6
+        assert b210.get_rx_sample_rate() == 10e6 and b210.get_tx_sample_rate(channel=1) == 4e6
 
     def test_freq_correction_retunes_each_synthesizer(self, b210):
-        b210.set_freq(100e6)
-        b210.set_freq(915e6, direction="tx")
+        b210.set_rx_freq(100e6)
+        b210.set_tx_freq(915e6)
         b210.device.calls.clear()
         b210.set_freq_correction(10.0)
         for name, f in (("set_rx_freq", 100e6), ("set_tx_freq", 915e6)):   # every channel of each synthesizer
             assert [c for c, in [(ch,) for _, ch in calls(b210, name)]] == [0, 1]
             assert all(v == pytest.approx(f / (1 + 10e-6)) for v, _ in calls(b210, name))
-        assert b210.get_freq() == 100e6
+        assert b210.get_rx_freq() == 100e6
 
     def test_single_lo_devices_tune_both_directions(self, monkeypatch):
         spec = BY_NAME["hackrf"]
         monkeypatch.setattr(spec.device_module, "lib", fake_lib(spec))
         d = spec.device_class()
         d.open()
-        d.set_freq(915e6, direction="tx")
-        assert d.caps.shared["freq"] == "device" and d.get_freq() == 915e6 and d.device.of("set_freq")[-1] == (915_000_000,)
+        d.set_tx_freq(915e6)
+        assert d.caps.shared["freq"] == "device" and d.get_rx_freq() == 915e6 and d.device.of("set_freq")[-1] == (915_000_000,)
 
 class TestPerChannelControls:
     def test_gain(self, b210):
@@ -87,7 +91,7 @@ class TestPerChannelControls:
         assert b210.get_antenna(channel=0) is None and b210.get_gain_mode(channel=0) == "manual"
 
     def test_no_third_channel(self, b210):
-        for call in (lambda: b210.set_gain(10, channel=2), lambda: b210.set_freq(1e9, channel=2),
+        for call in (lambda: b210.set_gain(10, channel=2), lambda: b210.set_rx_freq(1e9, channel=2),
                      lambda: b210.start_rx(channels=(0, 2))):
             with pytest.raises(err.InvalidValue):
                 call()
@@ -141,7 +145,7 @@ class TestStreams:
         assert not b210.state["rx"]
 
     def test_two_channels_need_a_rate_usb_carries(self, b210):
-        b210.set_sample_rate(40e6)
+        b210.set_rx_sample_rate(40e6)
         with pytest.warns(Warning):
             b210.start_rx(channels=(0, 1))
 

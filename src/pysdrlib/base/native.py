@@ -14,7 +14,7 @@ class NativeDevice(Device):
         class MyDevice(NativeDevice):
             SAMPLE_FORMAT = convert.INT8
             def _open(self): return lib.mydev.open()
-            def _set_freq(self, freq): self.device.set_freq(int(freq))
+            def _set_rx_freq(self, freq, channel=0): self.device.set_freq(int(freq))
 
     Receiving is watched (see `Watchdog`), each time `get_samples` or `read` looks at the queue:
     - the device stops delivering for `stall_timeout` seconds: raises `err.StreamStalled`, once any

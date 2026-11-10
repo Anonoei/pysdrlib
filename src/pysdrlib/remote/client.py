@@ -278,9 +278,9 @@ class RemoteDevice(Device):
         if method == "start_rx":   # what is still queued belongs to the last stream
             self._drop_received()
         result = self._ctrl.request("call", method=method, args=list(args), kwargs=kwargs, token=self.token)
-        if method in ("set_freq", "get_freq"):
+        if method in ("set_rx_freq", "get_rx_freq"):
             self._cf = result
-        elif method in ("set_sample_rate", "get_sample_rate"):
+        elif method in ("set_rx_sample_rate", "get_rx_sample_rate"):
             self._Fs = result
         elif method in _SYNC_AFTER:
             self.refresh()
@@ -467,14 +467,14 @@ def _forwarder(name):
     method.__doc__ = getattr(Device, name).__doc__
     return method
 
-# Everything Device implements locally (against CONFIG a remote device doesn't have) runs on the server instead
-for _name in ("initialize", "start_rx", "stop_rx", "start_tx", "stop_tx", "set_sample_rate", "set_freq",
-              "set_rx_gain", "set_tx_gain", "set_bias_t"):
+# Everything Device implements locally (against CAPS a remote device doesn't have) runs on the server instead
+for _name in ("initialize", "start_rx", "stop_rx", "start_tx", "stop_tx", "set_rx_sample_rate", "set_tx_sample_rate",
+              "set_rx_freq", "set_tx_freq", "set_rx_gain", "set_tx_gain", "set_bias_t"):
     setattr(RemoteDevice, _name, _forwarder(_name))
 for _name in ("set_gain", "set_gain_relative", "get_gain_relative", "set_gain_mode", "set_bandwidth", "set_antenna", "set_clock_source", "set_freq_correction",
               "get_gain", "get_gain_mode", "get_bandwidth", "get_antenna", "get_clock_source", "get_setting",
               "get_freq_correction"):
     setattr(RemoteDevice, _name, _forwarder(_name))
-for _name in ("get_sample_rate", "get_freq"):
+for _name in ("get_rx_sample_rate", "get_tx_sample_rate", "get_rx_freq", "get_tx_freq"):
     setattr(RemoteDevice, _name, _forwarder(_name))
 del _name

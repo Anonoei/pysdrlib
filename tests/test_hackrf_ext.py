@@ -113,8 +113,8 @@ class TestHardware:
     def test_every_setter(self):
         dev = hackrf.open()
         try:
-            dev.set_freq(100_000_000)
-            dev.set_sample_rate(10_000_000)
+            dev.set_rx_freq(100_000_000)
+            dev.set_rx_sample_rate(10_000_000)
             dev.set_baseband_filter_bandwidth(8_000_000)
             for amp in (True, False):
                 dev.set_rx_rf_gain(amp)
@@ -141,8 +141,8 @@ class TestHardware:
         got = [0]
         dev = hackrf.open()
         try:
-            dev.set_sample_rate(10_000_000)
-            dev.set_freq(100_000_000)
+            dev.set_rx_sample_rate(10_000_000)
+            dev.set_rx_freq(100_000_000)
             dev.set_rx_callback(lambda buf, valid, buflen: got.__setitem__(0, got[0] + len(buf)) or 0)
             dev.start_rx()
             time.sleep(0.5)
@@ -154,7 +154,7 @@ class TestHardware:
     def test_callback_return_nonzero_stops_the_stream(self):
         dev = hackrf.open()
         try:
-            dev.set_sample_rate(10_000_000)
+            dev.set_rx_sample_rate(10_000_000)
             dev.set_rx_callback(lambda *a: 1)
             dev.start_rx()
             time.sleep(0.3)
@@ -167,8 +167,8 @@ class TestHardware:
         import numpy as np
         dev = hackrf.open()
         try:
-            dev.set_sample_rate(2_000_000)
-            dev.set_freq(915_000_000)
+            dev.set_rx_sample_rate(2_000_000)
+            dev.set_rx_freq(915_000_000)
             dev.set_tx_rf_gain(False)
             dev.set_tx_if_gain(0)
             dev.set_tx_buffer(500_000)

@@ -86,10 +86,10 @@ class TestRemoteDevice:
 
     def test_settings_and_state(self, dev):
         dev.initialize(cf=433e6, Fs=2e6)
-        assert dev.CF == 433e6 and dev.Fs == 2e6 and dev.get_freq() == 433e6
-        assert dev.set_freq(1e9) == 1e9 and dev.CF == 1e9
-        dev.Fs = 1e6
-        assert dev.get_sample_rate() == 1e6
+        assert dev.get_rx_freq() == 433e6 and dev.get_rx_sample_rate() == 2e6 and dev.get_rx_freq() == 433e6
+        assert dev.set_rx_freq(1e9) == 1e9 and dev.get_rx_freq() == 1e9
+        dev.set_rx_sample_rate(1e6)
+        assert dev.get_rx_sample_rate() == 1e6
         assert dev.state["open"] and not dev.state["rx"]
 
     def test_device_specific_methods(self, dev):
@@ -109,9 +109,9 @@ class TestRemoteDevice:
     def test_capabilities(self, dev):
         caps = dev.capabilities
         assert caps["name"] == "Simulated" and not caps["can_transmit"]
-        assert caps["config"]["GAIN"]["RX_IF_MAX"] == 40
+        assert dev.caps.stage("rx", "IF").max == 40
         assert "get_samples" not in caps["methods"] and "open" not in caps["methods"]
-        assert caps["methods"]["get_freq"]["readonly"] and not caps["methods"]["set_freq"]["readonly"]
+        assert caps["methods"]["get_rx_freq"]["readonly"] and not caps["methods"]["set_rx_freq"]["readonly"]
 
     def test_rx_stream(self, dev):
         dev.initialize(cf=100e6, Fs=1e6)
@@ -134,7 +134,7 @@ class TestRemoteDevice:
         with Client(server.endpoint) as c:
             assert dev_id not in [d["id"] for d in c.list()]
         with pytest.raises(err.NotOpen):
-            dev.set_freq(1e6)
+            dev.set_rx_freq(1e6)
 
     def test_context_manager(self, server):
         with pysdrlib.device("remote", server.endpoint, "sim") as d:
@@ -148,13 +148,13 @@ class TestOwnership:
         dev.start_rx()
         with RemoteDevice(server.endpoint, id=dev.id) as v:
             assert not v.is_controller
-            assert v.CF == 50e6 and v.state["rx"] and v.get_freq() == 50e6
+            assert v.get_rx_freq() == 50e6 and v.state["rx"] and v.get_rx_freq() == 50e6
             assert v.read(100_000, timeout=10).size == 100_000
-            for call in (lambda: v.set_freq(1e6), v.stop_rx, lambda: v.set_rx_if_gain(1)):
+            for call in (lambda: v.set_rx_freq(1e6), v.stop_rx, lambda: v.set_rx_if_gain(1)):
                 with pytest.raises(err.NotController):
                     call()
         assert dev.state["open"]        # a viewer closing doesn't close the device
-        assert dev.CF == 50e6
+        assert dev.get_rx_freq() == 50e6
 
     def test_multiple_viewers_each_get_samples(self, server, dev):
         dev.initialize(Fs=1e6)
@@ -169,9 +169,9 @@ class TestOwnership:
                 v.claim()
             dev.release()
             v.claim()
-            assert v.is_controller and v.set_freq(2e6) == 2e6
+            assert v.is_controller and v.set_rx_freq(2e6) == 2e6
             with pytest.raises(err.NotController):
-                dev.set_freq(3e6)
+                dev.set_rx_freq(3e6)
             v.release()
 
     def test_release_stops_streaming(self, server, dev):
@@ -233,7 +233,7 @@ class TestServer:
             assert token is None
             with RemoteDevice(s.endpoint, id=worker.id) as d:
                 d.claim()
-                assert d.set_freq(5e6) == 5e6
+                assert d.set_rx_freq(5e6) == 5e6
 
     def test_bad_bind(self):
         with pytest.raises(ValueError):
@@ -283,14 +283,14 @@ def test_lease_expiry_releases_controller():
             (info,) = c.list()
         assert not info["controlled"] and not info["state"]["rx"] and info["state"]["open"]
         with pytest.raises(err.NotController):
-            d.set_freq(1e6)
+            d.set_rx_freq(1e6)
 
 
 def test_heartbeat_keeps_control():
     with Server("tcp://127.0.0.1:0", devices=["sim"], lease=0.6) as s:
         with RemoteDevice(s.endpoint, "sim") as d:
             time.sleep(1.8)
-            assert d.set_freq(1e6) == 1e6
+            assert d.set_rx_freq(1e6) == 1e6
 
 
 class TestCli:
@@ -302,17 +302,17 @@ class TestCli:
         cli(["client", server.endpoint, "info", worker.id])
         assert '"name": "Simulated"' in capsys.readouterr().out
 
-        cli(["client", server.endpoint, "set", worker.id, "freq=200e6", "rx_if_gain=7"])
+        cli(["client", server.endpoint, "set", worker.id, "rx_freq=200e6", "rx_if_gain=7"])
         out = capsys.readouterr().out
         assert "200000000.0" in out and "set_rx_if_gain(7) -> 7" in out
-        assert worker.device.get_freq() == 200e6
+        assert worker.device.get_rx_freq() == 200e6
         assert worker.token is None     # `set` released control again
 
         out_file = tmp_path / "w.cfile"
         cli(["client", server.endpoint, "rx", "sim", "--rate", "1e6", "--set", "rx_if_gain=5", "-n", "50000", "-o", str(out_file)])
         assert np.fromfile(out_file, dtype=np.complex64).size == 50000
 
-        worker.device.set_sample_rate(1e6)
+        worker.device.set_rx_sample_rate(1e6)
         worker.claim()
         worker.device.start_rx()
         worker.streaming.set()

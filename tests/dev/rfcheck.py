@@ -54,7 +54,7 @@ def psd(x, nfft=4096):
 
 def level(sdr, freq, Fs, seconds=0.05):
     """Median centre power at `freq` (retuned with flush, so all of it is from there)"""
-    sdr.set_freq(freq, flush=True)
+    sdr.set_rx_freq(freq, flush=True)
     x = sdr.read(int(seconds * Fs), timeout=3)
     return float(np.median(centre_power(x, Fs, max(64, int(Fs / 1e4)))))
 

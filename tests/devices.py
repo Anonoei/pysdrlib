@@ -32,6 +32,15 @@ class Spec:
     present: Callable = None        # native module -> number of attached devices
     configure: Callable = None      # native device -> None: tune it so it streams
     atol: float = 0                 # how far converted SAMPLES may be from the originals (quantization)
+    freq_call: str = "set_freq"             # the driver call that tunes the receiver (its first argument is the frequency)
+    rate_call: str = "set_sample_rate"      # ... and sets its sample rate
+
+    def freqs(self, sdr):
+        """The frequencies the driver was asked for, in order"""
+        return [args[0] for args in sdr.device.of(self.freq_call)]
+
+    def rates(self, sdr):
+        return [args[0] for args in sdr.device.of(self.rate_call)]
 
     def _import(self, name):
         try:
@@ -53,8 +62,9 @@ class Spec:
         return getattr(self.device_module, self.cls)
 
     @property
-    def config(self):
-        return self.device_class.CONFIG
+    def caps(self):
+        """The device class's declared capabilities (`CAPS`)"""
+        return self.device_class.CAPS
 
     @property
     def lib(self):
@@ -190,7 +200,7 @@ def _uhd_configure(device):
 _uhd_rate = {"value": 10e6}   # the rate the fake radio is running at
 
 UHD_FAKE = {
-    "set_sample_rate": lambda rate: _uhd_rate.update(value=rate),
+    "set_rx_rate": lambda rate, c=0: _uhd_rate.update(value=rate),
     "get_rx_rate": lambda c=0: _uhd_rate["value"], "get_master_clock_rate": lambda: 40e6,
     "num_rx_channels": lambda: 2, "num_tx_channels": lambda: 2,
     "rx_bandwidth_range": lambda c=0: (200e3, 56e6), "tx_bandwidth_range": lambda c=0: (200e3, 56e6),
@@ -210,7 +220,7 @@ SPECS = [
          present=_hackrf_present, configure=_hackrf_configure),
     Spec("uhd", "B210", "uhd",
          encode=lambda iq: (iq.view(np.float32) * 32768).clip(-32768, 32767).astype(np.int16),
-         rate=10e6, atol=1 / 32768,
+         rate=10e6, atol=1 / 32768, freq_call="set_rx_freq", rate_call="set_rx_rate",
          fake_returns=UHD_FAKE,
          closed_calls=(("start_rx",), ("stop_rx",), ("set_rx_freq", 100_000_000, 0), ("set_rx_gain", 10.0, 0),
                        ("set_rx_agc", True, 0)),

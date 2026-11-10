@@ -17,7 +17,7 @@ def test_is_a_native_device(spec):
     cls = spec.device_class
     assert issubclass(cls, NativeDevice)
     assert isinstance(cls.SAMPLE_FORMAT, convert.SampleFormat)
-    assert cls.NAME and cls.CONFIG is not None
+    assert cls.NAME and cls.CAPS is not None
 
 
 class TestOpenClose:
@@ -41,63 +41,63 @@ class TestOpenClose:
 
     def test_everything_requires_open(self, make_sdr):
         sdr = make_sdr()
-        for call in (sdr.set_freq, sdr.set_sample_rate, sdr.set_rx_gain, sdr.start_rx, sdr.get_samples):
+        for call in (sdr.set_rx_freq, sdr.set_rx_sample_rate, sdr.set_rx_gain, sdr.start_rx, sdr.get_samples):
             with pytest.raises(err.NotOpen):
                 call()
 
 
 class TestTuning:
     def test_set_freq_reaches_the_driver_as_int(self, sdr, spec):
-        freq = spec.config.DEFAULT_FREQ
-        assert sdr.set_freq(freq) == freq
-        assert sdr.device.of("set_freq") == [(int(freq),)]
-        assert isinstance(sdr.device.of("set_freq")[0][0], int)
+        freq = spec.caps.default_freq
+        assert sdr.set_rx_freq(freq) == freq
+        assert set(spec.freqs(sdr)) == {freq}
+        if spec.freq_call == "set_freq":   # libhackrf, librtlsdr... take whole hertz
+            assert isinstance(spec.freqs(sdr)[0], int)
 
     def test_freq_is_clamped_with_a_warning(self, sdr, spec):
         with pytest.warns(Warning):
-            sdr.set_freq(spec.config.FREQ_MAX * 2)
-        assert sdr.device.of("set_freq")[-1] == (int(spec.config.FREQ_MAX),)
+            sdr.set_rx_freq(spec.caps.freq[-1].hi * 2)
+        assert spec.freqs(sdr)[-1] == int(spec.caps.freq[-1].hi)
         with pytest.warns(Warning):
-            sdr.set_freq(spec.config.FREQ_MIN // 2)
-        assert sdr.device.of("set_freq")[-1] == (int(spec.config.FREQ_MIN),)
+            sdr.set_rx_freq(spec.caps.freq[0].lo // 2)
+        assert spec.freqs(sdr)[-1] == int(spec.caps.freq[0].lo)
 
     def test_defaults_when_none(self, sdr, spec):
-        sdr.set_freq()
-        sdr.set_sample_rate()
-        assert sdr.device.of("set_freq")[-1] == (int(spec.config.DEFAULT_FREQ),)
-        assert sdr.get_freq() == spec.config.DEFAULT_FREQ and sdr.get_sample_rate() == spec.config.DEFAULT_SAMPLE_RATE
+        sdr.set_rx_freq()
+        sdr.set_rx_sample_rate()
+        assert spec.freqs(sdr)[-1] == int(spec.caps.default_freq)
+        assert sdr.get_rx_freq() == spec.caps.default_freq and sdr.get_rx_sample_rate() == spec.caps.default_rate
 
     def test_sample_rate_reaches_the_driver(self, sdr, spec):
-        assert sdr.set_sample_rate(spec.rate) == spec.rate
-        assert sdr.Fs == spec.rate
-        assert sdr.device.of("set_sample_rate")[-1][0] == spec.rate
+        assert sdr.set_rx_sample_rate(spec.rate) == spec.rate
+        assert sdr.get_rx_sample_rate() == spec.rate
+        assert spec.rates(sdr)[-1] == spec.rate
 
     def test_sample_rate_is_clamped_with_a_warning(self, sdr, spec):
         with pytest.warns(Warning):
-            sdr.set_sample_rate(1)
-        assert sdr.Fs == spec.config.SAMPLE_RATE_MIN
+            sdr.set_rx_sample_rate(1)
+        assert sdr.get_rx_sample_rate() == spec.caps.rates[0].lo
         with pytest.warns(Warning):
-            sdr.set_sample_rate(spec.config.SAMPLE_RATE_MAX * 2)
-        assert sdr.Fs == spec.config.SAMPLE_RATE_MAX
+            sdr.set_rx_sample_rate(spec.caps.rates[-1].hi * 2)
+        assert sdr.get_rx_sample_rate() == spec.caps.rates[-1].hi
 
     def test_sample_rate_resizes_the_buffer(self, sdr, spec):
-        sdr.set_sample_rate(spec.rate)
+        sdr.set_rx_sample_rate(spec.rate)
         assert sdr.device.of("set_rx_buffer")[-1] == (int(type(sdr).BUFFER_SECONDS * spec.rate),)
 
 
-class TestConfig:
+class TestCaps:
     def test_defaults_are_within_limits(self, spec):
-        c = spec.config
-        assert c.FREQ_MIN <= c.DEFAULT_FREQ <= c.FREQ_MAX
-        assert c.SAMPLE_RATE_MIN <= c.DEFAULT_SAMPLE_RATE <= c.SAMPLE_RATE_MAX
-        assert c.SAMPLE_RATE_MIN <= spec.rate <= c.SAMPLE_RATE_MAX
+        c = spec.caps
+        assert c.default_freq in c.freq[0] and c.default_rate in c.rates[0]
+        assert spec.rate in c.rates[0]
 
     def test_rx_stages_are_declared(self, spec):
-        assert spec.config.stages["RX"], "a receiver has at least one gain stage"
+        assert spec.caps.gains["rx"], "a receiver has at least one gain stage"
 
     def test_every_stage_has_a_setter_taking_its_default(self, sdr, spec):
         for direction in ("RX", "TX"):
-            for name, stage in spec.config.stages[direction].items():
+            for name, stage in spec.caps.gains[direction.lower()].items():
                 setter = getattr(sdr, f"set_{direction.lower()}_{name.lower()}_gain")
                 default = 0 if stage.default is None else stage.default
                 assert setter() == stage.default or stage.default is None
@@ -105,13 +105,13 @@ class TestConfig:
 
     def test_total_gain_covers_the_declared_stages(self, sdr, spec):
         out = sdr.set_rx_gain()
-        assert {k.upper() for k in out} == set(spec.config.stages["RX"])
+        assert {k.upper() for k in out} == set(spec.caps.gains["rx"])
 
     def test_transmit_matches_the_declaration(self, sdr, spec):
-        assert bool(spec.config.stages["TX"]) == type(sdr).CAN_TRANSMIT
+        assert bool(spec.caps.gains["tx"]) == type(sdr).CAN_TRANSMIT
         if not type(sdr).CAN_TRANSMIT:
             return
-        assert set(sdr.set_tx_gain()) == {k.lower() for k in spec.config.stages["TX"]}
+        assert set(sdr.set_tx_gain()) == {k.lower() for k in spec.caps.gains["tx"]}
 
 
 class TestRx:
@@ -125,12 +125,12 @@ class TestRx:
         assert not sdr.state["rx"] and "stop_rx" in sdr.device.names()
 
     def test_start_sizes_the_buffer_for_the_rate(self, sdr, spec):
-        sdr.set_sample_rate(spec.rate)
+        sdr.set_rx_sample_rate(spec.rate)
         sdr.start_rx()
         assert sdr.device.of("set_rx_buffer")[-1] == (int(type(sdr).BUFFER_SECONDS * spec.rate),)
 
     def test_samples_arrive_as_complex64(self, sdr, spec):
-        sdr.set_sample_rate(spec.rate)
+        sdr.set_rx_sample_rate(spec.rate)
         sdr.start_rx()
         _, raw = spec.raw()
         sdr.device.deliver(raw)
@@ -139,14 +139,14 @@ class TestRx:
         np.testing.assert_allclose(samples, SAMPLES, rtol=0, atol=spec.atol or 1e-7)
 
     def test_only_the_valid_bytes_are_used(self, sdr, spec):
-        sdr.set_sample_rate(spec.rate)
+        sdr.set_rx_sample_rate(spec.rate)
         sdr.start_rx()
         raw = np.concatenate([spec.raw()[1], spec.raw()[1]])
         sdr.device.deliver(raw, raw.nbytes // 2)
         np.testing.assert_allclose(sdr.get_samples(), SAMPLES, rtol=0, atol=spec.atol or 1e-7)
 
     def test_samples_are_consumed_by_reading(self, sdr, spec):
-        sdr.set_sample_rate(spec.rate)
+        sdr.set_rx_sample_rate(spec.rate)
         sdr.start_rx()
         sdr.device.deliver(spec.raw()[1])
         assert len(sdr.get_samples()) == len(SAMPLES)
@@ -155,7 +155,7 @@ class TestRx:
     def test_instances_do_not_share_a_queue(self, make_sdr, spec):
         a, b = make_sdr(), make_sdr()
         a.open(); b.open()
-        a.set_sample_rate(spec.rate); a.start_rx()
+        a.set_rx_sample_rate(spec.rate); a.start_rx()
         a.device.deliver(spec.raw()[1])
         assert len(b.device.read_rx()) == 0 and len(a.get_samples()) == len(SAMPLES)
 
@@ -174,7 +174,7 @@ def rx(sdr, spec):
     sdr.clock = FakeClock()
     sdr._watchdog._clock = sdr.clock
     sdr.device.clock = sdr.clock   # the fake driver's transfers are timed on it too
-    sdr.set_sample_rate(spec.rate)
+    sdr.set_rx_sample_rate(spec.rate)
     sdr.start_rx()
     def deliver(n):
         raw = np.tile(spec.raw()[1], -(-n // len(SAMPLES)))[: n * 2]
@@ -211,8 +211,8 @@ class TestWatchdog:
     def test_a_flowing_stream_does_not_raise(self, rx):
         for _ in range(10):
             rx.clock.now += 0.5
-            rx.deliver(int(0.5 * rx.Fs))
-            assert len(rx.get_samples()) == int(0.5 * rx.Fs)
+            rx.deliver(int(0.5 * rx.get_rx_sample_rate()))
+            assert len(rx.get_samples()) == int(0.5 * rx.get_rx_sample_rate())
 
     def test_timeout_is_configurable_and_can_be_disabled(self, rx):
         assert rx.stall_timeout == type(rx).STALL_TIMEOUT
@@ -252,7 +252,7 @@ class TestWatchdog:
         rx.clock.now += 0.5   # half a second at the sample rate, and only 1000 samples arrived
         with pytest.warns(Warning, match="fewer samples"):
             rx.get_samples()
-        assert rx.stats.missing > 0.5 * rx.Fs * 0.5 * 0.8 and rx.stats.stalls == 0
+        assert rx.stats.missing > 0.5 * rx.get_rx_sample_rate() * 0.5 * 0.8 and rx.stats.stalls == 0
 
     def test_a_continuing_shortfall_warns_once(self, rx):
         rx.deliver(1000)
@@ -266,7 +266,7 @@ class TestWatchdog:
         with warnings_as_errors():
             for _ in range(20):
                 rx.clock.now += 0.25
-                rx.deliver(int(0.25 * rx.Fs))
+                rx.deliver(int(0.25 * rx.get_rx_sample_rate()))
                 rx.get_samples()
         assert rx.stats.missing == rx.stats.dropped == rx.stats.stalls == 0
 
@@ -292,7 +292,7 @@ def test_hardware_watchdog_never_hides_a_stall(spec, hardware):
     import time
     stalled, received = False, 0
     with spec.device_class() as sdr:
-        sdr.initialize(spec.config.DEFAULT_FREQ, spec.rate)
+        sdr.initialize(spec.caps.default_freq, spec.rate)
         start = time.perf_counter()
         sdr.start_rx()
         while time.perf_counter() - start < 3 and not stalled:
@@ -323,7 +323,7 @@ def test_hardware_rx_roundtrip(spec, hardware):
     """The real device through the whole Python stack: tune, stream, read complex64"""
     import time
     with spec.device_class() as sdr:
-        sdr.initialize(spec.config.DEFAULT_FREQ, spec.rate)
+        sdr.initialize(spec.caps.default_freq, spec.rate)
         sdr.start_rx()
         time.sleep(0.4)
         samples = sdr.get_samples()

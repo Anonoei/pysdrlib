@@ -29,7 +29,7 @@ from .base.native import NativeDevice
 ERROR, WARNING = "error", "warning"
 
 # What a driver always supplies itself (the base class only raises or does nothing)
-_REQUIRED_HOOKS = ("_open", "_close", "_start_rx", "_stop_rx", "_get_samples", "_set_freq", "_set_sample_rate")
+_REQUIRED_HOOKS = ("_open", "_close", "_start_rx", "_stop_rx", "_get_samples", "_set_rx_freq", "_set_rx_sample_rate")
 _SETTING_KINDS = (bool, int, float, str)
 
 @dataclass(frozen=True)
@@ -46,7 +46,7 @@ def _overrides(cls, name):
     return getattr(cls, name, None) is not getattr(Device, name, None)
 
 def check_driver(cls) -> list:
-    """[Problem] with the `Device` subclass `cls`. Reads class attributes and its CONFIG; creates and opens nothing"""
+    """[Problem] with the `Device` subclass `cls`. Reads class attributes and its CAPS; creates and opens nothing"""
     problems = []
     name = getattr(cls, "__name__", str(cls))
 
@@ -64,60 +64,65 @@ def check_driver(cls) -> list:
         if not _overrides(cls, hook):
             add(ERROR, hook, "is not implemented (Device only raises NotImplementedError here)")
 
+    if cls.CAN_TRANSMIT and cls.DUPLEX:   # separate transmit synthesizer and clock: the receive hooks don't reach them
+        for hook in ("_set_tx_freq", "_set_tx_sample_rate"):
+            if not _overrides(cls, hook):
+                add(ERROR, hook, "is not implemented (DUPLEX: the transmitter is tuned separately)")
+
     if issubclass(cls, NativeDevice) and not isinstance(cls.SAMPLE_FORMAT, convert.SampleFormat):
         add(ERROR, "SAMPLE_FORMAT", "must be a convert.SampleFormat describing the raw stream the extension delivers")
 
-    config = cls.CONFIG
-    if config is None:
-        add(ERROR, "CONFIG", "is not set (a ConfigDevice with the device's limits and gain stages)")
+    caps = cls.CAPS
+    if caps is None:
+        add(ERROR, "CAPS", "is not set (a Capabilities with the device's limits and gain stages)")
         return problems
-    _check_limits(config, add)
-    _check_gain(cls, config, add)
+    _check_limits(caps, add)
+    _check_gain(cls, caps, add)
     _check_settings(cls, add)
     _check_signatures(cls, add)
 
     if cls.CAN_TRANSMIT:
         if not _overrides(cls, "_tx_write"):
             add(WARNING, "CAN_TRANSMIT", "is True but _tx_write is not implemented, so write() raises NotSupported")
-        if not config.stages["TX"]:
-            add(WARNING, "CONFIG", "has no TX gain stages for a device that transmits")
-    elif config.stages["TX"]:
-        add(WARNING, "CONFIG", "declares TX gain stages but CAN_TRANSMIT is False: they are ignored")
+        if not caps.gains["tx"]:
+            add(WARNING, "CAPS", "has no TX gain stages for a device that transmits")
+    elif caps.gains["tx"]:
+        add(WARNING, "CAPS", "declares TX gain stages but CAN_TRANSMIT is False: they are ignored")
     if cls.RETUNE_SETTLE < 0 or cls.RETUNE_SAMPLES < 0:
         add(ERROR, "RETUNE_SETTLE", "and RETUNE_SAMPLES cannot be negative")
     return problems
 
-def _check_limits(config, add):
-    for lo, hi, default, what in (("FREQ_MIN", "FREQ_MAX", "DEFAULT_FREQ", "frequency"),
-                                  ("SAMPLE_RATE_MIN", "SAMPLE_RATE_MAX", "DEFAULT_SAMPLE_RATE", "sample rate")):
-        values = [getattr(config, n, None) for n in (lo, hi, default)]
-        if None in values:
-            add(ERROR, "CONFIG", f"needs {lo}, {hi} and DEFAULT[{default.removeprefix('DEFAULT_')!r}] ({what} limits)")
-        elif not values[0] <= values[2] <= values[1]:
-            add(ERROR, "CONFIG", f"the default {what} {values[2]:,} is outside {values[0]:,} - {values[1]:,}")
+def _check_limits(caps, add):
+    for ranges, default, what, field in ((caps.freq, caps.default_freq, "frequency", "freq"),
+                                         (caps.rates, caps.default_rate, "sample rate", "rates")):
+        if not ranges or default is None:
+            add(ERROR, "CAPS", f"needs {field} and default_{'rate' if field == 'rates' else field} ({what} limits)")
+        elif not any(default in r for r in ranges):
+            lo, hi = min(r.lo for r in ranges), max(r.hi for r in ranges)
+            add(ERROR, "CAPS", f"the default {what} {default:,} is outside {lo:,} - {hi:,}")
 
-def _check_gain(cls, config, add):
+def _check_gain(cls, caps, add):
     for direction in ("rx", "tx"):
-        stages = config.stages[direction.upper()]
+        stages = caps.gains[direction]
         for stage, spec in stages.items():
             if direction == "tx" and not cls.CAN_TRANSMIT:
                 continue
             if not _overrides(cls, f"_set_{direction}_{stage.lower()}_gain"):
                 add(ERROR, f"_set_{direction}_{stage.lower()}_gain",
-                    f"is missing: it applies the {direction.upper()} gain stage {stage!r} (CONFIG declares it)")
+                    f"is missing: it applies the {direction.upper()} gain stage {stage!r} (CAPS declares it)")
             if spec.min > spec.max:
-                add(ERROR, "CONFIG", f"{direction.upper()} stage {stage!r}: MIN {spec.min} is above MAX {spec.max}")
+                add(ERROR, "CAPS", f"{direction.upper()} stage {stage!r}: MIN {spec.min} is above MAX {spec.max}")
             if spec.default is None:
-                add(WARNING, "CONFIG", f"{direction.upper()} stage {stage!r} has no default (DEFAULT.GAIN_{direction.upper()}_{stage})")
+                add(WARNING, "CAPS", f"{direction.upper()} stage {stage!r} has no default (GainStage(step, min, max, default))")
             elif not spec.min <= spec.default <= spec.max:
-                add(ERROR, "CONFIG", f"{direction.upper()} stage {stage!r}: default {spec.default} is outside {spec.min} - {spec.max}")
+                add(ERROR, "CAPS", f"{direction.upper()} stage {stage!r}: default {spec.default} is outside {spec.min} - {spec.max}")
     for direction, reserved in cls.GAIN_RESERVE.items():
         if direction not in ("rx", "tx"):
             add(ERROR, "GAIN_RESERVE", f"is keyed by 'rx' or 'tx', not {direction!r}")
             continue
         for stage in reserved:
-            if stage not in config.stages[direction.upper()]:
-                add(ERROR, "GAIN_RESERVE", f"names a {direction.upper()} stage {stage!r} that CONFIG does not declare")
+            if stage not in caps.gains[direction]:
+                add(ERROR, "GAIN_RESERVE", f"names a {direction.upper()} stage {stage!r} that CAPS does not declare")
     if cls.GAIN_BALANCE not in ("range", "db"):
         add(ERROR, "GAIN_BALANCE", f"is 'range' or 'db', not {cls.GAIN_BALANCE!r}")
 
@@ -128,9 +133,18 @@ def _required(fn):
         return None
     return [p.name for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD) and p.default is p.empty]
 
+_PASSED = {"channel", "direction", "slot"}   # the keywords the base class passes to hooks
+
+def _keywords(fn):
+    """Names of the optional parameters of `fn`, or None if it takes **kwargs (anything)"""
+    params = inspect.signature(fn).parameters.values()
+    if any(p.kind is p.VAR_KEYWORD for p in params):
+        return None
+    return {p.name for p in params if p.default is not p.empty and p.kind is not p.VAR_POSITIONAL}
+
 def _check_signatures(cls, add):
     """A hook a driver implements is called the way the base class's is: it must need the same arguments (it may take
-    more, as keywords with defaults: `channel`, `direction` and `slot` are passed only to hooks that take them)"""
+    more, as keywords with defaults) and take every keyword the base class's does (`channel`, `direction`, `slot`)"""
     for name, base in vars(Device).items():
         if not name.startswith("_") or name.startswith("__") or not inspect.isfunction(base):
             continue
@@ -140,6 +154,11 @@ def _check_signatures(cls, add):
         want, got = _required(base), _required(mine)
         if want is not None and got is not None and want != got:
             add(ERROR, name, f"needs ({', '.join(got)}) but is called with ({', '.join(want)}): give any others a default")
+        mine_kw = _keywords(mine)
+        base_kw = _keywords(base)
+        missing = set() if mine_kw is None or base_kw is None else (base_kw & _PASSED) - mine_kw
+        if missing:
+            add(ERROR, name, f"must take {', '.join(sorted(f'{k}=' for k in missing))} (it is called with them)")
 
 def _check_settings(cls, add):
     for key, setting in cls.SETTINGS.items():

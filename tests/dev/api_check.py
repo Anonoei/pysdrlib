@@ -42,13 +42,13 @@ def main():
             print("bandwidth for", lo, "->", sdr.set_bandwidth(lo))
         if len(c.gain_modes["rx"]) > 1:
             print("gain mode ->", sdr.set_gain_mode("auto"), sdr.set_gain_mode("manual"))
-        print("freq correction 15 ppm ->", sdr.set_freq_correction(15.0), "| freq", sdr.get_freq(), "| rate", sdr.get_sample_rate())
+        print("freq correction 15 ppm ->", sdr.set_freq_correction(15.0), "| freq", sdr.get_rx_freq(), "| rate", sdr.get_rx_sample_rate())
         sdr.set_freq_correction(0)
 
         rates = sorted(a.rates or {lo, hi})
         for rate in rates:
             section(f"{rate/1e6:g} MS/s for {a.seconds:g} s")
-            sdr.set_sample_rate(rate)
+            sdr.set_rx_sample_rate(rate)
             block = int(min(1 << 18, max(1024, rate * 0.05)))
             with sdr.stream(block, timeout=max(2.0, 4 * block / rate), meta=True) as s:
                 idx, lost, n, t0 = [], 0, 0, time.monotonic()
@@ -64,7 +64,7 @@ def main():
             print("\n(no driver statistics on this device: skipping the drop checks)")
             return
         section("a reader that falls behind: the gap matches the device's own count")
-        sdr.set_sample_rate(rates[-1])
+        sdr.set_rx_sample_rate(rates[-1])
         sdr.on_drop = "ignore"
         sdr.start_rx()
         sdr.read(100_000, timeout=2)

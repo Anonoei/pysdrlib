@@ -1,6 +1,6 @@
 """The device-agnostic interface every SDR presents
 
-Lifecycle and tuning (`open`, `initialize`, `set_freq`, `set_sample_rate`, `start_rx`...), reading (`read`, `stream`,
+Lifecycle and tuning (`open`, `initialize`, `set_rx_freq`, `set_rx_sample_rate`, `start_rx`...), reading (`read`, `stream`,
 `get_samples`), and the controls a device may have, discovered through `caps` (see `pysdrlib.base.caps`):
 
     sdr = pysdrlib.device("rtl_sdr"); sdr.open()
@@ -22,7 +22,6 @@ channels, or the whole device's). A multi-channel device streams several channel
 A device that lacks a control raises `err.NotSupported`. Values out of range are clamped with a warning, or raise
 `err.InvalidValue` with `strict = True`.
 """
-import inspect
 import itertools
 import time
 
@@ -32,35 +31,10 @@ from .. import logger
 from .. import warn
 from .. import err
 from . import caps as _caps
-from .config import ConfigDevice
 from .stream import Event, RxMeta, RxStream, sample_time
 
 READ_SLICE = 0.1   # seconds a read waits at a time, between checks on the stream (stalls, stop_rx)
 TX_CHUNK = 16384   # samples a multi-channel write queues per channel at a time (so no channel's queue starves another)
-
-_TAKES = {}
-_ALL = object()
-
-def _call(fn, *args, **kw):
-    """fn(*args, **kw), passing only the keywords fn takes: a driver hook written before channels takes none of them.
-    One it doesn't take must be at its default (channel/slot 0), or have no meaning for it (direction: its tuning
-    is shared by both directions)"""
-    func = getattr(fn, "__func__", fn)
-    takes = _TAKES.get(func)
-    if takes is None:
-        try:
-            params = inspect.signature(func).parameters.values()
-            takes = _ALL if any(p.kind is p.VAR_KEYWORD for p in params) else frozenset(p.name for p in params)
-        except (TypeError, ValueError):
-            takes = frozenset()
-        _TAKES[func] = takes
-    passed = {}
-    for k, v in kw.items():
-        if takes is _ALL or k in takes:
-            passed[k] = v
-        elif k in ("channel", "slot") and v:
-            raise err.NotSupported(f"{getattr(fn, '__qualname__', fn)} has no {k} {v}")
-    return fn(*args, **passed)
 
 def _stage_setter(cls, direction, stage, spec, name):
     hook = f"_set_{direction.lower()}_{stage.lower()}_gain"
@@ -83,11 +57,11 @@ class Device:
     """The interface every driver implements. Use `pysdrlib.open` or `pysdrlib.device` to get one; see the module
     docs (`pysdrlib.base.device`) for an overview.
 
-    Class attributes a driver sets: `NAME`, `CONFIG` (its limits, `pysdrlib.base.config`), `CAN_TRANSMIT`, `DUPLEX`
+    Class attributes a driver sets: `NAME`, `CAPS` (its limits and gain stages, `pysdrlib.base.caps`), `CAN_TRANSMIT`, `DUPLEX`
     (receive and transmit at once) and `SAMPLE_FORMAT` (the layout of the samples the hardware delivers).
     """
     NAME = "pysdrlib Device"
-    CONFIG: ConfigDevice = None # type: ignore
+    CAPS: _caps.Capabilities = None # type: ignore
     CAN_TRANSMIT = False
     DUPLEX = False
     SAMPLE_FORMAT = None # convert.SampleFormat of the raw stream the driver delivers (None: driver converts itself)
@@ -112,16 +86,15 @@ class Device:
 
     @classmethod
     def _make_stage_setters(cls):
-        """Give the class a `set_<rx|tx>_<stage>_gain(gain=None)` for each gain stage its CONFIG declares (TX only if it
+        """Give the class a `set_<rx|tx>_<stage>_gain(gain=None)` for each gain stage its CAPS declares (TX only if it
         can transmit), unless it defines one itself (to say more than the config can). Each applies the stage through the
         driver's `_set_<rx|tx>_<stage>_gain(gain, channel=0)` hook, so a driver writes the hardware call and nothing else"""
-        config = cls.CONFIG
-        if config is None:
+        if cls.CAPS is None:
             return
         for direction in ("RX", "TX"):
             if direction == "TX" and not cls.CAN_TRANSMIT:
                 continue
-            for stage, spec in config.stages[direction].items():
+            for stage, spec in cls.CAPS.gains[direction.lower()].items():
                 name = f"set_{direction.lower()}_{stage.lower()}_gain"
                 if name in dir(cls) and not getattr(getattr(cls, name), "_generated", False):
                     continue
@@ -135,8 +108,8 @@ class Device:
             "rx": False,
             "tx": False
         }
-        self._cf: float = type(self).CONFIG.DEFAULT_FREQ # type: ignore
-        self._Fs: float = type(self).CONFIG.DEFAULT_SAMPLE_RATE # type: ignore
+        self._cf: float = type(self).CAPS.default_freq # type: ignore
+        self._Fs: float = type(self).CAPS.default_rate # type: ignore
         self._init_generic()
 
     def _init_generic(self):
@@ -175,8 +148,12 @@ class Device:
         """Initialize the device settings"""
         self.log.trace("initialize(cf=%s, Fs=%s, rx_gain=%s, tx_gain=%s)", cf, Fs, rx_gain, tx_gain)
         self._ensure_open("initialize")
-        cf = self.set_freq(cf)
-        Fs = self.set_sample_rate(Fs)
+        cf = self.set_rx_freq(cf)
+        Fs = self.set_rx_sample_rate(Fs)
+        if type(self).CAN_TRANSMIT and self.caps.shared.get("freq") != "device":   # a transmitter of its own
+            self.set_tx_freq(cf)
+        if type(self).CAN_TRANSMIT and self.caps.shared.get("rate") != "device":
+            self.set_tx_sample_rate(Fs)
         rx_gain = self.set_rx_gain(rx_gain)
         tx_gain = self.set_tx_gain(tx_gain) if type(self).CAN_TRANSMIT else None
         self._initialize(cf, Fs, rx_gain, tx_gain)
@@ -206,7 +183,7 @@ class Device:
         if channels is not None:
             chs = self._channel_list("rx", channels)
             if chs != (0,) or self._rx_channels != (0,):
-                _call(self._set_rx_channels, chs)
+                self._set_rx_channels(chs)
             self._rx_channels = chs
         self._rx_reset()
         self._start_rx()
@@ -246,7 +223,7 @@ class Device:
         if channels is not None:
             chs = self._channel_list("tx", channels)
             if chs != (0,) or self._tx_channels != (0,):
-                _call(self._set_tx_channels, chs)
+                self._set_tx_channels(chs)
             self._tx_channels = chs
         self._start_tx()
         self.state["tx"] = True
@@ -261,80 +238,98 @@ class Device:
         self.state["tx"] = False
 
     # ------------------------------------------------------------------ tuning
-    def set_sample_rate(self, Fs=None, channel=0, flush=False, direction=None):
-        """Set sample rate (the nominal one: a frequency correction is applied to what the hardware is asked for).
-        direction: "rx", "tx" or None (both). What else changes with it: `caps.shared["rate"]`.
+    def set_rx_sample_rate(self, Fs=None, channel=0, flush=False):
+        """Set the receive sample rate (the nominal one: a frequency correction is applied to what the hardware is asked
+        for). What else changes with it: `caps.shared["rate"]` (a device with one clock for both directions sets both).
         flush: while receiving, discard the samples from before the change. Returns the rate in effect"""
-        self.log.trace("set_sample_rate(%s)", Fs)
-        self._ensure_open("set_sample_rate")
+        return self._tune_rate(Fs, "rx", channel, flush)
+    def set_tx_sample_rate(self, Fs=None, channel=0):
+        """Set the transmit sample rate (see `set_rx_sample_rate`). Raises `err.NotSupported` on a receiver"""
+        return self._tune_rate(Fs, "tx", channel, False)
+    def get_rx_sample_rate(self, channel=0):
+        """Receive sample rate [Hz] last set for this channel"""
+        return self._tuning.get(("rate", self._direction("rx", channel), channel), self._Fs)
+    def get_tx_sample_rate(self, channel=0):
+        """Transmit sample rate [Hz] last set for this channel (None: never set)"""
+        return self._tuning.get(("rate", self._direction("tx", channel), channel))
+
+    def set_rx_freq(self, freq=None, channel=0, flush=False):
+        """Set the receive center frequency (corrected by `set_freq_correction`). What else moves with it:
+        `caps.shared["freq"]` (channels sharing a synthesizer, or both directions on a device with one).
+        flush: while receiving, discard what was received before the change and the device's settling time
+        after it (`caps.retune_settle`), so the next `read` is all at the new frequency. Returns the frequency"""
+        return self._tune_freq(freq, "rx", channel, flush)
+    def set_tx_freq(self, freq=None, channel=0):
+        """Set the transmit center frequency (see `set_rx_freq`). Raises `err.NotSupported` on a receiver"""
+        return self._tune_freq(freq, "tx", channel, False)
+    def get_rx_freq(self, channel=0):
+        """Receive center frequency [Hz] last set for this channel"""
+        return self._tuning.get(("freq", self._direction("rx", channel), channel), self._cf)
+    def get_tx_freq(self, channel=0):
+        """Transmit center frequency [Hz] last set for this channel (None: never set)"""
+        return self._tuning.get(("freq", self._direction("tx", channel), channel))
+
+    def _tune_rate(self, Fs, direction, channel, flush):
+        """The work of `set_*_sample_rate`; `direction` None: both (what a correction re-applies)"""
+        self.log.trace("set_sample_rate(%s, %s)", Fs, direction)
+        self._ensure_open(f"set_{direction or 'rx'}_sample_rate")
+        self._need_tx(direction)
         dirs = self._tuned_directions(direction, channel, "rate")
         if Fs is None:
-            Fs = type(self).CONFIG.DEFAULT_SAMPLE_RATE
-        if Fs < type(self).CONFIG.SAMPLE_RATE_MIN:
-            self._invalid(f"Sample rate must be greater than {type(self).CONFIG.SAMPLE_RATE_MIN:,}")
-            Fs = type(self).CONFIG.SAMPLE_RATE_MIN
-        elif Fs > type(self).CONFIG.SAMPLE_RATE_MAX:
-            self._invalid(f"Sample rate must be less than {type(self).CONFIG.SAMPLE_RATE_MAX:,}")
-            Fs = type(self).CONFIG.SAMPLE_RATE_MAX
+            Fs = self.caps.default_rate
+        Fs = self._within(Fs, self.caps.rates, "Sample rate")
         scale = self._ppm_scale()
         hw = Fs / scale if self._ppm else Fs
         if hw != Fs and not _caps.contains(self.caps.rates, hw):
             hw, scale = Fs, 1.0    # discrete rates: the hardware can't be asked for a corrected one
         rx_before = self._Fs
         self._Fs = hw
-        actual = _call(self._set_sample_rate, hw, direction=direction, channel=channel)   # may snap self._Fs
+        done = [(self._set_rx_sample_rate if d == "rx" else self._set_tx_sample_rate)(hw, channel=channel)   # may snap self._Fs
+                for d in self._hooked(direction, dirs, "rate")]
+        actual = next((a for a in done if a is not None), None)
         if actual is None:   # the driver says nothing: what it snapped self._Fs to (receive), else what was asked
             actual = self._Fs if "rx" in dirs else hw
         rate = Fs if actual == hw else actual * scale
         self._Fs = rx_before if "rx" not in dirs else rate
         self._tuned("rate", rate, dirs, channel, flush)
         return rate
-    def get_sample_rate(self, channel=0, direction="rx"):
-        """Sample rate [Hz] last set for this channel and direction"""
-        d = self._direction(direction, channel)
-        return self._tuning.get(("rate", d, channel), self._Fs)
-    def set_freq(self, freq=None, channel=0, flush=False, direction=None):
-        """Set center frequency (corrected by `set_freq_correction`). direction: "rx", "tx" or None (both). What else
-        moves with it: `caps.shared["freq"]` (channels sharing a synthesizer).
-        flush: while receiving, discard what was received before the change and the device's settling time
-        after it (`caps.retune_settle`), so the next `read` is all at the new frequency. Returns the frequency"""
-        self.log.trace("set_freq(%s)", freq)
-        self._ensure_open("set_freq")
+    def _tune_freq(self, freq, direction, channel, flush):
+        """The work of `set_*_freq`; `direction` None: both (what a correction re-applies)"""
+        self.log.trace("set_freq(%s, %s)", freq, direction)
+        self._ensure_open(f"set_{direction or 'rx'}_freq")
+        self._need_tx(direction)
         dirs = self._tuned_directions(direction, channel, "freq")
         if freq is None:
-            freq = type(self).CONFIG.DEFAULT_FREQ
-        if freq < type(self).CONFIG.FREQ_MIN:
-            self._invalid(f"Frequency must be greater than {type(self).CONFIG.FREQ_MIN:,}")
-            freq = type(self).CONFIG.FREQ_MIN
-        elif freq > type(self).CONFIG.FREQ_MAX:
-            self._invalid(f"Frequency must be less than {type(self).CONFIG.FREQ_MAX:,}")
-            freq = type(self).CONFIG.FREQ_MAX
-        _call(self._set_freq, freq / self._ppm_scale() if self._ppm else freq, direction=direction, channel=channel)
+            freq = self.caps.default_freq
+        freq = self._within(freq, self.caps.freq, "Frequency")
+        hw = freq / self._ppm_scale() if self._ppm else freq
+        for d in self._hooked(direction, dirs, "freq"):
+            (self._set_rx_freq if d == "rx" else self._set_tx_freq)(hw, channel=channel)
         self._tuned("freq", freq, dirs, channel, flush)
         return freq
-    def get_freq(self, channel=0, direction="rx"):
-        """Center frequency [Hz] last set for this channel and direction"""
-        d = self._direction(direction, channel)
-        return self._tuning.get(("freq", d, channel), self._cf)
+
+    def _need_tx(self, direction):
+        if direction == "tx" and not self.caps.channels.get("tx"):
+            raise err.NotSupported(f"{type(self).NAME} can't transmit")
 
     def set_freq_correction(self, ppm, channel=0):
         """Error of the device's frequency reference in parts per million (positive: it runs fast). Tuning and
-        sample rate are both corrected, so `set_freq(f)` gives f and `set_sample_rate(r)` gives r (the rate only
+        sample rate are both corrected, so `set_rx_freq(f)` gives f and `set_rx_sample_rate(r)` gives r (the rate only
         where the device has continuous rates). Re-applies them."""
         self._ensure_open("set_freq_correction")
         self._check_channel("rx", channel)
         self._ppm = float(ppm)
-        for kind, setter in (("freq", self.set_freq), ("rate", self.set_sample_rate)):
+        for kind, setter in (("freq", self._tune_freq), ("rate", self._tune_rate)):
             shared = self.caps.shared.get(kind, "channel")
             both = self._tuning.get((kind, "rx", 0)) == self._tuning.get((kind, "tx", 0))
             applied = False
             for (k, d, ch), value in sorted(self._tuning.items(), key=lambda kv: (kv[0][1], kv[0][2])):
                 if k != kind or (shared != "channel" and ch) or ((shared == "device" or both) and d != "rx" and not ch):
                     continue   # one call per synthesizer / clock
-                setter(value, ch, direction=None if shared == "device" or (both and not ch) else d)
+                setter(value, None if shared == "device" or (both and not ch) else d, ch, False)
                 applied = True
             if not applied:
-                setter(self._cf if kind == "freq" else self._Fs, channel)
+                setter(self._cf if kind == "freq" else self._Fs, None, channel, False)
         return self._ppm
     def get_freq_correction(self, channel=0):
         """Frequency reference error [ppm] last set with `set_freq_correction`"""
@@ -374,7 +369,7 @@ class Device:
             else:
                 self._ensure_open("set_gain")
                 total = "default" if gain is None else self._check_gain(gain, d.upper())
-                _call(self._set_rx_gain if d == "rx" else self._set_tx_gain, total, channel=channel)
+                (self._set_rx_gain if d == "rx" else self._set_tx_gain)(total, channel=channel)
         else:
             name = str(stage).upper()
             setter = getattr(self, f"_set_{d}_{name.lower()}_gain", None)
@@ -430,7 +425,7 @@ class Device:
         self._ensure_open("set_gain_mode")
         if mode not in self.caps.gain_modes[d]:
             raise err.NotSupported(f"{type(self).NAME} has no {d.upper()} gain mode {mode!r} (it has {self.caps.gain_modes[d]})")
-        _call(self._set_gain_mode, d, mode, channel=channel)
+        self._set_gain_mode(d, mode, channel=channel)
         self._gain_mode[(d, channel)] = mode
         return mode
     def get_gain_mode(self, direction="rx", channel=0):
@@ -453,7 +448,7 @@ class Device:
         else:
             bw = max(r.hi for r in ranges)
             self._invalid(f"Bandwidth {want:,.0f} is wider than {type(self).NAME} allows, using {bw:,.0f}")
-        bw = _call(self._set_bandwidth, d, bw, channel=channel) or bw
+        bw = self._set_bandwidth(d, bw, channel=channel) or bw
         self._bandwidth[(d, channel)] = bw
         if d == "rx":
             self._note("bandwidth", bw, channel, False)
@@ -471,7 +466,7 @@ class Device:
         self._ensure_open("set_antenna")
         if name not in self.caps.antennas[d]:
             raise err.NotSupported(f"{type(self).NAME} has no {d.upper()} antenna {name!r} (it has {self.caps.antennas[d]})")
-        _call(self._set_antenna, d, name, channel=channel)
+        self._set_antenna(d, name, channel=channel)
         self._antenna[(d, channel)] = name
         return name
     def get_antenna(self, direction="rx", channel=0):
@@ -514,7 +509,8 @@ class Device:
         value = spec.kind(value)
         if spec.choices is not None and value not in spec.choices:
             raise err.InvalidValue(f"{name} must be one of {spec.choices}, not {value!r}")
-        _call(getattr(self, spec.method), value, channel=channel)
+        method = getattr(self, spec.method)
+        method(value, channel=channel) if spec.per_channel else method(value)
         self._settings[(name, channel)] = value
         return value
     def get_setting(self, name, channel=0):
@@ -523,7 +519,8 @@ class Device:
         if spec is None:
             raise err.NotSupported(f"{type(self).NAME} has no setting {name!r}")
         if spec.getter:
-            return _call(getattr(self, spec.getter), channel=channel)
+            getter = getattr(self, spec.getter)
+            return getter(channel=channel) if spec.per_channel else getter()
         return self._settings.get((name, channel), spec.default)
 
     # ------------------------------------------------------------------ capabilities
@@ -532,7 +529,7 @@ class Device:
         """What this device can do (see pysdrlib.base.caps). Refined by the driver once open"""
         is_open = self.state["open"]
         if self._caps is None or self._caps_open != is_open:
-            c = _caps.from_config(type(self))
+            c = _caps.for_class(type(self))
             c.settings.update(type(self).SETTINGS)
             if type(self)._set_bias_t is not Device._set_bias_t and "bias_t" not in c.settings:
                 c.settings["bias_t"] = _caps.Setting(bool, "Power on the antenna port (bias tee)", "set_bias_t", default=False)
@@ -597,13 +594,13 @@ class Device:
         server); `read` is the way to read one"""
         self._ensure_open("read_available")
         slot = self._slot(channel)
-        ready = _call(self._rx_wait, 0, 0.0, slot=slot)
+        ready = self._rx_wait(0, 0.0, slot=slot)
         if count is not None:
             ready = min(ready, int(count))
         if not ready:
-            total, _ = _call(self._rx_position, slot=slot)
+            total, _ = self._rx_position(slot=slot)
             return np.empty(0, dtype=np.complex64), int(total)
-        x, idx = _call(self._rx_read, ready, slot=slot)
+        x, idx = self._rx_read(ready, slot=slot)
         return x, int(idx)
 
     def flush(self, channel=None):
@@ -611,8 +608,8 @@ class Device:
         self._ensure_open("flush")
         n = 0
         for slot in range(len(self._rx_channels)):
-            n += _call(self._rx_flush, slot=slot)
-        total, _ = _call(self._rx_position)
+            n += self._rx_flush(slot=slot)
+        total, _ = self._rx_position()
         self._rx_discard = max(self._rx_discard, total)
         return n
 
@@ -633,8 +630,8 @@ class Device:
             if not self.state["rx"]:
                 raise err.NotStreaming(f"{type(self).NAME} isn't receiving (call start_rx(), or use stream())")
             left = None if deadline is None else deadline - time.monotonic()
-            _call(self._rx_wait, count - got, READ_SLICE if left is None else max(0.0, min(READ_SLICE, left)), slot=slot)
-            x, idx = _call(self._rx_read, count - got, slot=slot)
+            self._rx_wait(count - got, READ_SLICE if left is None else max(0.0, min(READ_SLICE, left)), slot=slot)
+            x, idx = self._rx_read(count - got, slot=slot)
             n = len(x)
             if n == 0:
                 if deadline is not None and time.monotonic() >= deadline:
@@ -678,7 +675,7 @@ class Device:
                 events.append(Event(index - first, kind, value, ch))
             later.append(change)
         self._rx_events = later
-        total, age = _call(self._rx_position, slot=self._slot(channel))
+        total, age = self._rx_position(slot=self._slot(channel))
         when = self._stream_time(channel, self._Fs, sample_time(self._Fs, total, age, first), first)
         return RxMeta(index=first, count=count, channel=channel,
                       freq=self._rx_now.get(("freq", channel), self._cf), rate=self._rx_now.get(("rate", channel), self._Fs),
@@ -726,13 +723,13 @@ class Device:
         settling with flush"""
         if not self.state.get("rx"):
             return
-        total, _ = _call(self._rx_position)
+        total, _ = self._rx_position()
         for ch in (channels if channels is not None else (channel,)):
             if ch in self._rx_channels:
                 self._rx_events.append((total, kind, value, ch))
         if flush:
             for slot in range(len(self._rx_channels)):
-                _call(self._rx_flush, slot=slot)
+                self._rx_flush(slot=slot)
             settle = int(self.caps.retune_settle * (self._Fs or 0)) + int(self.caps.retune_samples)
             self._rx_discard = max(self._rx_discard, total + settle)
 
@@ -750,6 +747,13 @@ class Device:
             self._cf = self._tuning.get(("freq", "rx", 0), self._cf)
         if "rx" in hit:
             self._note(kind, value, channel, flush, hit["rx"])
+
+    def _hooked(self, direction, dirs, kind):
+        """The directions whose hook a tuning call runs: the one asked for. With none asked for (both) and one synthesizer
+        or clock for both, just "rx": its hook tunes the device (tx's would only call it again)"""
+        if direction is not None:
+            return (str(direction).lower(),)
+        return ("rx",) if len(dirs) > 1 and self.caps.shared.get(kind) == "device" else dirs
 
     def _tuned_directions(self, direction, channel, kind):
         """The directions a tuning call acts on (and checks its channel): both for None, or when `kind` is shared
@@ -788,7 +792,7 @@ class Device:
         step = n if len(slots) == 1 else TX_CHUNK
         while done < n:
             want = min(step, n - done)
-            got = min(_call(self._tx_write, np.ascontiguousarray(x[k, done:done + want]), limit, slot=s)
+            got = min(self._tx_write(np.ascontiguousarray(x[k, done:done + want]), limit, slot=s)
                       for k, s in enumerate(slots))
             done += got
             self._tx_check()
@@ -798,7 +802,7 @@ class Device:
     def get_tx_stats(self, channel=None):
         """The transmit stream's counts for a channel (default: its first): written, sent, underruns, pending..."""
         slot = 0 if channel is None else self._tx_channels.index(channel)
-        return _call(self._tx_stats, slot=slot)
+        return self._tx_stats(slot=slot)
 
     def _channel_list(self, direction, channels):
         chs = (int(channels),) if np.isscalar(channels) else tuple(int(c) for c in channels)
@@ -809,8 +813,8 @@ class Device:
         return chs
 
     # --- receive hooks: a driver with its own queue overrides these (see NativeDevice); the defaults use get_samples.
-    # A multi-channel driver's take `slot=` (the k-th of rx_channels); these serve channel 0 only
-    def _rx_wait(self, count, timeout):
+    # `slot` is the k-th of rx_channels; the defaults serve channel 0 only
+    def _rx_wait(self, count, timeout, slot=0):
         """Wait up to `timeout` seconds for `count` samples; returns how many are ready"""
         deadline = time.monotonic() + timeout
         while True:
@@ -820,16 +824,16 @@ class Device:
             if len(self._rx_buf) >= count or time.monotonic() >= deadline:
                 return len(self._rx_buf)
             time.sleep(0.001)
-    def _rx_read(self, count):
+    def _rx_read(self, count, slot=0):
         """(up to `count` samples, index of the first)"""
         x, idx = self._rx_buf[:count], self._rx_buf_index
         self._rx_buf = self._rx_buf[count:]
         self._rx_buf_index += len(x)
         return x, idx
-    def _rx_position(self):
+    def _rx_position(self, slot=0):
         """(index the next sample to arrive gets, seconds since the device last delivered or None)"""
         return self._rx_buf_index + len(self._rx_buf), None
-    def _rx_flush(self):
+    def _rx_flush(self, slot=0):
         """Discard what is queued; returns how many"""
         x = self._get_samples()
         n = len(self._rx_buf) + len(x)
@@ -837,30 +841,23 @@ class Device:
         self._rx_buf = np.empty(0, dtype=np.complex64)
         return n
 
-    @property
-    def Fs(self):
-        """get_sample_rate wrapper"""
-        return self._Fs
-    @Fs.setter
-    def Fs(self, Fs):
-        """set_sample_rate wrapper"""
-        self.set_sample_rate(Fs)
-
-    @property
-    def CF(self):
-        """get_freq wrapper"""
-        return self._cf
-    @CF.setter
-    def CF(self, cf):
-        """set_freq wrapper"""
-        self.set_freq(cf)
-
     # --- Helpers/Utils --- #
     def _invalid(self, msg):
         """An out-of-range value: a warning (it is clamped), or with `strict` an error"""
         if self.strict:
             raise err.InvalidValue(msg)
         warn.InvalidValue(msg)
+
+    def _within(self, value, ranges, label):
+        """`value` held to the outer limits of `ranges` (a warning, or with `strict` an error, when it is moved)"""
+        lo, hi = min(r.lo for r in ranges), max(r.hi for r in ranges)
+        if value < lo:
+            self._invalid(f"{label} must be greater than {lo:,}")
+            return lo
+        if value > hi:
+            self._invalid(f"{label} must be less than {hi:,}")
+            return hi
+        return value
 
     def _ppm_scale(self):
         return 1.0 + self._ppm * 1e-6
@@ -895,9 +892,8 @@ class Device:
 
     def _check_gain(self, gain, direction):
         """Validate a total ("RX"/"TX") gain against the device's overall limits"""
-        config = type(self).CONFIG
-        return self._clamp_gain(gain, direction, None,
-                                getattr(config, f"GAIN_{direction}_MIN"), getattr(config, f"GAIN_{direction}_MAX"))
+        span = self.caps.gain_range(direction.lower())
+        return self._clamp_gain(gain, direction, None, span.lo, span.hi)
 
     def _set_gain_stage(self, direction, stage, gain, setter, channel=0):
         """For devices to build their own per-stage gain setters on.
@@ -908,13 +904,13 @@ class Device:
                 return self._set_gain_stage("RX", "MIXER", gain, self._set_rx_mixer_gain)
 
         Handles the open check, the device's default, validation against the stage's limits declared
-        in its config, and then calls `setter(validated_gain)`. Returns the gain that was set.
+        in its caps, and then calls `setter(validated_gain)`. Returns the gain that was set.
         A stage the driver lists `values` for (uneven steps) snaps to the nearest of them.
         """
         label = f"{direction} {stage}".replace("_", " ")
         self.log.trace("set_%s_%s_gain(%s)", direction.lower(), stage.lower(), gain)
         self._ensure_open(f"set_{direction.lower()}_{stage.lower()}_gain")
-        spec = self.caps.gains[direction.lower()].get(stage) or type(self).CONFIG.stage(direction, stage)
+        spec = self.caps.stage(direction, stage)
         if spec is None:
             raise NotImplementedError(f"{type(self).NAME} has no {label} gain stage")
         if gain is None:
@@ -922,7 +918,7 @@ class Device:
         gain = self._clamp_gain(gain, label, spec.step, spec.min, spec.max)
         if spec.values:
             gain = min(spec.values, key=lambda v: abs(v - gain))
-        _call(setter, gain, channel=channel)
+        setter(gain, channel=channel)
         self._gain_values.setdefault((direction, channel), {})[stage] = gain
         return gain
 
@@ -950,10 +946,23 @@ class Device:
 
     def _initialize(self, cf, Fs, rx_gain, tx_gain):
         pass
-    def _set_sample_rate(self, Fs):
+    def _set_rx_sample_rate(self, Fs, channel=0):
+        """Set the receive sample rate; return the rate the hardware chose (None: the one asked for, or what the hook
+        left in `self._Fs`). Where rx and tx share one clock it sets both"""
         ...
-    def _set_freq(self, freq):
+    def _set_tx_sample_rate(self, Fs, channel=0):
+        """Set the transmit sample rate. By default, where rx and tx share one clock, the receive hook's"""
+        if self.caps.shared.get("rate") == "device":
+            return self._set_rx_sample_rate(Fs, channel)
+        raise err.NotSupported(f"{type(self).NAME} can't transmit")
+    def _set_rx_freq(self, freq, channel=0):
+        """Tune the receiver (and the transmitter too, where they share one synthesizer)"""
         ...
+    def _set_tx_freq(self, freq, channel=0):
+        """Tune the transmitter. By default, where rx and tx share one synthesizer, the receive hook's"""
+        if self.caps.shared.get("freq") == "device":
+            return self._set_rx_freq(freq, channel)
+        raise err.NotSupported(f"{type(self).NAME} can't transmit")
 
     def _set_rx_gain(self, gain, channel=0):
         return self._set_total_gain("rx", gain, channel)
@@ -1037,14 +1046,14 @@ class Device:
         raise NotImplementedError()
 
     def _capabilities(self, caps):
-        """Refine `caps` (from CONFIG) for the attached unit: return it, or a new one. Called once open"""
+        """Refine `caps` (from CAPS) for the attached unit: return it, or a new one. Called once open"""
         return caps
-    def _set_gain_mode(self, direction, mode):
+    def _set_gain_mode(self, direction, mode, channel=0):
         raise err.NotSupported(f"{type(self).NAME} has no gain modes")
-    def _set_bandwidth(self, direction, bandwidth):
+    def _set_bandwidth(self, direction, bandwidth, channel=0):
         """Set the analog filter; return the bandwidth the hardware chose (None: the one asked for)"""
         raise err.NotSupported(f"{type(self).NAME} has no adjustable filter")
-    def _set_antenna(self, direction, name):
+    def _set_antenna(self, direction, name, channel=0):
         raise err.NotSupported(f"{type(self).NAME} has no antenna selection")
     def _set_clock_source(self, name):
         raise err.NotSupported(f"{type(self).NAME} has no clock source selection")

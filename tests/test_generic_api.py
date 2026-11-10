@@ -113,9 +113,9 @@ class TestRead:
         s.start_rx()
         try:
             s.read(1000, timeout=2)
-            s.set_freq(101e6)
+            s.set_rx_freq(101e6)
             x, m = s.read(200_000, timeout=2, meta=True)        # the change lands inside or before this block
-            s.set_freq(102e6, flush=True)
+            s.set_rx_freq(102e6, flush=True)
             _, m2 = s.read(1000, timeout=2, meta=True)
         finally:
             s.stop_rx()
@@ -171,14 +171,14 @@ class TestCapabilities:
     def test_strict(self, driver, spec):
         driver.strict = True
         with pytest.raises(err.InvalidValue):
-            driver.set_freq(spec.config.FREQ_MAX * 2)
+            driver.set_rx_freq(spec.caps.freq[-1].hi * 2)
         driver.strict = False
         with pytest.warns(Warning):
-            driver.set_freq(spec.config.FREQ_MAX * 2)
+            driver.set_rx_freq(spec.caps.freq[-1].hi * 2)
 
     def test_channels(self, driver):
         with pytest.raises(err.InvalidValue):   # one past the last channel
-            driver.set_freq(100e6, channel=driver.caps.channels["rx"])
+            driver.set_rx_freq(100e6, channel=driver.caps.channels["rx"])
         with pytest.raises(ValueError):
             driver.gains("sideways")
 
@@ -201,16 +201,16 @@ class TestCapabilities:
             driver.set_setting("no such setting", 1)
 
     def test_freq_correction(self, driver, spec):
-        f = 100e6 if 100e6 in driver.caps.freq[0] else spec.config.DEFAULT_FREQ
-        driver.set_freq(f)
+        f = 100e6 if 100e6 in driver.caps.freq[0] else spec.caps.default_freq
+        driver.set_rx_freq(f)
         driver.set_freq_correction(10.0)
-        assert driver.get_freq_correction() == pytest.approx(10.0) and driver.get_freq() == f
+        assert driver.get_freq_correction() == pytest.approx(10.0) and driver.get_rx_freq() == f
         if spec.name == "rtl_sdr":   # whole ppm in the hardware
             assert driver.device.of("set_freq_correction")[-1] == (10,)
-            assert driver.device.of("set_freq")[-1] == (int(f),)
+            assert spec.freqs(driver)[-1] == int(f)
         else:                        # asked for less, so a fast reference lands on f
-            assert driver.device.of("set_freq")[-1] == (int(f / (1 + 10e-6)),)
-        assert driver.get_sample_rate() == pytest.approx(spec.config.DEFAULT_SAMPLE_RATE if spec.name != "rtl_sdr" else driver.Fs)
+            assert spec.freqs(driver)[-1] == pytest.approx(int(f / (1 + 10e-6)), abs=1)
+        assert driver.get_rx_sample_rate() == pytest.approx(spec.caps.default_rate if spec.name != "rtl_sdr" else driver.get_rx_sample_rate())
 
 # ---------------------------------------------------------------- driver specifics through the generic API
 def test_hackrf_bandwidth(monkeypatch):

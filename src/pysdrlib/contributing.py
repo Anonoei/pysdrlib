@@ -12,7 +12,6 @@ then fill in each `TODO`, checking as you go with `pysdrlib.testing`.
 
 | File | What it holds |
 | --- | --- |
-| `<name>/config.py` | The radio's limits, defaults and gain stages (`ConfigDevice`) |
 | `<name>/<name>.py` | The `Device` subclass: the hooks below |
 | `<name>/__init__.py` | `Device = <class>` and `find()` |
 | `<name>/lib/__init__.py`, `lib/err.py` | The compiled extension's import, and its error classes (`make_errors`, from `pysdrlib.base.errors`) |
@@ -24,15 +23,17 @@ then fill in each `TODO`, checking as you go with `pysdrlib.testing`.
 Nothing else is edited: `pysdrlib.devices.ls()` finds a driver by its `Device = ...` line, and setup.py builds every
 `_ext/<name>.py` whose `get()` returns an extension. (Until it does, the driver is left out of the build.)
 
-## 1. Describe the radio: `config.py`
+## 1. Describe the radio: `CAPS`
 
-Limits and defaults, and the gain stages by the names the hardware gives them. Nothing generic knows these names.
+The class attribute `CAPS` is a `Capabilities`: limits, defaults and the gain stages by the names the hardware gives
+them. Nothing generic knows these names.
 
-    ConfigDevice({
-        "DEFAULT": {"FREQ": 100e6, "SAMPLE_RATE": 2e6, "GAIN_RX_AMP": 16},
-        "FREQ_MIN": 1e6, "FREQ_MAX": 6e9, "SAMPLE_RATE_MIN": 250e3, "SAMPLE_RATE_MAX": 20e6,
-        "GAIN": {"RX_AMP_STEP": 8, "RX_AMP_MIN": 0, "RX_AMP_MAX": 40},      # <RX|TX>_<STAGE>_<STEP|MIN|MAX>
-    })
+    CAPS = Capabilities(
+        driver="",
+        freq=[Range(1e6, 6e9)], default_freq=100e6,
+        rates=[Range(250e3, 20e6)], default_rate=2e6,
+        gains={"rx": {"AMP": GainStage(8, 0, 40, 16)}, "tx": {}},      # GainStage(step, min, max, default)
+    )
 
 This is what `sdr.caps` reports before the device is open. Whatever only the attached unit knows (the tuner it has,
 its real gain table, the rates its firmware offers) is added in `Device._capabilities(caps)` once open.
@@ -45,15 +46,16 @@ stall and drop detection, and `read()`. A driver implements only what is particu
 | Hook | Does |
 | --- | --- |
 | `_open(serial_number=None, ...)` | Returns the extension's device. Map "not found" to `err.NoDevice` |
-| `_set_freq(freq)`, `_set_sample_rate(Fs)` | Tune. Call `self._rate_changed()` after a rate change |
-| `_set_<dir>_<stage>_gain(gain)` | Apply one gain stage (one per stage in the config) |
-| `set_<dir>_<stage>_gain(gain=None)` | Not written: made from the config for each stage (write one yourself only to document it better; it calls `self._set_gain_stage("RX", "AMP", gain, self._set_rx_amp_gain)`) |
+| `_set_rx_freq(freq)`, `_set_rx_sample_rate(Fs)` | Tune the receiver (and the transmitter too, when `DUPLEX` is False: one synthesizer). Call `self._rate_changed()` after a rate change |
+| `_set_tx_freq(freq)`, `_set_tx_sample_rate(Fs)` | Only a `DUPLEX` transmitter, whose transmit side is tuned separately. Where tx and rx share a synthesizer these call the `_set_rx_*` hooks already |
+| `_set_<dir>_<stage>_gain(gain)` | Apply one gain stage (one per stage in CAPS) |
+| `set_<dir>_<stage>_gain(gain=None)` | Not written: made from CAPS for each stage (write one yourself only to document it better; it calls `self._set_gain_stage("RX", "AMP", gain, self._set_rx_amp_gain)`) |
 | `_capabilities(caps)` | Refine `caps` for the attached unit |
 | `_set_bandwidth`, `_set_antenna`, `_set_gain_mode`, `_set_clock_source`, `_set_bias_t` | Only the controls the hardware has. A control left out raises `err.NotSupported` |
 | `_set_rx_channels`, `_set_tx_channels` | Only if it has several channels (see `caps.channels`, `caps.shared`) |
 | `_tx_write(samples, timeout, slot)`, `_start_tx`, `_stop_tx`, `_tx_check`, `_tx_stats` | Only if `CAN_TRANSMIT` |
 
-Class attributes: `NAME`, `CONFIG`, `CAN_TRANSMIT`, `DUPLEX` (separate receive and transmit synthesizers),
+Class attributes: `NAME`, `CAPS`, `CAN_TRANSMIT`, `DUPLEX` (separate receive and transmit synthesizers),
 `SAMPLE_FORMAT` (the raw stream the extension delivers), `RETUNE_SAMPLES` and `RETUNE_SETTLE` (what a retune leaves in
 flight and how long it takes to settle: measure them, as the comments in the shipped drivers do), `SETTINGS` (anything else the radio
 has, as `caps.Setting`s a user reaches with `set_setting`), `GAIN_RESERVE` and `GAIN_BALANCE` (how a total gain is split
@@ -61,17 +63,18 @@ across stages).
 
 **Two layers of API stay in step.** The generic calls (`set_gain`, `set_rx_gain`, which split a total over the stages)
 work on every device. Each stage also has its own setter (`set_rx_amp_gain`) under the hardware's name. You provide only
-the config's declaration of the stage and `_set_<dir>_<stage>_gain`, which applies it; the setter is made from them.
+CAPS's declaration of the stage and `_set_<dir>_<stage>_gain`, which applies it; the setter is made from them.
 
-A hook takes the arguments the base class's does (`_set_freq(freq)`, `_set_bandwidth(direction, bandwidth)`...), and
-may take `channel`, `direction` or `slot` as keywords with defaults, which are passed only to hooks that ask for them.
-`testing.check_driver` reports a hook that needs different arguments.
+A hook takes the arguments the base class's does, including its keywords (`_set_rx_freq(freq, channel=0)`,
+`_set_<dir>_<stage>_gain(gain, channel=0)`, `_set_bandwidth(direction, bandwidth, channel=0)`, `slot=0` on the receive and
+transmit hooks): a driver with one channel ignores `channel`. `testing.check_driver` reports a hook that needs other
+arguments or leaves a keyword out. A `Setting` whose method takes `channel=` sets `per_channel=True`.
 
 **Samples are complex64, full scale +-1.** The extension converts from the hardware's format (`SAMPLE_FORMAT`) on its
 streaming thread; do not go through complex128, or float64 at all.
 
 **Out-of-range values** are clamped with a warning (or raise `err.InvalidValue` when `sdr.strict`): the base class does
-this from the config, so a driver never validates its own limits. `_set_gain_stage` snaps to the stage's step or table.
+this from CAPS, so a driver never validates its own limits. `_set_gain_stage` snaps to the stage's step or table.
 
 ## 3. The extension (C++)
 

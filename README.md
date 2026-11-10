@@ -55,7 +55,7 @@ sdr.read_into(buffer)                    # into an array you own
 with sdr.stream(65536, meta=True) as s:  # starts receiving, stops on exit
     for x, m in s: ...
 
-sdr.set_freq(162.4e6, flush=True)        # the next read is all at the new frequency (settling skipped)
+sdr.set_rx_freq(162.4e6, flush=True)     # the next read is all at the new frequency (settling skipped)
 ```
 `get_samples()` (whatever has arrived) still works. `sdr.on_drop` decides what lost samples do: `"warn"` (default),
 `"raise"`, `"ignore"` or a function.
@@ -82,7 +82,7 @@ Devices also keep their own per-stage setters (`set_rx_lna_gain`, ...) alongside
 A device with several channels (`sdr.caps.channels`, e.g. a B210's 2 RX and 2 TX) streams any of them together:
 ```python
 sdr.set_gain(40, channel=1)                       # every control takes the channel
-sdr.set_freq(915e6, direction="tx")               # tuning takes the direction too (None: both)
+sdr.set_tx_freq(915e6)                            # tuning is per direction: set_rx_freq / set_tx_freq
 sdr.caps.shared                                   # what one setting changes: "freq": "direction" means the channels
                                                   # of a direction share one synthesizer
 sdr.start_rx(channels=(0, 1))

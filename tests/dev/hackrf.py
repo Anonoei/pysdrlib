@@ -21,8 +21,8 @@ def _psd(samples):
 
 def oneshot():
     with hackrf.Device() as sdr:
-        sdr.set_freq(cf)
-        sdr.set_sample_rate(Fs)
+        sdr.set_rx_freq(cf)
+        sdr.set_rx_sample_rate(Fs)
         sdr.set_rx_gain()
         sdr.start_rx()
         time.sleep(1)
@@ -54,8 +54,8 @@ def live():
     fig.canvas.draw()
     plt.ion()
     with hackrf.Device() as sdr:
-        sdr.set_freq(cf)
-        sdr.set_sample_rate(Fs)
+        sdr.set_rx_freq(cf)
+        sdr.set_rx_sample_rate(Fs)
         sdr.set_rx_gain()
         sdr.start_rx()
         try:

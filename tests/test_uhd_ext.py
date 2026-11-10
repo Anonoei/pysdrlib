@@ -80,9 +80,9 @@ class TestHardware:
         assert "RX2" in dev.rx_antennas(0) and "internal" in dev.clock_sources()
 
     def test_controls_read_back(self, dev):
-        dev.set_sample_rate(5e6)
+        dev.set_rx_sample_rate(5e6)
         assert dev.get_rx_rate(0) == pytest.approx(5e6, rel=1e-3)
-        dev.set_freq(915_000_000)
+        dev.set_rx_freq(915_000_000)
         assert dev.get_rx_freq(0) == pytest.approx(915e6, abs=100)
         dev.set_rx_gain(30, 0)
         assert dev.get_rx_gain(0) == pytest.approx(30)
@@ -93,8 +93,8 @@ class TestHardware:
         assert "lo_locked" in dev.rx_sensors(0) and "ref_locked" in dev.mboard_sensors()
 
     def test_receives_without_loss(self, dev):
-        dev.set_sample_rate(5e6)
-        dev.set_freq(915_000_000)
+        dev.set_rx_sample_rate(5e6)
+        dev.set_rx_freq(915_000_000)
         dev.set_rx_buffer(5_000_000)
         dev.start_rx()
         try:
@@ -106,8 +106,8 @@ class TestHardware:
         assert not dev.is_streaming()
 
     def test_transmit_counts_what_it_sends(self, dev):
-        dev.set_sample_rate(2e6)
-        dev.set_freq(915_000_000)
+        dev.set_rx_sample_rate(2e6)
+        dev.set_rx_freq(915_000_000)
         dev.set_tx_gain(0, 0)       # no antenna is needed to check the plumbing: keep the output negligible
         dev.set_tx_buffer(500_000)
         dev.start_tx()

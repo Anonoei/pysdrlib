@@ -32,7 +32,7 @@ def main():
     sdr.on_drop = "ignore"
     try:
         sdr.initialize(cf=a.freq or a.station or a.band[0], Fs=a.rate)
-        Fs = sdr.get_sample_rate()
+        Fs = sdr.get_rx_sample_rate()
         if sdr.caps.bandwidths["rx"]:
             sdr.set_bandwidth(0.9 * Fs)
         sdr.set_gain_relative(0.5)
@@ -41,7 +41,7 @@ def main():
         if freq is None:
             freq, on, off = find_station(sdr, Fs, tuple(a.band))
             print(f"signal at {freq/1e6:.3f} MHz ({on - off:.1f} dB above its surroundings at half gain)")
-        sdr.set_freq(freq, flush=True)
+        sdr.set_rx_freq(freq, flush=True)
         f = np.fft.fftshift(np.fft.fftfreq(a.nfft, 1 / Fs))
         away = np.abs(f) > 120e3                  # outside the signal
         edge = np.abs(f) < 0.4 * Fs               # inside the filter's passband

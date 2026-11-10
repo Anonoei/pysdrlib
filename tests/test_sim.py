@@ -12,7 +12,8 @@ import pysdrlib
 from pysdrlib import err
 from pysdrlib.base import convert
 from pysdrlib.sim import Sim
-from pysdrlib.sim.config import ConfigSim
+
+ConfigSim = Sim.CAPS
 
 
 @pytest.fixture
@@ -42,7 +43,7 @@ class TestRegistration:
 class TestLifecycle:
     def test_requires_open(self):
         dev = Sim()
-        for call in (dev.start_rx, dev.get_samples, lambda: dev.set_freq(1e6), dev.close):
+        for call in (dev.start_rx, dev.get_samples, lambda: dev.set_rx_freq(1e6), dev.close):
             with pytest.raises(err.NotOpen):
                 call()
 
@@ -66,8 +67,8 @@ class TestLifecycle:
         dev.open()
         dev.initialize()  # must not try to set TX gain
         assert dev.CAN_TRANSMIT is False
-        assert dev.get_freq() == ConfigSim.DEFAULT_FREQ
-        assert dev.get_sample_rate() == ConfigSim.DEFAULT_SAMPLE_RATE
+        assert dev.get_rx_freq() == ConfigSim.default_freq
+        assert dev.get_rx_sample_rate() == ConfigSim.default_rate
 
     def test_start_stop_restart(self, sim):
         for _ in range(3):
@@ -110,7 +111,7 @@ class TestSignal:
         assert sim.get_tone() == pytest.approx(-200_000, abs=1e6 / 4096)
 
     def test_tone_follows_sample_rate(self, sim):
-        sim.set_sample_rate(2e6)
+        sim.set_rx_sample_rate(2e6)
         sim.pump(4)
         assert tone_hz(sim.get_samples(), 2e6) == pytest.approx(250_000, abs=600)
 
@@ -197,7 +198,7 @@ class TestGain:
         assert sim._gain == {"if": 40, "bb": 20}
 
     def test_generic_default(self, sim):
-        assert sim.set_rx_gain() == {"if": ConfigSim.DEFAULT_GAIN_RX_IF, "bb": ConfigSim.DEFAULT_GAIN_RX_BB}
+        assert sim.set_rx_gain() == {"if": ConfigSim.stage("rx", "IF").default, "bb": ConfigSim.stage("rx", "BB").default}
 
     def test_device_specific_stages(self, sim):
         assert sim.set_rx_if_gain(12) == 12
@@ -211,12 +212,12 @@ class TestGain:
 
     def test_out_of_range_is_clamped(self, sim):
         with pytest.warns(Warning):
-            assert sim.set_rx_if_gain(100) == ConfigSim.GAIN_RX_IF_MAX
+            assert sim.set_rx_if_gain(100) == ConfigSim.stage("rx", "IF").max
 
     def test_freq_and_rate_clamped(self, sim):
         with pytest.warns(Warning):
-            sim.set_sample_rate(1e12)
-        assert sim.get_sample_rate() == ConfigSim.SAMPLE_RATE_MAX
+            sim.set_rx_sample_rate(1e12)
+        assert sim.get_rx_sample_rate() == ConfigSim.rates[0].hi
 
 
 class TestSampleFormats:

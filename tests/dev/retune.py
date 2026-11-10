@@ -49,31 +49,31 @@ def main():
 
         rows = []
         for Fs in rates:
-            sdr.set_sample_rate(Fs)
+            sdr.set_rx_sample_rate(Fs)
             if caps.bandwidths["rx"]:
                 sdr.set_bandwidth(min(Fs, 2e6))
             win = max(64, int(Fs / 1e4))    # 0.1 ms
             sdr.start_rx()
             levels = []
             for f in (station + a.away, station):
-                sdr.set_freq(f, flush=True)
+                sdr.set_rx_freq(f, flush=True)
                 levels.append(np.median(centre_power(sdr.read(int(0.05 * Fs), timeout=3), Fs, win)))
             off, on = levels
             thr = (on + off) / 2
             late, dirty = [], 0
             for _ in range(a.trials):   # without flush: where does the signal appear?
-                sdr.set_freq(station + a.away, flush=True)
+                sdr.set_rx_freq(station + a.away, flush=True)
                 sdr.read(int(0.05 * Fs), timeout=3)
                 time.sleep(random.uniform(0, 0.15))
-                sdr.set_freq(station)
+                sdr.set_rx_freq(station)
                 x, m = sdr.read(int(0.3 * Fs), timeout=5, meta=True)
                 mark = next((e.offset for e in m.events if e.kind == "freq"), 0)
                 late.append(int(np.argmax(centre_power(x, Fs, win) > thr)) * win - mark)
             for _ in range(a.trials):   # with flush: is the first block all on it?
-                sdr.set_freq(station + a.away, flush=True)
+                sdr.set_rx_freq(station + a.away, flush=True)
                 sdr.read(int(0.05 * Fs), timeout=3)
                 time.sleep(random.uniform(0, 0.15))
-                sdr.set_freq(station, flush=True)
+                sdr.set_rx_freq(station, flush=True)
                 dirty += not np.all(centre_power(sdr.read(int(0.02 * Fs), timeout=3), Fs, win) > thr)
             sdr.stop_rx()
             late = np.array(late)

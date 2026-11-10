@@ -11,7 +11,9 @@ from devices import BY_NAME, HW
 
 pytest.importorskip("pysdrlib.extio", exc_type=ImportError)   # loads (or builds) libsddc_core
 from pysdrlib.extio import lib
-from pysdrlib.extio.config import ConfigRX888 as config
+from pysdrlib.extio import Device as RX888
+
+config = RX888.CAPS
 from pysdrlib.extio.lib import err as lib_err
 
 extio = lib.extio
@@ -26,8 +28,8 @@ def spec():
 def test_sample_rates_match_the_config():
     rates = extio.device().sample_rates()
     assert rates == sorted(rates)
-    assert (rates[0], rates[-1]) == (config.SAMPLE_RATE_MIN, config.SAMPLE_RATE_MAX)
-    assert config.DEFAULT_SAMPLE_RATE in rates
+    assert (rates[0], rates[-1]) == (config.rates[0].lo, config.rates[0].hi)
+    assert config.default_rate in rates
 
 
 def test_device_count():
@@ -70,36 +72,36 @@ class TestHardware:
         assert "RX888" in dev.name and dev.firmware > 0
 
     def test_input_follows_frequency(self, dev):
-        dev.set_freq(HF)
+        dev.set_rx_freq(HF)
         assert not dev.is_vhf
-        dev.set_freq(VHF)
+        dev.set_rx_freq(VHF)
         assert dev.is_vhf
-        dev.set_freq(HF)
+        dev.set_rx_freq(HF)
         assert not dev.is_vhf
 
     def test_out_of_range_frequency(self, dev):
         with pytest.raises(lib_err.INVALID_PARAM):
-            dev.set_freq(1)
+            dev.set_rx_freq(1)
         with pytest.raises(lib_err.INVALID_PARAM):
-            dev.set_freq(10_000_000_000)
+            dev.set_rx_freq(10_000_000_000)
 
     def test_sample_rate_snaps_to_nearest(self, dev):
-        assert dev.set_sample_rate(5e6) in (4e6, 8e6)
-        assert dev.set_sample_rate(16e6) == 16e6
+        assert dev.set_rx_sample_rate(5e6) in (4e6, 8e6)
+        assert dev.set_rx_sample_rate(16e6) == 16e6
 
     def test_gain_stages_report_the_applied_step(self, dev):
-        dev.set_freq(VHF)
+        dev.set_rx_freq(VHF)
         rf = dev.set_rx_rf_gain(20.0)
         assert rf is not None and abs(rf - 20.0) < 5
         assert dev.set_rx_rf_gain(1000.0) >= rf   # clamped to the top step
-        dev.set_freq(HF)
+        dev.set_rx_freq(HF)
         assert dev.set_rx_rf_gain(-100.0) <= 0     # the HF attenuator never adds gain
 
     def test_gain_survives_switching_inputs(self, dev):
-        dev.set_freq(HF)
+        dev.set_rx_freq(HF)
         dev.set_rx_rf_gain(-10.0)
-        dev.set_freq(VHF)
-        dev.set_freq(HF)   # re-applies the requested gains without raising
+        dev.set_rx_freq(VHF)
+        dev.set_rx_freq(HF)   # re-applies the requested gains without raising
 
     def test_adc_controls(self, dev):
         for setter in (dev.set_dither, dev.set_pga):
@@ -107,15 +109,15 @@ class TestHardware:
             setter(False)
 
     def test_stream_is_complex_float(self, dev):
-        dev.set_freq(VHF)
-        dev.set_sample_rate(2e6)
+        dev.set_rx_freq(VHF)
+        dev.set_rx_sample_rate(2e6)
         got = self.stream(dev)
         assert got, "no data within the capture window"
         assert all(a.dtype == np.float32 and len(a) % 2 == 0 and np.isfinite(a).all() for a in got)
 
     def test_stream_runs_at_the_requested_rate(self, dev):
-        dev.set_freq(HF)
-        dev.set_sample_rate(8e6)
+        dev.set_rx_freq(HF)
+        dev.set_rx_sample_rate(8e6)
         start = time.perf_counter()
         got = self.stream(dev, 0.3)
         elapsed = time.perf_counter() - start
@@ -124,8 +126,8 @@ class TestHardware:
 
     def test_vhf_antenna_has_signal(self, dev):
         """Needs an antenna on the V port; FM broadcast is the strongest thing at 100 MHz"""
-        dev.set_freq(VHF)
-        dev.set_sample_rate(2e6)
+        dev.set_rx_freq(VHF)
+        dev.set_rx_sample_rate(2e6)
         dev.set_rx_rf_gain(25.0)
         dev.set_rx_if_gain(25.0)
         iq = np.concatenate(self.stream(dev, 0.5)).view(np.complex64)
@@ -136,5 +138,5 @@ class TestHardware:
     def test_reopen_after_close(self, dev):
         dev.close()
         d = extio.open()
-        d.set_freq(HF)
+        d.set_rx_freq(HF)
         d.close()

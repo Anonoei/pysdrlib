@@ -40,7 +40,7 @@ def sdr(spec):
     """The device's Python class over the extension's real queue (no hardware)"""
     dev = spec.device_class()
     dev.device, dev.state["open"] = Queue(spec), True
-    dev.set_sample_rate(spec.rate)
+    dev.set_rx_sample_rate(spec.rate)
     return dev
 
 
@@ -114,7 +114,7 @@ class TestRemote:
         stop = threading.Event()
         with RemoteDevice(server.endpoint, id=worker.id) as d:
             d.claim()
-            d.set_sample_rate(spec.rate)
+            d.set_rx_sample_rate(spec.rate)
             d.start_rx()
             t = self.feeder(queue, spec, stop)
             try:
@@ -133,7 +133,7 @@ class TestRemote:
         with RemoteDevice(server.endpoint, id=worker.id) as d:
             d.claim()
             d.set_wire(wire)
-            d.set_sample_rate(spec.rate)
+            d.set_rx_sample_rate(spec.rate)
             d.start_rx()
             t = self.feeder(queue, spec, stop)
             try:
@@ -149,7 +149,7 @@ class TestRemote:
         server, worker, queue = served
         sdr = worker.device
         sdr.stall_timeout = 0.2
-        sdr.set_sample_rate(spec.rate)
+        sdr.set_rx_sample_rate(spec.rate)
         sdr.start_rx()
         time.sleep(0.5)
         with pytest.raises(err.StreamStalled):
@@ -165,7 +165,7 @@ def test_hardware_through_a_remote_server(spec, hardware):
     """The real device, hosted by a server and read by a client, delivers its rate"""
     with Server("tcp://127.0.0.1:0", devices=[spec.name], lease=0) as server:
         with RemoteDevice(server.endpoint, spec.name) as d:
-            d.initialize(cf=spec.config.DEFAULT_FREQ, Fs=spec.rate)
+            d.initialize(cf=spec.caps.default_freq, Fs=spec.rate)
             d.start_rx()
             time.sleep(0.3)
             d.get_samples()   # discard the start-up
