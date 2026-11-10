@@ -7,6 +7,7 @@
     pysdrlib client tcp://host:5555 watch hackrf-0 -o out.cfile -t 5
     pysdrlib client tcp://host:5555 tx hackrf -i out.cfile --freq 915e6 --rate 2e6 --tx-gain 0 --tx-wire int8
     pysdrlib client tcp://host:5555 set hackrf-0 rx_freq=101e6 rx_lna_gain=16
+    pysdrlib relay tcp://host:5555 hackrf-0 --bind tcp://127.0.0.1:5556      # programs here share one connection to it
 
 Recordings and transmit files are raw complex64 (GNU Radio `.cfile`).
 --rx-wire / --tx-wire choose the format samples cross the network in (native = the device's own layout).
@@ -43,7 +44,21 @@ def build_parser():
     s.add_argument("--open", action="append", default=[], metavar="TYPE", help="open a device at startup, uncontrolled until a client claims it (repeatable)")
     s.add_argument("--wire", "--rx-wire", dest="wire", default="native", help="default RX wire format: native (device's own sample layout, default), complex64, int8, int16, ...")
     s.add_argument("--lease", type=float, default=15.0, help="seconds a silent controller keeps control, 0 = forever (default %(default)s)")
+    s.add_argument("--no-shm", dest="shm", action="store_false", help="don't offer clients on this machine the samples in shared memory")
     s.add_argument("-v", "--verbose", action="store_true")
+
+    y = sub.add_parser("relay", help="host a device of another server here, so programs on this machine share one connection to it")
+    y.add_argument("address", help="the far server's C2 endpoint, e.g. tcp://host:5555")
+    y.add_argument("device", nargs="?", help="id of a device it hosts, e.g. hackrf-0 (or use --open)")
+    y.add_argument("--open", metavar="TYPE", help="open a new device of this type on the far server instead (the relay controls it)")
+    y.add_argument("--control", choices=("auto", "yes", "no"), default="auto",
+                   help="take control of the far device: if it is free (auto, default), insist (yes), or only watch it (no)")
+    y.add_argument("--name", help="the id the device has here (default: the far device's)")
+    y.add_argument("--bind", default="tcp://127.0.0.1:5556", help="where local programs connect (default %(default)s)")
+    y.add_argument("--timeout", type=float, default=5.0, help="seconds the far server may take to answer")
+    y.add_argument("--lease", type=float, default=15.0, help="seconds a silent local controller keeps control, 0 = forever (default %(default)s)")
+    y.add_argument("--no-shm", dest="shm", action="store_false", help="don't offer programs on this machine the samples in shared memory")
+    y.add_argument("-v", "--verbose", action="store_true")
 
     c = sub.add_parser("client", help="talk to a pysdrlib server")
     c.add_argument("address", help="server C2 endpoint, e.g. tcp://host:5555")
@@ -166,7 +181,7 @@ def run_server(args):
         logger.LOGGING = True
         logging.basicConfig(level=logging.DEBUG)
     devices = args.devices.split(",") if args.devices else None
-    server = Server(args.bind, port_range=args.port_range, devices=devices, lease=args.lease, wire=args.wire)
+    server = Server(args.bind, port_range=args.port_range, devices=devices, lease=args.lease, wire=args.wire, shm=args.shm)
     try:
         for dtype in args.open:
             worker, _ = server.open_device(dtype)
@@ -176,6 +191,35 @@ def run_server(args):
         raise SystemExit(f"failed to open device: {e}")
     print(f"pysdrlib server on {server.endpoint} (devices: {', '.join(server.types())}); Ctrl+C to stop")
     server.serve_forever()
+
+def run_relay(args):
+    """`pysdrlib relay`: host a far device here until Ctrl+C, or until the far server stops answering"""
+    from .server import Server
+    if args.verbose:
+        import logging
+        from .. import logger
+        logger.LOGGING = True
+        logging.basicConfig(level=logging.DEBUG)
+    if (args.device is None) == (args.open is None):
+        raise SystemExit("error: give the id of a device on the far server, or --open TYPE")
+    server = Server(args.bind, lease=args.lease, shm=args.shm)
+    try:
+        worker = server.relay(args.address, args.device, open=args.open, name=args.name, timeout=args.timeout,
+                              control={"auto": "auto", "yes": True, "no": False}[args.control])
+    except BaseException:
+        server.stop()
+        raise
+    mode = "controlling" if worker.upstream.token else "watching"
+    print(f"relaying {worker.upstream.id} of {args.address} ({mode}) as {worker.id} on {server.endpoint}; Ctrl+C to stop")
+    try:
+        server.start()
+        while not worker.lost.wait(0.5):
+            pass
+        raise SystemExit(f"error: the server at {args.address} stopped answering")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.stop()
 
 def run_client(args):
     """`pysdrlib client`: list, info, rx, watch, set and tx"""
@@ -231,7 +275,7 @@ def main(argv=None):
     except ImportError:
         raise SystemExit("pysdrlib's remote support needs pyzmq: pip install pysdrlib[remote]")
     try:
-        (run_server if args.mode == "server" else run_client)(args)
+        {"server": run_server, "relay": run_relay, "client": run_client}[args.mode](args)
     except (TimeoutError, OSError) as e:
         raise SystemExit(f"error: {e}")
     except Exception as e:

@@ -4,10 +4,12 @@
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
+#include <memory>
 #include <string>
 
 #include "hardware_convert.hpp"
 #include "hardware_ring.hpp"
+#include "hardware_shm.hpp"
 
 namespace py = pybind11;
 using namespace hw;
@@ -32,6 +34,29 @@ std::pair<const unsigned char*, size_t> contiguous_bytes(const py::buffer_info& 
     }
     return {static_cast<const unsigned char*>(info.ptr), static_cast<size_t>(info.size * info.itemsize)};
 }
+
+// A ShmRing over a buffer the caller maps (a multiprocessing.shared_memory segment): it keeps the buffer exported until
+// release(), so the owner must release() before it closes the segment
+class PyShmRing {
+public:
+    PyShmRing(py::buffer buf, py::object capacity, uint64_t stream_id)
+        : info_(std::make_unique<py::buffer_info>(buf.request(true))) {
+        const size_t size = static_cast<size_t>(info_->size * info_->itemsize);
+        if (capacity.is_none()) ring_ = std::make_unique<ShmRing>(info_->ptr, size);
+        else ring_ = std::make_unique<ShmRing>(info_->ptr, size, capacity.cast<uint64_t>(), stream_id);
+    }
+    ShmRing& ring() {
+        if (!ring_) throw py::value_error("the ring is released");
+        return *ring_;
+    }
+    void release() {
+        ring_.reset();
+        info_.reset();
+    }
+private:
+    std::unique_ptr<py::buffer_info> info_;
+    std::unique_ptr<ShmRing> ring_;
+};
 
 }  // namespace
 
@@ -125,4 +150,45 @@ PYBIND11_MODULE(_samples, m) {
         .def_property_readonly("capacity", &Ring::capacity)
         .def_property_readonly("dropped", &Ring::dropped)
         .def("clear_dropped", &Ring::clear_dropped, "Return the dropped count and reset it to 0.");
+
+    m.def("shm_segment_size", [](uint64_t capacity) { return ShmRing::segment_size(capacity); }, py::arg("capacity"),
+          "Bytes of memory a ShmRing of `capacity` samples needs.");
+
+    py::class_<PyShmRing>(m, "ShmRing", "Complex64 samples in memory that several processes map: one writer, any number of "
+                                        "readers with a cursor each (see hardware_shm.hpp).")
+        .def(py::init<py::buffer, py::object, uint64_t>(), py::arg("buffer"), py::arg("capacity") = py::none(),
+             py::arg("stream_id") = 0,
+             "With `capacity`, the writer: lays the ring out in `buffer` (zeroed, ShmRing.segment_size(capacity) bytes). "
+             "Without, a reader of one a writer laid out.")
+        .def_property_readonly("capacity", [](PyShmRing& r) { return r.ring().capacity(); })
+        .def_property_readonly("stream_id", [](PyShmRing& r) { return r.ring().stream_id(); })
+        .def_property_readonly("head", [](PyShmRing& r) { return r.ring().head(); },
+                               "The stream index after the newest published sample.")
+        .def_property_readonly("closed", [](PyShmRing& r) { return r.ring().closed(); })
+        .def("close", [](PyShmRing& r) { r.ring().close(); }, "Writer: no more samples are coming.")
+        .def("publish", [](PyShmRing& r, py::array_t<cfloat, py::array::c_style | py::array::forcecast> samples, uint64_t first) {
+            py::buffer_info info = samples.request();
+            const cfloat* src = static_cast<const cfloat*>(info.ptr);
+            const uint64_t n = static_cast<uint64_t>(info.size);
+            ShmRing& ring = r.ring();
+            py::gil_scoped_release release;
+            ring.publish(src, n, first);
+        }, py::arg("samples"), py::arg("first"),
+           "Writer: append samples whose first has stream index `first` (at or after head; later records a gap).")
+        .def("read", [](PyShmRing& r, py::array_t<cfloat, py::array::c_style> out, uint64_t pos) {
+            py::buffer_info info = out.request(true);
+            cfloat* dst = static_cast<cfloat*>(info.ptr);
+            const size_t want = static_cast<size_t>(info.size);
+            ShmRing& ring = r.ring();
+            size_t got = 0;
+            uint64_t first = 0;
+            {
+                py::gil_scoped_release release;
+                got = ring.read(dst, want, pos, &first);
+            }
+            return py::make_tuple(got, first);
+        }, py::arg("out"), py::arg("pos"),
+           "Reader: fill `out` with up to len(out) samples from stream index `pos`; returns (count, index of the first). "
+           "The index is past `pos` when the reader was lapped or was in a gap; with count 0 it is where to continue.")
+        .def("release", &PyShmRing::release, "Let go of the buffer (before the segment is closed).");
 }

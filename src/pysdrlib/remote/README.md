@@ -21,8 +21,7 @@ pysdrlib client tcp://host:5555 rx hackrf --freq 100e6 --rate 10e6 -t 5 -o out.c
 ```python
 import pysdrlib
 
-sdr = pysdrlib.device("remote", "tcp://host:5555", "hackrf")   # open a new hackrf on the server and control it
-sdr.open()
+sdr = pysdrlib.connect("tcp://host:5555", "hackrf")            # open a new hackrf on the server and control it
 sdr.initialize(cf=100e6, Fs=10e6)
 sdr.start_rx()
 samples = sdr.read(65536)                                      # complex64, like any device
@@ -42,8 +41,10 @@ A hosted device has at most **one controller** and any number of **viewers**.
 | `get_*` calls | yes | yes |
 | Change settings, start/stop, transmit | yes | no |
 
-- Opening a device *type* (`pysdrlib.device("remote", addr, "hackrf")`) starts a new device and makes you its controller.
-- Opening a hosted device *id* (`pysdrlib.device("remote", addr, id="hackrf-0")`) attaches you as a viewer.
+- Connecting to a device *type* (`pysdrlib.connect(addr, "hackrf")`) starts a new device and makes you its controller.
+  `reuse=True` first takes over a hosted one nobody controls (a client that died without closing leaves its device open).
+- Connecting to a hosted device *id* (`pysdrlib.connect(addr, "hackrf-0")`) attaches you as a viewer; `claim=True` also
+  takes control if it is free. (`pysdrlib.device("remote", addr, ...)` is the same without choosing for you.)
   `sdr.claim()` takes control if nobody has it, and `sdr.release()` gives it back.
 - `pysdrlib server --open hackrf` hosts a device at startup with no controller until a client claims it.
 - A controller must keep talking to the server (the client sends heartbeats itself). One that is silent for `--lease`
@@ -60,10 +61,93 @@ several times smaller than `complex64`. The client always hands you `complex64`.
 
 A narrower format than the device's own loses precision; one wider only costs bandwidth.
 
+## Sharing a radio between programs on one machine
+
+Run `pysdrlib server` next to the radio and let each program connect to it: one program controls the radio, any number of
+others watch (see *Controllers and viewers*). A program on the server's machine takes the samples from **shared memory**
+by default (`transport="auto"`), so the cost of serving one reader or five is almost the same:
+
+```python
+sdr = pysdrlib.connect("ipc:///tmp/pysdrlib", "hackrf")                # the one that tunes and records
+sdr.initialize(cf=100e6, Fs=10e6); sdr.start_rx()
+
+view = pysdrlib.connect("ipc:///tmp/pysdrlib", sdr.id)                  # another program: a spectrum display, say
+x = view.read(65536)                                                    # the same stream, at its own pace
+```
+
+- The server keeps one ring of `complex64` samples per streaming channel (a quarter second at the device's top rate) in
+  shared memory and tells readers when it has written. Each reader has its own place in it: a reader that falls behind
+  loses the samples it was too slow for, and sees that in `read(..., meta=True)` (`m.gaps`, `m.dropped`) like any other
+  loss. It never slows the radio, the server, or another reader.
+- A client starts on the position of the block it first hears of; the one that called `start_rx` reads from the
+  stream's first sample. When the controller restarts the stream (`stop_rx`, `start_rx`) readers move to its new ring and
+  indices start again from 0.
+- A client on another machine, or one that cannot attach the segment, takes blocks over the socket as before, with no
+  setting. `transport="zmq"` forces that; `transport="shm"` insists on shared memory (`err.NotSupported` if there is none).
+  `pysdrlib server --no-shm` (or `Server(shm=False)`) doesn't offer it.
+- The server only does the work of a way somebody is using: it writes the ring while a client reads from it, and encodes
+  and sends blocks while one takes them over the socket.
+- Rings live in `/dev/shm` (named `psdr-...`) and are removed when the stream is restarted, the device is closed or the
+  server stops. If a very large ring would not fit in `/dev/shm` the server makes a smaller one, or none (then clients use
+  the socket). A server killed outright can leave `psdr-*` files there; deleting them is safe when it is not running.
+
+Measured with the simulated radio, with reader processes on the same stream (CPU as a share of one core):
+
+| Stream | Readers | Socket (server + readers) | Shared memory (server + readers) |
+| --- | --- | --- | --- |
+| 20 MS/s | 1 | 25% | 21% |
+| 20 MS/s | 4 | 66% | 48% |
+| 61.44 MS/s | 1 | 35% | 29% |
+| 61.44 MS/s | 4 | 94% | 62% |
+
+The server's share is flat in the number of readers with shared memory (13% at 20 MS/s whether one reads or four) where
+over the socket it grows. What each reader still costs is mostly the array `read()` allocates and fills; `read_into` with
+your own buffer avoids the allocation.
+
+## Relaying a radio on another machine to programs here
+
+Several programs on a machine that is **not** the radio's would each pull their own copy of the stream across the network,
+and a B210 at 61 MS/s in its native layout is already about 245 MB/s (2 Gb/s) for one. A relay is a server on *this*
+machine that hosts the far device: it takes the stream once, and the programs here share it through shared memory.
+
+```
+pysdrlib relay tcp://radiohost:5555 hackrf-0                 # then, on this machine:
+```
+```python
+sdr = pysdrlib.connect("tcp://127.0.0.1:5556", "hackrf-0", claim=True)    # the relay is at 127.0.0.1:5556 (--bind)
+sdr.initialize(cf=100e6, Fs=10e6); sdr.start_rx(); x = sdr.read(65536)
+```
+
+- It hosts the device under the far device's own id, and the programs use it like any other hosted device: the same API,
+  the same controller and viewer rules (those of the relay, among the programs on this machine).
+- **Control passes through.** When the far device is free the relay takes control of it and local control calls reach it. If
+  someone else controls it the relay only watches: programs here can receive but not change anything (`NotController`).
+  `--control yes` insists (an error if it is taken), `--control no` always only watches. `--open TYPE` opens a new far
+  device instead, which closing the relay closes; otherwise closing it gives control back and the far device carries on.
+- A relay follows the far device: a stream someone else starts or stops there starts or stops here, and a restarted
+  stream starts over for programs here too.
+- The far samples travel in the far device's own layout (8-bit for a HackRF), as to any client, and are shared here as
+  `complex64`. Transmitting works when the relay has control. The relay adds a hop: its server publishes in batches of about 2 ms, so expect a few milliseconds more than a direct connection (not measured).
+- It does not reconnect: when the far server stops answering (about two timeouts) `pysdrlib relay` exits with an error,
+  so a supervisor can restart it. From Python, `worker.lost` is set and `list` shows `lost`. `Server.relay(address, device)`
+  does the same inside your own server.
+
+What it saves is the network: the far server sends one stream however many programs listen here. On a machine with
+no network between them (measured with the simulated radio, the far server in its own process) the CPU is about even:
+
+| Stream | Readers | Directly: far server / all | Through a relay: far server / relay / all |
+| --- | --- | --- | --- |
+| 20 MS/s | 4 | 15% / 49% | 12% / 9% / 48% |
+| 61.44 MS/s | 1 | 20% / 34% | 21% / 16% / 47% |
+| 61.44 MS/s | 4 | 31% / 100% | 22% / 18% / 86% |
+
+So a relay costs a little for one program, and pays for itself from two or three, and mostly in bandwidth.
+
 ## Command line
 
 ```
-pysdrlib server [--bind ENDPOINT] [--port-range LOW-HIGH] [--devices a,b] [--open TYPE]... [--wire FMT] [--lease S] [-v]
+pysdrlib server [--bind ENDPOINT] [--port-range LOW-HIGH] [--devices a,b] [--open TYPE]... [--wire FMT] [--lease S] [--no-shm] [-v]
+pysdrlib relay ADDRESS (DEVICE | --open TYPE) [--bind ENDPOINT] [--control auto|yes|no] [--name ID] [--timeout S] [--lease S] [--no-shm] [-v]
 pysdrlib client ADDRESS [--timeout S] COMMAND
 ```
 
@@ -104,6 +188,8 @@ server.serve_forever()          # or server.start() ... server.stop()
 | --- | --- |
 | `server.py` | `Server` (the C2 socket: lifecycle and ownership) and `DeviceWorker` (one hosted device's sockets) |
 | `client.py` | `Client` (discovery) and `RemoteDevice` (a `Device` backed by a server) |
+| `server.py` also has | `RelayWorker`, a device of another server hosted here (`Server.relay`) |
+| `shm.py` | `ShmWriter` (the server's ring in shared memory) and `ShmReader` (a client's view of it); the ring is C++ in `_native/include/hardware_shm.hpp` |
 | `protocol.py` | Wire format: message framing, sample block headers, wire formats. The file documents the sockets |
 | `cli.py` | The `pysdrlib` command |
 

@@ -208,7 +208,8 @@ def samples_extension():
         name="pysdrlib.base.lib._samples",
         sources=[f"{src}/samples_pybind.cpp"],
         include_dirs=[shared],
-        depends=[f"{shared}/hardware_format.hpp", f"{shared}/hardware_convert.hpp", f"{shared}/hardware_ring.hpp"],
+        depends=[f"{shared}/hardware_format.hpp", f"{shared}/hardware_convert.hpp", f"{shared}/hardware_ring.hpp",
+                 f"{shared}/hardware_shm.hpp"],
         extra_compile_args=FP_FLAGS,
         cxx_std=17,
     )

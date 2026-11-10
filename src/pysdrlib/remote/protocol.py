@@ -5,6 +5,7 @@ Three kinds of socket, all ZeroMQ:
     C2 (server -> ROUTER, client -> DEALER)      lifecycle: list / open / attach / claim / release / close / ping
     device control (ROUTER <-> DEALER)           one per hosted device: capabilities, state, method calls
     device RX stream (PUB -> SUB)                one per hosted device: sample blocks, every channel the device streams
+                                                 (or, for a client on the same host, notices of blocks in shared memory)
     device TX stream (PUSH -> PULL)              one per hosted device: sample blocks to transmit (controller only)
 
 Requests and replies on the C2 and control sockets are single-frame JSON:
@@ -22,6 +23,13 @@ HackRF, ...), which is lossless and several times smaller than complex64; client
 caller complex64. The same goes for the TX stream: the controller sends blocks in the device's native layout
 by default (or any other wire format) and the server decodes whatever the header says. The format may change
 between blocks (the controller can switch it), so it is read from every header.
+
+A client on the same machine as the server can take the samples from shared memory instead (`shm.py`): per streaming
+channel the server keeps a ring of complex64 samples in a shared-memory segment that any number of clients read, each at
+its own pace. They subscribe to the topic `shm:<device id>` rather than the device id, and get a *notice* for each
+block published: 3 frames like a block, with FLAG_SHM in the header (channel, index of the first sample, count) and
+the name of the segment as the payload (empty: the server could not make one, so use the other topic). The server
+encodes and sends full blocks only while someone subscribes to the device id.
 
 Endpoints handed out by the server may contain `{host}`, which the client replaces with the host
 it used to reach the C2 socket (so a server bound to 0.0.0.0 doesn't need to know its own address).
@@ -46,6 +54,8 @@ NO_INDEX = (1 << 64) - 1
 KINDS = ("int", "uint", "float")
 FLAG_PACKED = 1
 FLAG_BIG_ENDIAN = 2
+FLAG_SHM = 4
+SHM_PREFIX = b"shm:"
 
 # Names accepted wherever a wire format is chosen. "native" is resolved per device (see `resolve_wire`).
 WIRE_FORMATS = {
@@ -143,6 +153,20 @@ def pack_block(seq: int, timestamp: float, samples: np.ndarray, fmt: convert.Sam
     flags = (FLAG_PACKED if fmt.packed else 0) | (FLAG_BIG_ENDIAN if fmt.byteorder == ">" else 0)
     return HEADER.pack(VERSION, KINDS.index(fmt.kind), fmt.bits, fmt.storage, flags, int(channel), seq, timestamp,
                        len(samples), NO_INDEX if index is None else int(index)), payload
+
+def pack_notice(seq: int, timestamp: float, channel: int, index: int, count: int, name: str):
+    """-> (header bytes, payload bytes): a block of `count` samples from stream index `index` is in the shared-memory
+    segment `name` (see the module docs)"""
+    return HEADER.pack(VERSION, KINDS.index("float"), 32, 32, FLAG_SHM, int(channel), seq, timestamp, count, index), name.encode()
+
+def unpack_notice(header: bytes, payload):
+    """-> (seq, timestamp, channel, index, count, segment name) of a notice; `err.ProtocolError` if it isn't one"""
+    if len(header) != HEADER.size:
+        raise err.ProtocolError("bad notice header")
+    version, _, _, _, flags, channel, seq, timestamp, count, index = HEADER.unpack(header)
+    if version != VERSION or not flags & FLAG_SHM:
+        raise err.ProtocolError("not a shared-memory notice")
+    return seq, timestamp, channel, index, count, bytes(payload).decode()
 
 def unpack_block(header: bytes, payload) -> tuple[int, float, np.ndarray]:
     """-> (seq, timestamp, complex64 samples). See unpack_block_ex for the channel and index"""

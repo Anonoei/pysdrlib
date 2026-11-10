@@ -2,6 +2,7 @@
 
     pysdrlib.devices.ls()            # driver names
     pysdrlib.find()                  # [DeviceInfo]: the radios plugged in, for every driver whose library is there
+    sdr = pysdrlib.connect("ipc:///tmp/pysdrlib", "<driver>")   # a radio hosted by a `pysdrlib server` (this machine or another)
     sdr = pysdrlib.open(pysdrlib.find()[0])          # or pysdrlib.open("<driver>", serial="...")
 """
 import importlib
@@ -91,6 +92,47 @@ def find(driver: Optional[str] = None, build=False, virtual=False) -> list:
         except Exception as exc:   # a driver that can't be loaded or asked has nothing attached we can use
             _log.debug("find: %s: %s", name, exc)
     return found
+
+def connect(address: str, device: str, *, claim=False, reuse=False, **kwargs) -> Device:
+    """An opened device hosted by a `pysdrlib server` at `address` (see `pysdrlib.remote`): on this machine, where it is shared
+    through shared memory, or on another. It has the API of any other device.
+
+        sdr = pysdrlib.connect("tcp://radiohost:5555", "<driver>")      # a new one there: you control it
+        sdr = pysdrlib.connect("tcp://radiohost:5555", "<driver>-0")    # one it already hosts: you may receive from it
+        sdr = pysdrlib.connect("tcp://radiohost:5555", "<driver>-0", claim=True)   # ... and control it if it is free
+
+    device: a device type the server can open, or the id of a device it hosts (`pysdrlib client ADDRESS list` shows both).
+    claim: for a hosted device, take control of it (`err.Busy` if someone has it).
+    reuse: for a type, take over a hosted device of that type nobody controls (one a client left open) before opening a new one.
+    kwargs: the rest go to `pysdrlib.remote.RemoteDevice` (`transport`, `timeout`, `wire`, `init_kwargs`...).
+    Raises `err.NoDevice`, naming what the server has, for a device it neither hosts nor can open.
+    """
+    try:
+        from .remote import Client, RemoteDevice
+    except ImportError as exc:
+        raise ImportError("connecting to a server needs pyzmq: pip install pysdrlib[remote]") from exc
+    with Client(address, kwargs.get("timeout", 5.0)) as client:
+        hosted, types = client.list(), client.types()
+    ids = {d["id"]: d for d in hosted}
+    if device in ids:
+        dev = RemoteDevice(address, id=device, **kwargs)
+        dev.open()
+        if claim:
+            try:
+                dev.claim()
+            except Exception:
+                dev.close()
+                raise
+        return dev
+    if device not in types:
+        raise err.NoDevice(f"{address} hosts no device {device!r} and cannot open one of that type "
+                           f"(hosted: {', '.join(ids) or 'none'}; types: {', '.join(types) or 'none'})")
+    free = [d["id"] for d in hosted if d["type"] == device and not d["controlled"]]
+    if reuse and free:
+        return connect(address, free[0], claim=True, **kwargs)
+    dev = RemoteDevice(address, device, **kwargs)
+    dev.open()
+    return dev
 
 def open(what, serial=None, **open_args) -> Device:
     """An opened device: from a DeviceInfo (see `find`), or a driver name (`serial` picks the unit)"""

@@ -125,8 +125,8 @@ pysdrlib server --bind tcp://0.0.0.0:5555
 pysdrlib client tcp://host:5555 rx hackrf --freq 100e6 --rate 10e6 -t 5 -o out.cfile
 ```
 ```python
-sdr = pysdrlib.device("remote", "tcp://host:5555", "hackrf")  # same API as a local device
-sdr.open(); sdr.initialize(cf=100e6, Fs=10e6); sdr.start_rx()
+sdr = pysdrlib.connect("tcp://host:5555", "hackrf")          # same API as a local device (opened, and yours to control)
+sdr.initialize(cf=100e6, Fs=10e6); sdr.start_rx()
 samples = sdr.read(65536)
 ```
 Receiving, transmitting and channels all work; one client controls a device and any number can watch it. There is no
