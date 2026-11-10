@@ -44,6 +44,9 @@ jobs:
         run: python -m cibuildwheel . --print-build-identifiers
       - name: Build wheels
         run: python -m cibuildwheel --output-dir wheelhouse
+        env:
+          # a release wheel must include UHD: fail if the submodule is missing rather than building without it
+          CIBW_ENVIRONMENT: PYSDRLIB_REQUIRE_UHD=1
 
       - uses: actions/upload-artifact@v4
         with:
@@ -62,6 +65,8 @@ jobs:
 
       - name: Build sdist
         run: pipx run build --sdist
+        env:
+          PYSDRLIB_REQUIRE_UHD: "1"
 
       - uses: actions/upload-artifact@v4
         with:

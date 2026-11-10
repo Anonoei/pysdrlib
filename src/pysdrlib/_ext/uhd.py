@@ -7,6 +7,7 @@ machine when `pysdrlib build uhd` is run (or, with PYSDRLIB_BUILD=auto, the firs
 the B2xx family only (B200/B210/B200mini); building it takes several minutes and needs cmake, a C++17
 compiler, Boost and libusb.
 """
+import os
 import re
 
 from . import utils
@@ -55,6 +56,14 @@ def generate_version_header():
     return GENERATED
 
 def get():
+    """The extension, or None when the vendored UHD headers aren't checked out (`git submodule update --init
+    vendor/uhd`), so building everything else needs no UHD. Set PYSDRLIB_REQUIRE_UHD=1 (release builds) to make
+    a missing submodule an error instead of silently producing a build without UHD."""
+    header = utils.PATH_MOD / "uhd" / "vendor" / "uhd" / "host" / "include" / "uhd.h"
+    if not header.exists():
+        if os.environ.get("PYSDRLIB_REQUIRE_UHD", "").lower() in ("1", "yes", "true"):
+            raise RuntimeError(f"{header} is missing: run `git submodule update --init vendor/uhd`")
+        return None
     generated = generate_version_header()
     return utils.pybind_extension("uhd", "src/pysdrlib/uhd/vendor/uhd/host/include", "uhd.h",
                                   extra_sources=("uhd_shim.c",), include_dirs=[str(generated)])
