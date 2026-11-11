@@ -1,0 +1,9 @@
+# src/pysdrlib/hackrf/vendor/: libhackrf and the CMake modules it includes, built with upstream's own CMakeLists
+# (python tools/vendor.py snapshot hackrf)
+mode = "copy"
+repo = "greatscottgadgets/hackrf"
+ref = "390837715b3741902b1b13c899bfd04a0bb6b0da"    # v2024.02.1-118-g39083771
+sha256 = "5aed35668876b661662c56575af982af8d5c7cb8e30b6ba220eacc7e00f0894f"
+dest = "src/pysdrlib/hackrf/vendor"
+strip = "host/"                                      # host/libhackrf -> vendor/libhackrf
+include = ["COPYING", "host/libhackrf/**", "host/cmake/**"]

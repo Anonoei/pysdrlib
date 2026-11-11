@@ -120,8 +120,8 @@ class VendorLibrary:
         if shutil.which("cmake") is None:
             raise RuntimeError(f"{self.name} was not found and building it needs `cmake`, which is not on PATH. {self.help}")
         if not (self.source / "CMakeLists.txt").exists():
-            raise RuntimeError(f"The bundled {self.name} sources are missing (a source checkout needs "
-                               f"`git submodule update --init`). {self.help}")
+            raise RuntimeError(f"The bundled {self.name} sources are missing from {self.source}: reinstall pysdrlib, or in a "
+                               f"source checkout run `python tools/vendor.py snapshot {self.driver or self.name}`. {self.help}")
         target = next((d for d in self.cache_dirs() if writable(d)), None)
         if target is None:
             raise RuntimeError(f"No writable place to cache {self.name} (tried {self.cache_dirs()}); "

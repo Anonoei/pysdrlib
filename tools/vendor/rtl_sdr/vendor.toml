@@ -1,0 +1,9 @@
+# src/pysdrlib/rtl_sdr/vendor/: librtlsdr's sources and headers, built by this recipe's CMakeLists.txt (upstream's assumes it is
+# the top-level project and builds the tools too)
+mode = "copy"
+repo = "osmocom/rtl-sdr"
+ref = "797f8143266d983c56d8f35d2d442527529dd8a5"    # v2.0.3
+sha256 = "6c31a5d92554959ea3e5b9bf5ba97d1a96561d397fa66a881bf88276a0e3abde"
+dest = "src/pysdrlib/rtl_sdr/vendor"
+into = "librtlsdr"
+include = ["COPYING", "AUTHORS", "include/*.h", "src/librtlsdr.c", "src/tuner_*.c"]

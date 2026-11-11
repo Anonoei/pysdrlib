@@ -224,7 +224,7 @@ class TestBuild:
     def test_missing_sources(self, lib, cache, monkeypatch, tmp_path):
         monkeypatch.setattr(utils.shutil, "which", lambda n: "/usr/bin/cmake")
         monkeypatch.setattr(lib, "source", tmp_path / "nowhere")
-        with pytest.raises(RuntimeError, match="submodule"):
+        with pytest.raises(RuntimeError, match="vendor.py snapshot"):
             lib.build()
 
     def test_no_writable_cache(self, lib, cache, monkeypatch):

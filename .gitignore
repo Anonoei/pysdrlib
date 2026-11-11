@@ -3,7 +3,8 @@ data/
 src/pysdrlib/_ext/cache
 
 *.c
-!vendor
+# the vendored snapshots (tools/vendor.py) keep their C sources
+!src/pysdrlib/**/vendor/**/*.c
 !src/pysdrlib/_native/**/*.c
 
 # Byte-compiled / optimized / DLL files
@@ -39,5 +40,3 @@ logs/
 # Built documentation
 docs/
 
-# Generated at build time (see _ext/uhd.py)
-src/pysdrlib/_native/uhd/generated/
