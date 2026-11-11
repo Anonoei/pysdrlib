@@ -52,3 +52,12 @@ jobs:
         env:
           PYSDRLIB_BUILD: auto
         run: python -m pytest -v
+
+      # The docs build is checked here so a docstring or import that breaks pdoc fails the pull request, not the deployment
+      # after merging. Same command as deploy-docs.yml, but nothing is published. build_docs.py loads extensions lazily
+      # (RTLD_LAZY, Linux only) so UHD is never built for it.
+      - name: Build docs
+        if: runner.os == 'Linux' && matrix.python-version == '3.12'
+        env:
+          PYSDRLIB_BUILD: auto
+        run: python .github/scripts/build_docs.py --html --force --template-dir pdoc_templates -o "$RUNNER_TEMP/docs" pysdrlib

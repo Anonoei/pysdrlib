@@ -3,8 +3,7 @@ name: Deploy docs
 on:
   push:
     branches:
-      - main  # Set a branch name to trigger deployment
-  pull_request:
+      - main  # Pull requests only check that the docs build: see the Tests workflow
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
