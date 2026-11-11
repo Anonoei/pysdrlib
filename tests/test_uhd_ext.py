@@ -14,6 +14,10 @@ from pysdrlib.uhd.lib import err as lib_err
 
 uhd = lib.uhd
 
+# Before any uhd.find() (the skipif below runs at import): a B2xx that lost its firmware (replugged) is only found
+# once libuhd can load it, and a libuhd pysdrlib built has no images of its own
+images.configure()
+
 
 @pytest.fixture
 def spec():
@@ -67,7 +71,6 @@ class TestHardware:
     def dev(self):
         if not uhd.find():
             pytest.skip("no USRP attached")
-        images.configure()
         d = uhd.open("")
         yield d
         d.close()
