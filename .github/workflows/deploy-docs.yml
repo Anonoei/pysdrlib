@@ -54,12 +54,13 @@ jobs:
         run: python -m pip install ".[remote]"
 
       # No --skip-errors: a module that fails to import fails the build instead of vanishing from the docs.
-      # PYSDRLIB_BUILD=auto lets the device packages build their vendor library so they import.
+      # build_docs.py loads the extensions lazily, so UHD (the one that needs Boost) is never built here.
+      # PYSDRLIB_BUILD=auto builds what still has to be there (extio) from the vendored sources.
       - name: Build docs
         env:
           PYSDRLIB_BUILD: auto
         run: |
-            python -m pdoc --html --force --template-dir pdoc_templates -o docs pysdrlib
+            python .github/scripts/build_docs.py --html --force --template-dir pdoc_templates -o docs pysdrlib
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
