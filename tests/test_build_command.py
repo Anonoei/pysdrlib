@@ -32,7 +32,7 @@ def test_every_driver_with_a_vendor_library_is_listed():
 def test_with_nothing_asked_it_says_where_each_stands_and_builds_nothing(libs, capsys):
     assert build.run(args()) == 0
     out = capsys.readouterr().out
-    assert not libs and "missing: run `pysdrlib build uhd` (takes several minutes)" in out and "hackrf" in out
+    assert not libs and "missing: run `pysdrlib build uhd` (takes a minute or more)" in out and "hackrf" in out
 
 
 def test_a_driver_named_is_built(libs, capsys):

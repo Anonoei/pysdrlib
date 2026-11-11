@@ -1,3 +1,4 @@
+# Copied to src/pysdrlib/extio/vendor/ by tools/vendor.py: edit it here.
 cmake_minimum_required(VERSION 3.24)
 project(sddc_core LANGUAGES C CXX)
 

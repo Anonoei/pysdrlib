@@ -93,7 +93,7 @@ The error codes you throw are listed once, in `<name>_pybind.cpp`'s `hw::registe
 The extension is built **without linking** the vendor library: its symbols resolve when `_ext/<name>.py`'s `LIB` loads
 the library at first import (installed, or built before by `pysdrlib build <name>` from the vendored sources with cmake, no
 network). Importing never builds it. Vendored
-sources go in `<name>/vendor/` (a git submodule). Give `LIB.help` a message a user can act on, `LIB.driver` your driver's name (it is what `pysdrlib build <name>` takes), and `LIB.note` a warning if building is slow.
+sources go in `<name>/vendor/`, written by `tools/vendor.py` from a recipe in `tools/vendor/<name>/` (`vendor.toml`: the upstream repo, a tag or commit, and which files to keep; `mode = "copy"` for a small library, the default traces a build of the whole upstream tree), so the repository holds only what the build uses. Give `LIB.help` a message a user can act on, `LIB.driver` your driver's name (it is what `pysdrlib build <name>` takes), and `LIB.note` a warning if building is slow.
 
 ## 4. Finding units: `find()`
 

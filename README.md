@@ -176,7 +176,7 @@ pysdrlib never downloads one itself).
 
 ## Contributing
 ```
-git clone --recurse-submodules https://github.com/Anonoei/pysdrlib
+git clone https://github.com/Anonoei/pysdrlib
 cd pysdrlib
 git switch -c feature/<your feature>
 python3 builder.py -b -l                  # build and install locally

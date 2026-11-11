@@ -1,0 +1,20 @@
+# How tools/vendor.py makes src/pysdrlib/uhd/vendor/ (a trimmed snapshot of EttusResearch/uhd).
+# To bump: change `ref`, clear `sha256`, run `python tools/vendor.py snapshot uhd` (it prints the new hash: pin it here).
+repo = "EttusResearch/uhd"
+ref = "v4.9.0.0"
+sha256 = "c2288998dc0eeece287934e016d1501d5c200aa8047553d7405f3c3e0e5edac8"
+dest = "src/pysdrlib/uhd/vendor"  # relative to the repository root
+target = "uhd"                    # the CMake target whose sources, includes and defines the flat CMakeLists reproduces
+prefix = "UHD"                    # variable prefix in the generated sources.cmake (UHD_SOURCES, ...)
+build_prefix = "uhd"              # where the trace wrapper puts upstream's binary dir, under the trace build dir
+# Copied whether or not the build reads them: licenses, what the flat CMakeLists include()s, and the public headers (libuhd's
+# own build never reads uhd.h, the C API header pysdrlib's extension compiles against)
+always = ["LICENSE.md", "host/LICENSE", "host/cmake/Modules/CMakeRC.cmake", "host/include/**"]
+# Files configure_file() renders with host/compiler-specific content, so a snapshot keeps the template and the flat
+# CMakeLists renders it again: <path in the build dir, after build_prefix> = <template, relative to the upstream root>
+[configured]
+"include/config.h" = "host/include/config.h.in"
+"lib/build_info.cpp" = "host/lib/build_info.cpp"
+# Generated build outputs that are not kept (rebuilt by the flat CMakeLists, or empty for this configuration)
+[skip]
+substrings = ["__cmrc_", "/_cmrc/"]

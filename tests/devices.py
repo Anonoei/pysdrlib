@@ -204,6 +204,13 @@ def _extio_configure(device):
     device.set_freq(7_100_000)
     device.set_sample_rate(8e6)
 
+def _uhd_present(native):
+    # A B2xx that lost its firmware (replugged) is only found once libuhd can load it, and a libuhd pysdrlib built
+    # has no images of its own: point it at some before looking
+    from pysdrlib.uhd import images
+    images.configure()
+    return len(native.find())
+
 def _uhd_configure(device):
     device.set_rx_rate(10e6, 0)
     device.set_rx_freq(100_000_000, 0)
@@ -235,7 +242,7 @@ SPECS = [
          fake_returns=UHD_FAKE,
          closed_calls=(("start_rx",), ("stop_rx",), ("set_rx_freq", 100_000_000, 0), ("set_rx_gain", 10.0, 0),
                        ("set_rx_agc", True, 0)),
-         present=lambda native: len(native.find()), configure=_uhd_configure),
+         present=_uhd_present, configure=_uhd_configure),
     Spec("extio", "RX888", "rx888",
          encode=lambda iq: iq.view(np.float32),
          rate=8e6,
