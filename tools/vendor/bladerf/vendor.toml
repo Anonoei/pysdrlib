@@ -1,0 +1,29 @@
+# src/pysdrlib/bladerf/vendor/: libbladeRF and what its build reads outside its own folder (the host-common and FPGA-common
+# sources, the AD936x platform code), built by this recipe's CMakeLists.txt (python tools/vendor.py snapshot bladerf)
+mode = "copy"
+repo = "Nuand/bladeRF"
+ref = "2024.05"
+sha256 = "ac7d7991bc1e5faa2509da3c3046c60e9076ac293e479835aea5f19fa71f1fd2"
+dest = "src/pysdrlib/bladerf/vendor"
+include = [
+    "COPYING",
+    "host/cmake/**",
+    "host/common/include/**",
+    "host/common/src/**",
+    "host/libraries/libbladeRF/**",
+    "fpga_common/**",
+    "firmware_common/**",
+    "thirdparty/analogdevicesinc/no-OS_local/**",
+]
+exclude = ["host/libraries/libbladeRF/doc/*", "host/libraries/libbladeRF/CHANGELOG", "fpga_common/*.md"]
+
+# The AD936x driver is a git submodule of bladeRF (thirdparty/analogdevicesinc/no-OS, pinned by the commit below): the
+# bladeRF 2.0 micro's RFIC. libbladeRF's build copies these eight files and patches them (needs `patch`). The licence is in
+# each file's header (the repository has no top-level licence file)
+[[extra]]
+repo = "analogdevicesinc/no-OS"
+ref = "0bba46e6f6f75785a65d425ece37d0a04daf6157"
+sha256 = "b77a86780e82ff592dd3cbcbf916d6f421f5cb7b523b800255483b1992aea88d"
+include = ["ad9361/sw/ad9361.c", "ad9361/sw/ad9361.h", "ad9361/sw/ad9361_api.c", "ad9361/sw/ad9361_api.h",
+           "ad9361/sw/ad9361_conv.c", "ad9361/sw/common.h", "ad9361/sw/util.c", "ad9361/sw/util.h"]
+into = "thirdparty/analogdevicesinc/no-OS"

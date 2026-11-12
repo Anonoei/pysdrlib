@@ -228,6 +228,19 @@ UHD_FAKE = {
     "get_time_source": lambda: "internal", "mboard_sensors": lambda: {}, "rx_sensors": lambda c=0: {}, "tx_sensors": lambda c=0: {},
 }
 
+def _bladerf_configure(device):
+    device.set_rx_rate(10e6, 0)
+    device.set_rx_freq(100_000_000, 0)
+
+BLADERF_FAKE = {
+    "set_rx_rate": lambda rate, c=0: rate, "set_tx_rate": lambda rate, c=0: rate, "get_rx_rate": lambda c=0: 10e6,
+    "num_rx_channels": lambda: 2, "num_tx_channels": lambda: 2,
+    "rx_bandwidth_range": lambda c=0: (200e3, 56e6, 1.0), "tx_bandwidth_range": lambda c=0: (200e3, 56e6, 1.0),
+    "set_rx_bandwidth": lambda bw, c=0: bw, "set_tx_bandwidth": lambda bw, c=0: bw,
+    "get_clock_output": lambda: False, "sensors": lambda: {"rfic_temperature": "41.5", "pll_locked": "true"},
+    "info": lambda: {"serial": "ABC123", "board": "bladerf2", "usb_speed": "super"},
+}
+
 RX888_RATES = [2e6, 4e6, 8e6, 16e6, 32e6]
 
 SPECS = [
@@ -243,6 +256,13 @@ SPECS = [
          closed_calls=(("start_rx",), ("stop_rx",), ("set_rx_freq", 100_000_000, 0), ("set_rx_gain", 10.0, 0),
                        ("set_rx_agc", True, 0)),
          present=_uhd_present, configure=_uhd_configure),
+    Spec("bladerf", "BladeRF", "bladerf",
+         encode=lambda iq: (iq.view(np.float32) * 2048).clip(-2048, 2047).astype(np.int16),   # SC16 Q11
+         rate=10e6, atol=1 / 2048, freq_call="set_rx_freq", rate_call="set_rx_rate",
+         fake_returns=BLADERF_FAKE,
+         closed_calls=(("start_rx",), ("stop_rx",), ("set_rx_freq", 100_000_000, 0), ("set_rx_gain_stage", "full", 10, 0),
+                       ("set_rx_bandwidth", 10e6, 0), ("info",)),
+         present=lambda native: len(native.find()), configure=_bladerf_configure),
     Spec("extio", "RX888", "rx888",
          encode=lambda iq: iq.view(np.float32),
          rate=8e6,

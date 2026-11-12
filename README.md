@@ -21,7 +21,7 @@ For a more robust C implementation with far more hardware, use [SoapySDR](https:
 | [HackRF](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/hackrf) | `hackrf` | Transmit (half-duplex) |
 | [USRP B210 (UHD)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/uhd) | `uhd` | 2 RX and 2 TX channels |
 | [RX-888 (ExtIO)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/extio) | `extio` | |
-| [BladeRF](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/bladerf) | `bladerf` | Planned |
+| [BladeRF 2.0 micro](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/bladerf) | `bladerf` | 2 RX and 2 TX channels; untested on hardware |
 
 Also: `sim`, a simulated radio that needs no hardware, and [`File`](#sample-files), which reads recordings the way a
 device reads samples.
@@ -142,7 +142,7 @@ authentication or encryption, so only serve a network you trust. See the
 and wire formats.
 
 ## Building from source
-Each driver needs its vendor's library (libhackrf, libuhd...).
+Each driver needs its vendor's library (libhackrf, libuhd, libbladeRF...).
 Use the one your package manager has, or build the copy that
 comes with pysdrlib:
 
@@ -157,9 +157,9 @@ Building needs `cmake`, a C++17 compiler, `pkg-config` and the development files
 is built out of the source tree into a per-user cache.
 Tests for a device whose library isn't there are skipped.
 
-Prebuilt `librtlsdr` / `libhackrf` / `libextio_sdcc` / `libuhd` packages can be installed instead of building them.
+Prebuilt `librtlsdr` / `libhackrf` / `libextio_sdcc` / `libuhd` / `libbladeRF` packages can be installed instead of building them.
 
-Install the build tools and `libusb`, plus **fftw** for the RX-888 or **boost** for UHD:
+Install the build tools and `libusb`, plus **fftw** for the RX-888, **boost** for UHD or `patch` for the bladeRF:
 
 | System | Command |
 | --- | --- |
