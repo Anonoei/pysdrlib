@@ -10,6 +10,7 @@ include = [
     "host/cmake/**",
     "host/common/include/**",
     "host/common/src/**",
+    "host/common/thirdparty/ad936x/**",
     "host/libraries/libbladeRF/**",
     "fpga_common/**",
     "firmware_common/**",

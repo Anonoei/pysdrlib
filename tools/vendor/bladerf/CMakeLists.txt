@@ -42,6 +42,8 @@ check_library_exists(c clock_gettime "time.h" HAVE_CLOCK_GETTIME)
 option(BUILD_AD936X "Include support for the Analog Devices AD936x RFIC (the bladeRF 2.0 micro)." ON)
 option(BUILD_AD936X_DEBUG "" OFF)
 # upstream's ad936x folder is referenced by path (it expects to sit in host/common/thirdparty/ad936x)
+# host_config.h is generated into the build tree; upstream's ad936x guesses its location from the binary dir layout
+include_directories(${CMAKE_CURRENT_BINARY_DIR}/common/include)
 add_subdirectory(${H}/common/thirdparty/ad936x ${CMAKE_CURRENT_BINARY_DIR}/host/common/thirdparty/ad936x)
 
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_C_COMPILER_ID STREQUAL "Clang")
@@ -72,5 +74,5 @@ else()
 endif()
 configure_file(${H}/common/include/host_config.h.in ${CMAKE_CURRENT_BINARY_DIR}/common/include/host_config.h @ONLY)
 
-set(VERSION_INFO_EXTRA "pysdrlib")
+set(VERSION_INFO_OVERRIDE "pysdrlib")
 add_subdirectory(${H}/libraries/libbladeRF ${CMAKE_CURRENT_BINARY_DIR}/host/libraries/libbladeRF)
