@@ -35,6 +35,7 @@ POLL_MS = 100
 SHM_SECONDS = 0.25      # a shared-memory ring holds this much of the stream at the device's highest rate
 IDLE_SLEEP = 0.002   # a pause after an error, so a failing device is not retried in a tight loop
 BATCH_SECONDS = 0.002   # the stream is published in blocks of about this long (the latency a client sees, and no less)
+CLOSE_WAIT = 5.0        # how long a close request waits for the device before replying anyway
 MIN_BATCH = 1024        # ... but not smaller than this many samples
 MAX_WAIT = 0.01         # a block that has not filled by then is published as it is
 
@@ -720,6 +721,12 @@ class Server:
             worker = self._controller(msg)
             del self.workers[worker.id]
             self.log.info("%s: closed by its controller", worker.id)
-            worker.close()
+            # Closing joins the driver's threads, and a wedged radio can take that a long time. This runs on the
+            # C2 thread, so don't let it stop the server answering anyone: reply after CLOSE_WAIT regardless.
+            closer = threading.Thread(target=worker.close, name=f"pysdrlib-{worker.id}-close", daemon=True)
+            closer.start()
+            closer.join(CLOSE_WAIT)
+            if closer.is_alive():
+                self.log.warning("%s: still closing after %.0fs; continuing in the background", worker.id, CLOSE_WAIT)
             return None
         raise ValueError(f"unknown op {op!r}")
