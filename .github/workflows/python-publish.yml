@@ -80,7 +80,8 @@ jobs:
           TAG: ${{ github.event.release.tag_name }}
         run: |
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
-          if [ "$TAG" != "$version" ]; then
+          # tags are written v0.4.3 (as every release so far), the version in pyproject.toml 0.4.3
+          if [ "${TAG#v}" != "$version" ]; then
             echo "::error::release tag '$TAG' does not match pyproject.toml version '$version'"
             exit 1
           fi
