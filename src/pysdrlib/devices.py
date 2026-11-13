@@ -266,7 +266,7 @@ def find(driver: Optional[str] = None, build=False, virtual=False, addresses=Non
             _log.debug("find: %s: %s", name, exc)
     return found
 
-def connect(address: str, device: str, *, claim=False, reuse=False, **kwargs) -> Device:
+def connect(address: str, device: Optional[str] = None, *, claim=False, reuse=False, **kwargs) -> Device:
     """An opened device hosted by a `pysdrlib server` at `address` (see `pysdrlib.remote`): on this machine, where it is shared
     through shared memory, or on another. It has the API of any other device.
 
@@ -275,9 +275,19 @@ def connect(address: str, device: str, *, claim=False, reuse=False, **kwargs) ->
         sdr = pysdrlib.connect("tcp://radiohost:5555", "<driver>-0", claim=True)   # ... and control it if it is free
 
     device: a device type the server can open, or the id of a device it hosts (`pysdrlib client ADDRESS list` shows both).
+        Left out, the server picks any radio that fits `serial`, `label`, `need` and `want`.
     claim: for a hosted device, take control of it (`err.Busy` if someone has it).
     reuse: for a type, take over a hosted device of that type nobody controls (one a client left open) before opening a new one.
-    kwargs: the rest go to `pysdrlib.remote.client.RemoteDevice` (`transport`, `timeout`, `wire`, `init_kwargs`...).
+    kwargs: the rest go to `pysdrlib.remote.client.RemoteDevice` (`transport`, `timeout`, `wire`, `init_kwargs`...), among
+    them the ones that say who you are and what you need, so the server can pick a radio:
+
+        sdr = pysdrlib.connect(addr, program="pyspecan", need={"freq": 433e6, "rate": 2e6}, want={"rate": 10e6})
+        sdr = pysdrlib.connect(addr, "hackrf", serial="0000...c3", program="pyspecan")
+        sdr.granted                         # what the radio can do nearest to what you wanted
+
+    `program` names your program (the server shows it in `list`), `serial`/`label` choose a unit, `need`/`want` are dicts of
+    `freq`, `rate`, `bandwidth`, `channels`, `tx`: no radio that cannot meet `need` is used (`err.NoDevice` says why each
+    was left out), and of the rest the one nearest `want` is.
     Raises `err.NoDevice`, naming what the server has, for a device it neither hosts nor can open.
     """
     try:
@@ -287,6 +297,13 @@ def connect(address: str, device: str, *, claim=False, reuse=False, **kwargs) ->
     with Client(address, kwargs.get("timeout", 5.0)) as client:
         hosted, types = client.list(), client.types()
     ids = {d["id"]: d for d in hosted}
+    choosing = any(kwargs.get(k) is not None for k in ("serial", "label", "need", "want"))
+    if device is None or (choosing and device not in ids):
+        if device is not None and device not in types:
+            raise err.NoDevice(f"{address} cannot open a device of type {device!r} (types: {', '.join(types) or 'none'})")
+        dev = RemoteDevice(address, device, **kwargs)
+        dev.open()
+        return dev
     if device in ids:
         dev = RemoteDevice(address, id=device, **kwargs)
         dev.open()

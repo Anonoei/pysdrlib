@@ -50,6 +50,33 @@ A hosted device has at most **one controller** and any number of **viewers**.
 - A controller must keep talking to the server (the client sends heartbeats itself). One that is silent for `--lease`
   seconds (default 15) loses control: receiving and transmitting stop, the device stays open and can be claimed again.
 
+## Saying who you are and what you need
+
+A program can tell the server its name and let the server pick the radio, instead of knowing which radios it has:
+
+```python
+sdr = pysdrlib.connect(addr, program="pyspecan",
+                       need={"freq": 433e6, "rate": 2e6},           # a radio that cannot do this is no use to me
+                       want={"freq": 433.92e6, "rate": 10e6})       # and of those, the nearest to this is best
+sdr.id, sdr.granted                                                  # which radio, and what it can do nearest to `want`
+
+sdr = pysdrlib.connect(addr, "hackrf", serial="0000...c3", program="recorder")   # a specific unit
+sdr = pysdrlib.connect(addr, label="RX-888", program="recorder")                 # a unit whose label contains this
+```
+
+- `program` is shown by `pysdrlib client ADDRESS list` (and in the server log) next to the radio you control, with the
+  `need`/`want` you gave, so someone who finds a radio busy can see who has it. A viewer's or claimant's `program` is logged.
+- `serial` and `label` pick a unit among the radios *attached* to the server (`list` shows them under "attached, not open"
+  with their serials). With them, or with `need`/`want`, the driver may be left out.
+- `need` and `want` are dicts of `freq` (Hz, or a `(low, high)` pair that must be tunable without a gap), `rate`,
+  `bandwidth` (the analog filter, or the sample rate where there is none), `channels` and `tx`. A limit a driver does not
+  declare is taken as met.
+- Radios that do not meet `need` are never used; `err.NoDevice` names why each was left out. Of the rest, the one that
+  meets most of `want` wins, and a radio nobody has open is preferred to taking over one a client left open and uncontrolled.
+  Nothing is tuned for you: `granted` reports what it can do, then `initialize` as usual.
+- Nothing stops a controller from tuning outside `need`/`want`: they are for choosing and for show, not limits.
+- Command line: `rx --serial SN --program NAME`, or `rx --need rate=2e6 --freq 433.92e6 --rate 10e6` (with no type).
+
 ## Sample format on the wire
 
 By default samples cross the network in the device's own layout (8-bit for a HackRF, ...), which is lossless and

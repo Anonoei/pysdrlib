@@ -28,6 +28,7 @@ from ..base import convert
 from ..base.device import Device
 from ..base.stream import RxMeta
 from ..base.watchdog import StreamStats
+from . import choose
 from . import protocol
 from . import shm
 
@@ -101,6 +102,11 @@ class Client:
         """Devices the server currently hosts"""
         return self._c2.request("list")["devices"]
 
+    def available(self):
+        """Radios attached to the server's machine as of its last scan: dicts with `driver`, `label`, `serial`, `index` and
+        `hosted` (the id of the device that has it open, or None)"""
+        return self._c2.request("list").get("available", [])
+
     def close(self):
         """Close the connection"""
         self._c2.close()
@@ -115,11 +121,18 @@ class RemoteDevice(Device):
     NAME = "pysdrlib Remote Device"
 
     def __init__(self, address: str, device=None, *, id=None, timeout=DEFAULT_TIMEOUT, init_args=(), init_kwargs=None, wire=None, tx_wire="native",
-                 transport="auto"):
+                 transport="auto", program=None, serial=None, label=None, need=None, want=None):
         """
         address: server C2 endpoint, e.g. tcp://host:5555
         device: device type to open on the server (this client becomes its controller)
         id: id of an already hosted device to attach to (as a viewer) instead
+        program: the name of the program you are running: the server shows it in `list` and its log, so others can tell who
+              has a radio
+        serial, label: which unit to open: the serial number, or part of the label (`pysdrlib client ADDRESS list` shows both).
+              With these, `device` may be left out to take a unit of any driver.
+        need, want: what the program needs (a radio that cannot is not used) and would like: dicts with `freq` (Hz, or a
+              (low, high) pair), `rate`, `bandwidth`, `channels`, `tx`. The server opens the best radio that meets `need`
+              (or takes over a free hosted one); `granted` says what it can do nearest to `want` and `need`.
         init_args/init_kwargs: passed to the device type's constructor on the server
         wire: RX wire format to request when opening a device type (default: the server's, normally the
               device's native layout). See `set_wire`.
@@ -130,8 +143,15 @@ class RemoteDevice(Device):
               offers it (any number of clients then read one copy, each at its own pace), else over the socket; "zmq":
               always over the socket; "shm": shared memory, or `err.NotSupported`.
         """
-        if (device is None) == (id is None):
-            raise ValueError("give exactly one of `device` (a type to open) or `id` (a hosted device)")
+        choosing = any(v is not None for v in (serial, label, need, want))
+        if id is not None and (device is not None or choosing):
+            raise ValueError("`id` attaches to a hosted device: it takes no `device`, `serial`, `label`, `need` or `want`")
+        if id is None and device is None and not choosing:
+            raise ValueError("give one of `device` (a type to open), `id` (a hosted device), or `serial`/`label`/`need`/`want` to choose a radio")
+        self.program = program
+        self.granted = None         # what the radio the server chose can do nearest to `want` (see `need`, `want`)
+        self._choice = {k: v for k, v in (("serial", serial), ("label", label), ("need", choose.normalize(need, "need") or None),
+                                          ("want", choose.normalize(want, "want") or None)) if v is not None}
         self.log = logger.new(f"device.{type(self).__name__}")
         self.device = None
         self.state = {"open": False, "rx": False, "tx": False}
@@ -197,16 +217,19 @@ class RemoteDevice(Device):
             return
         self._c2 = _Channel(self.address, self.timeout)
         try:
-            if self.type is not None:
+            if self.id is None:
                 res = self._c2.request("open", type=self.type, args=list(args), kwargs=kwargs,
-                                       init_args=self._init[0], init_kwargs=self._init[1], wire=self._wire)
+                                       init_args=self._init[0], init_kwargs=self._init[1], wire=self._wire,
+                                       program=self.program, **self._choice)
                 self.token = res["token"]
                 self.id = res["device"]
+                self.type = res.get("type", self.type)
+                self.granted = res.get("granted")
                 lease = res["lease"]
             else:
                 if args or kwargs:
                     raise ValueError("an attached device is already open; open() takes no arguments")
-                res = self._c2.request("attach", device=self.id)
+                res = self._c2.request("attach", device=self.id, program=self.program)
                 lease = self._c2.request("hello")["lease"]
             self._endpoints = res["endpoints"]
             self._connect(res["endpoints"])
@@ -336,7 +359,7 @@ class RemoteDevice(Device):
         self._ensure_open("claim")
         if self.token:
             return
-        res = self._c2.request("claim", device=self.id)
+        res = self._c2.request("claim", device=self.id, program=self.program)
         self.token = res["token"]
         self._connect_tx()
         self._start_heartbeat(res["lease"])

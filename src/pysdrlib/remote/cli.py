@@ -4,6 +4,8 @@
     pysdrlib client tcp://host:5555 list
     pysdrlib client tcp://host:5555 info <driver>-0
     pysdrlib client tcp://host:5555 rx <driver> --freq 100e6 --rate 10e6 -o out.cfile -t 5
+    pysdrlib client tcp://host:5555 rx --serial <serial> --program myapp -o out.cfile -t 5
+    pysdrlib client tcp://host:5555 rx --need freq=433e6 --need rate=2e6 --freq 433.92e6 --rate 10e6 -o out.cfile -t 5
     pysdrlib client tcp://host:5555 watch <driver>-0 -o out.cfile -t 5
     pysdrlib client tcp://host:5555 tx <driver> -i out.cfile --freq 915e6 --rate 2e6 --tx-gain 0 --tx-wire int8
     pysdrlib client tcp://host:5555 set <driver>-0 rx_freq=101e6 rx_lna_gain=16
@@ -72,7 +74,8 @@ def add_parsers(sub):
     i.add_argument("device")
 
     r = cmd.add_parser("rx", help="open a new device, configure it and record")
-    r.add_argument("type", help="device type, e.g. hackrf")
+    r.add_argument("type", nargs="?", help="device type, e.g. hackrf (optional with --serial, --label or --need: any radio that fits)")
+    _choose_args(r)
     _record_args(r)
     r.add_argument("--rx-wire", "--wire", dest="rx_wire", help="RX wire format for this device (default: the server's)")
     r.add_argument("--init", action="append", default=[], metavar="KEY=VALUE", help="device constructor argument (repeatable)")
@@ -90,7 +93,8 @@ def add_parsers(sub):
     st.add_argument("settings", nargs="+", metavar="KEY=VALUE", help="calls set_<key>(value): rx_freq, tx_freq, rx_sample_rate, rx_gain, rx_lna_gain, ...")
 
     t = cmd.add_parser("tx", help="open a new device, configure it and transmit a file")
-    t.add_argument("type", help="device type, e.g. hackrf")
+    t.add_argument("type", nargs="?", help="device type, e.g. hackrf (optional with --serial, --label or --need)")
+    _choose_args(t)
     t.add_argument("-i", "--input", required=True, help="file of raw complex64 to transmit")
     t.add_argument("--tx-wire", default="native", help="TX wire format: native (device's own sample layout, default), complex64, int8, int16, ...")
     t.add_argument("--freq", type=_number)
@@ -106,6 +110,23 @@ def build_parser():
     add_parsers(p.add_subparsers(dest="mode", required=True))
     return p
 
+def _choose_args(p):
+    p.add_argument("--program", default="pysdrlib client", help="the program name the server shows for who has the radio (default %(default)r)")
+    p.add_argument("--serial", help="open the unit with this serial number")
+    p.add_argument("--label", help="open a unit whose label contains this (see `list`)")
+    p.add_argument("--need", action="append", default=[], metavar="KEY=VALUE",
+                   help="a radio must meet this or it is not used: freq (Hz, or LOW:HIGH to tune across), rate, bandwidth, channels, tx=true (repeatable; --freq/--rate are what you want)")
+
+def _choice(args, **want):
+    """RemoteDevice arguments from --program/--serial/--label/--need; --freq and --rate are what the program wants"""
+    need = dict(_need(n) for n in args.need)
+    want = {k: v for k, v in want.items() if v is not None}
+    if args.type is not None and not (args.serial or args.label or need):
+        want = {}       # a plain `rx <type>` opens a new device of it as always: --freq and --rate are only wanted when choosing
+    if args.type is None and not (args.serial or args.label or need or want):
+        raise SystemExit("give a device type, or --serial, --label, --need, --freq or --rate to choose a radio")
+    return dict(program=args.program, serial=args.serial, label=args.label, need=need or None, want=want or None)
+
 def _record_args(p):
     p.add_argument("-o", "--output", required=True, help="file to write raw complex64 to")
     p.add_argument("-n", "--samples", type=int, help="stop after this many samples")
@@ -116,6 +137,14 @@ def _setting(item):
     if not eq:
         raise SystemExit(f"expected KEY=VALUE, got {item!r}")
     return key.strip(), _number(value)
+
+def _need(item):
+    """`--need KEY=VALUE`: freq may be a span `LOW:HIGH` (Hz); tx is true or false (checked by `choose.normalize`)"""
+    key, value = _setting(item)
+    if isinstance(value, str) and ":" in value:
+        low, _, high = value.partition(":")
+        value = [_number(low), _number(high)]
+    return key, value
 
 def _apply(dev, settings):
     for key, value in settings:
@@ -246,19 +275,30 @@ def run_client(args):
     if args.cmd == "list":
         with Client(args.address, args.timeout) as c:
             print("types:", ", ".join(c.types()) or "(none)")
-            devs = c.list()
+            res = c._c2.request("list")
+            devs = res["devices"]
             for d in devs:
                 flags = [k for k, v in d["state"].items() if v and k != "open"]
+                who = f" by {d['program']}" if d.get("program") else ""
                 print(f"{d['id']:<14} {d['name']:<20} cf={d['cf']:,.0f} Fs={d['Fs']:,.0f} "
-                      f"{d['wire']:<9} {'controlled' if d['controlled'] else 'free'} {' '.join(flags)}")
+                      f"{d['wire']:<9} {'controlled' + who if d['controlled'] else 'free'} {' '.join(flags)}")
+                for key in ("need", "want"):
+                    if d.get(key):
+                        print(f"{'':<14} {key}: {d[key]}")
             if not devs:
                 print("no devices hosted")
+            free = [a for a in res.get("available", []) if not a["hosted"]]
+            if free:
+                print("attached, not open:")
+                for a in free:
+                    print(f"{'':<14} {a['driver']}: {a['label']}" + (f"  serial {a['serial']}" if a["serial"] else ""))
     elif args.cmd == "info":
         with RemoteDevice(args.address, id=args.device, timeout=args.timeout) as dev:
             print(json.dumps(dev.capabilities, indent=2))
     elif args.cmd == "rx":
         with RemoteDevice(args.address, args.type, timeout=args.timeout, wire=args.rx_wire,
-                          init_kwargs=dict(_setting(i) for i in args.init)) as dev:
+                          init_kwargs=dict(_setting(i) for i in args.init),
+                          **_choice(args, freq=args.freq, rate=args.rate)) as dev:
             dev.initialize(cf=args.freq, Fs=args.rate, rx_gain=args.rx_gain)
             _apply(dev, [_setting(s) for s in args.set])
             print(f"{dev.id}: cf={dev.get_rx_freq():,.0f} Fs={dev.get_rx_sample_rate():,.0f} wire={dev.wire}")
@@ -279,7 +319,8 @@ def run_client(args):
                 dev.release()
     elif args.cmd == "tx":
         with RemoteDevice(args.address, args.type, timeout=args.timeout, tx_wire=args.tx_wire,
-                          init_kwargs=dict(_setting(i) for i in args.init)) as dev:
+                          init_kwargs=dict(_setting(i) for i in args.init),
+                          **_choice(args, freq=args.freq, rate=args.rate)) as dev:
             dev.initialize(cf=args.freq, Fs=args.rate, tx_gain=args.tx_gain)
             _apply(dev, [_setting(x) for x in args.set])
             print(f"{dev.id}: cf={dev.get_rx_freq():,.0f} Fs={dev.get_rx_sample_rate():,.0f} tx_wire={dev.tx_wire_name}")
