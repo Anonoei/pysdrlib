@@ -74,6 +74,15 @@ sdr = pysdrlib.connect(addr, label="RX-888", program="recorder")                
 - Radios that do not meet `need` are never used; `err.NoDevice` names why each was left out. Of the rest, the one that
   meets most of `want` wins, and a radio nobody has open is preferred to taking over one a client left open and uncontrolled.
   Nothing is tuned for you: `granted` reports what it can do, then `initialize` as usual.
+- A radio that runs *faster* than a `rate` you need is usable (decimate it yourself) but never preferred: the radio
+  nearest above wins, and a faster one is picked only when nothing runs as fast. `granted["rate"]` is the rate it will really
+  run at, so check it.
+- `freq` is always the frequency over the air. If the operator says (`pysdrlib server --frontends FILE`, JSON or TOML, see
+  [frontends.py](frontends.py)) that an LNB, converter or antenna sits on a radio, the server maps it to the radio's own
+  tuning, `set_rx_freq`/`set_tx_freq` take and `get_*_freq` return the over-the-air frequency, and `granted` adds `if_freq`,
+  `antenna` and `inverted` (`get_rx_inverted()`: the spectrum comes mirrored). Among radios that do equally well, the one
+  whose antenna (`ANT500`: 75 MHz to 1 GHz, and any you define) is best at the wanted `freq` comes first; outside its best
+  band it is only less preferred, not refused.
 - Nothing stops a controller from tuning outside `need`/`want`: they are for choosing and for show, not limits.
 - Command line: `rx --serial SN --program NAME`, or `rx --need rate=2e6 --freq 433.92e6 --rate 10e6` (with no type).
 
@@ -173,7 +182,7 @@ So a relay costs a little for one program, and pays for itself from two or three
 ## Command line
 
 ```
-pysdrlib server [--bind ENDPOINT] [--port-range LOW-HIGH] [--devices a,b] [--open TYPE]... [--wire FMT] [--lease S] [--no-shm] [-v]
+pysdrlib server [--bind ENDPOINT] [--port-range LOW-HIGH] [--devices a,b] [--open TYPE]... [--frontends FILE] [--wire FMT] [--lease S] [--no-shm] [-v]
 pysdrlib relay ADDRESS (DEVICE | --open TYPE) [--bind ENDPOINT] [--control auto|yes|no] [--name ID] [--timeout S] [--lease S] [--no-shm] [-v]
 pysdrlib client ADDRESS [--timeout S] COMMAND
 ```

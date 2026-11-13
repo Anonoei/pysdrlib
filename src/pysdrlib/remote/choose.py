@@ -6,8 +6,9 @@ A client says what it needs (`need`: below this it is of no use) and what it wou
 
 Both are dicts with any of these keys:
 
-    freq        Hz to tune to, or a (low, high) pair of Hz the radio has to be able to tune across without a gap
-    rate        samples/s the radio has to be able to run at exactly (inside its range, on one of its steps)
+    freq        Hz over the air to tune to, or a (low, high) pair of Hz the radio has to be able to tune across without a gap
+                (through whatever LNB or converter the server says is on the radio: see `Chain`)
+    rate        samples/s; a radio can run at it or faster (the client decimates), never slower
     bandwidth   Hz of spectrum seen (the analog filter where the radio has one, else its sample rate)
     channels    how many channels
     tx          True if it must be able to transmit
@@ -15,16 +16,16 @@ Both are dicts with any of these keys:
 A radio is a candidate when it meets all of `need`. Of the candidates the one that misses the fewest keys of `want`, and
 then comes nearest to it, wins; a radio whose capabilities are unknown comes after every one whose are known. A `freq` pair
 means the radio can tune across the whole span (retuning between its ends), not that it sees all of it at once: that is
-`bandwidth`. More rate or bandwidth than `want` asks for is no miss (only a small cost); less is. What the radio can actually
-do nearest to `want` is reported back as `granted`.
+`bandwidth`. More rate or bandwidth than `want` asks for is no miss (only a small cost, growing with how much more, so
+the radio nearest above wins); less is. Of radios that do equally well, the one whose antenna is best at the wanted frequency
+comes first. What the radio can actually do nearest to `want` (and `need`) is reported back as `granted`: the rate it will really run at, and
+for a radio behind a converter the frequency it tunes (`if_freq`), the `antenna` port and whether the spectrum is `inverted`.
 
 This module is pure functions of `pysdrlib.base.caps.Capabilities`: no sockets, no hardware.
 """
 import math
 
 from ..base import caps as _caps
-
-RATE_TOLERANCE = 1e-6    # a rate is met when the radio gets within this share of it
 
 FIELDS = ("freq", "rate", "bandwidth", "channels", "tx")
 
@@ -106,26 +107,99 @@ def _merged(ranges):
     return [tuple(r) for r in out]
 
 
-def _freq_ok(caps, value):
-    lo, hi = _span(value)
-    return not caps.freq or any(a <= lo and hi <= b for a, b in _merged(caps.freq))
+def _covers(ranges, lo, hi):
+    return any(a <= lo and hi <= b for a, b in _merged(ranges))
 
 
-def _freq_granted(caps, value):
-    """The span (or frequency) nearest `value` that fits one stretch of what the radio tunes"""
+IDENTITY = _caps.Chain()
+
+
+def _chains(caps, direction):
+    """The chains of one direction of the radio (`IDENTITY`, nothing between it and the air, when it has none)"""
+    return [c for c in caps.chains if c.direction == direction] or [IDENTITY]
+
+
+def _declares(caps, chain):
+    """Whether the radio or the chain says what is reachable (else it is taken to reach anything)"""
+    return bool(caps.freq or chain.usable_ranges())
+
+
+def _reach(caps, chain):
+    """The over-the-air ranges the radio tunes through `chain`"""
+    return chain.rf_ranges(caps.freq) if caps.freq else chain.usable_ranges()
+
+
+def _fits(caps, chain, value):
     lo, hi = _span(value)
-    if not caps.freq:
-        return lo if lo == hi else [lo, hi]
+    return not _declares(caps, chain) or _covers(_reach(caps, chain), lo, hi)
+
+
+def _optimal(chain, value):
+    """How far from its best `chain` is at `value`: 0 when its antenna is best there (or says nothing), else the share of the
+    frequency it is off by, capped at 1"""
+    best = chain.optimal_ranges()
+    if not best:
+        return 0.0
+    lo, hi = _span(value)
+    if _covers(best, lo, hi):
+        return 0.0
+    gap = min(max(a - hi, lo - b, 0.0) for a, b in _merged(best))
+    return max(1e-9, min(1.0, gap / max(abs(hi), 1.0)))
+
+
+def _pick(caps, direction, value):
+    """(chain, how far it is from optimal) of the chain that reaches `value` best, None when none reaches it"""
+    fit = [(_optimal(c, value), i, c) for i, c in enumerate(_chains(caps, direction)) if _fits(caps, c, value)]
+    if not fit:
+        return None
+    off, _, chain = min(fit, key=lambda f: f[:2])
+    return chain, off
+
+
+def _freq_ok(caps, value, direction="rx"):
+    return _pick(caps, direction, value) is not None
+
+
+def _clip(ranges, value):
+    lo, hi = _span(value)
     best = None
-    for a, b in _merged(caps.freq):
+    for a, b in _merged(ranges):
         g = (min(max(lo, a), b), min(max(hi, a), b))
         cost = abs(g[0] - lo) + abs(g[1] - hi)
         if best is None or cost < best[0]:
             best = (cost, g)
-    g = best[1]
+    return best
+
+
+def _freq_granted(caps, value, direction="rx"):
+    """(the span (or frequency) nearest `value` that fits one stretch of what the radio tunes, the chain it is through)"""
+    lo, hi = _span(value)
+    picked = _pick(caps, direction, value)
+    if picked is not None:
+        chain = picked[0]
+        return (lo if lo == hi else [lo, hi]), chain
+    best = None
+    for chain in _chains(caps, direction):
+        reach = _reach(caps, chain)
+        if not reach:
+            continue
+        g = _clip(reach, value)
+        if best is None or g[0] < best[0]:
+            best = (g[0], g[1], chain)
+    if best is None:    # no chain reaches anywhere at all
+        return (lo if lo == hi else [lo, hi]), _chains(caps, direction)[0]
+    g, chain = best[1], best[2]
     if lo == hi:
-        return _caps.nearest(caps.freq, lo)
-    return [g[0], g[1]]
+        return g[0], chain
+    return [g[0], g[1]], chain
+
+
+def _reach_text(caps, direction):
+    out = []
+    for c in _chains(caps, direction):
+        text = ", ".join(f"{_fmt(a)}-{_fmt(b)}" for a, b in _merged(_reach(caps, c)))
+        out.append(text + (f" via {c.name or c.antenna or c.port}" if c is not IDENTITY and (c.name or c.antenna or c.port) else ""))
+    return "; ".join(out)
 
 
 def _widest(ranges):
@@ -142,20 +216,16 @@ def problems(caps, spec) -> list:
     A limit the radio does not declare is taken as met."""
     spec = normalize(spec)
     out = []
-    if "freq" in spec and not _freq_ok(caps, spec["freq"]):
+    if "freq" in spec:
         lo, hi = _span(spec["freq"])
         wanted = _fmt(lo) if lo == hi else f"{_fmt(lo)}-{_fmt(hi)}"
-        have = ", ".join(f"{_fmt(r.lo)}-{_fmt(r.hi)}" for r in caps.freq)
-        out.append(f"cannot tune {wanted} (tunes {have})")
-    if "rate" in spec and caps.rates:
-        # the radio has to be able to run at it: inside one of its ranges and, where a range steps (or is one value), on a step
-        near = _caps.nearest(caps.rates, spec["rate"])
-        if abs(near - spec["rate"]) > RATE_TOLERANCE * spec["rate"]:
-            top = _widest(caps.rates)
-            if spec["rate"] > top:
-                out.append(f"top sample rate is {_fmt(top)}, not {_fmt(spec['rate'])}")
-            else:
-                out.append(f"cannot run at {_fmt(spec['rate'])} (nearest is {_fmt(near)})")
+        if not _freq_ok(caps, spec["freq"]):
+            out.append(f"cannot tune {wanted} (tunes {_reach_text(caps, 'rx')})")
+        if spec.get("tx") and caps.channels.get("tx", 0) and not _freq_ok(caps, spec["freq"], "tx"):
+            out.append(f"cannot transmit on {wanted} (transmits {_reach_text(caps, 'tx')})")
+    if "rate" in spec and caps.rates and _caps.at_least(caps.rates, spec["rate"]) is None:
+        # a faster radio will do (the client decimates), a slower one is of no use
+        out.append(f"top sample rate is {_fmt(_widest(caps.rates))}, not {_fmt(spec['rate'])}")
     if "bandwidth" in spec:
         top = _bandwidth_limit(caps)
         if top is not None and spec["bandwidth"] > top:
@@ -169,14 +239,21 @@ def problems(caps, spec) -> list:
 
 def granted(caps, spec) -> dict:
     """What the radio can do nearest to `spec`: for each key the value it would give (a frequency pair is the span clipped
-    to what it tunes; a key the radio puts no limit on keeps the asked value)"""
+    to what it tunes; a rate is the slowest it runs at that is not below the asked one, else its top; a key the radio puts no
+    limit on keeps the asked value). Through a converter the frequency is still over the air, with `if_freq` (what the radio
+    tunes), `antenna` and `inverted` beside it"""
     spec = normalize(spec)
     out = {}
     for key, value in spec.items():
         if key == "freq":
-            out[key] = _freq_granted(caps, value)
+            out[key], chain = _freq_granted(caps, value)
+            if chain is not IDENTITY:
+                lo, hi = _span(value)
+                out["if_freq"] = chain.to_if(lo) if lo == hi else list(chain.span_to_if(lo, hi))
+                out["antenna"] = chain.antenna or chain.port
+                out["inverted"] = chain.invert
         elif key == "rate":
-            out[key] = _caps.nearest(caps.rates, value) if caps.rates else value
+            out[key] = (_caps.at_least(caps.rates, value) or _widest(caps.rates)) if caps.rates else value
         elif key == "bandwidth":
             top = _bandwidth_limit(caps)
             out[key] = min(value, top) if top is not None else value
@@ -227,10 +304,24 @@ def known(caps) -> bool:
     return caps is not None and bool(caps.freq or caps.rates)
 
 
+def antenna_off(caps, want) -> float:
+    """How far the antenna(s) the radio would use for `want` are from their best at the wanted frequency: 0.0 when optimal there or
+    when nothing says (see `Chain.optimal`)"""
+    want = normalize(want)
+    if caps is None or "freq" not in want:
+        return 0.0
+    off = 0.0
+    for direction in ("rx", "tx") if want.get("tx") else ("rx",):
+        picked = _pick(caps, direction, want["freq"])
+        off += picked[1] if picked else 0.0
+    return off
+
+
 def rank(caps, want) -> tuple:
-    """Sort key of a radio that meets `need`, smallest best: unknown capabilities last, then fewest keys of `want` missed, then nearest"""
+    """Sort key of a radio that meets `need`, smallest best: unknown capabilities last, then fewest keys of `want` missed, then
+    nearest, then the antenna nearest its best at the wanted frequency"""
     missed, total = score(caps, want) if caps is not None else (0, 0.0)
-    return (not known(caps), missed, total)
+    return (not known(caps), missed, total, antenna_off(caps, want))
 
 
 def met(caps, spec) -> bool:

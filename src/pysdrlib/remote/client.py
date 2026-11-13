@@ -685,7 +685,7 @@ for _name in ("set_rx_gain_mode", "set_tx_gain_mode", "set_rx_bandwidth", "set_t
               "set_clock_source", "set_freq_correction",
               "get_rx_gain", "get_tx_gain", "get_rx_gain_db", "get_tx_gain_db", "get_rx_gains_db", "get_tx_gains_db",
               "get_rx_gain_mode", "get_tx_gain_mode", "get_rx_bandwidth", "get_tx_bandwidth", "get_rx_antenna", "get_tx_antenna",
-              "get_clock_source", "get_setting",
+              "get_clock_source", "get_setting", "get_rx_inverted",
               "get_freq_correction"):
     setattr(RemoteDevice, _name, _forwarder(_name))
 for _name in ("get_rx_sample_rate", "get_tx_sample_rate", "get_rx_freq", "get_tx_freq"):

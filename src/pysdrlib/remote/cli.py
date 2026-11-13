@@ -41,6 +41,7 @@ def add_parsers(sub):
     s.add_argument("--port-range", type=_port_range, help="LOW-HIGH ports for per-device sockets (default: any free port)")
     s.add_argument("--devices", help="comma separated device types clients may open (default: all)")
     s.add_argument("--open", action="append", default=[], metavar="TYPE", help="open a device at startup, uncontrolled until a client claims it (repeatable)")
+    s.add_argument("--frontends", metavar="FILE", help="JSON (or TOML) file saying what sits between each radio and the air (LNB or converter LO, tx chain, antenna), so clients ask for over-the-air frequencies; see pysdrlib.remote.frontends")
     s.add_argument("--wire", "--rx-wire", dest="wire", default="native", help="default RX wire format: native (device's own sample layout, default), complex64, int8, int16, ...")
     s.add_argument("--lease", type=float, default=15.0, help="seconds a silent controller keeps control, 0 = forever (default %(default)s)")
     s.add_argument("--no-shm", dest="shm", action="store_false", help="don't offer clients on this machine the samples in shared memory")
@@ -219,8 +220,11 @@ def run_server(args):
     log = logger.new("remote.cli")
     from .server import Server
     devices = args.devices.split(",") if args.devices else None
-    server = Server(args.bind, port_range=args.port_range, devices=devices, lease=args.lease, wire=args.wire, shm=args.shm,
-                    scan_interval=args.scan_interval)
+    try:
+        server = Server(args.bind, port_range=args.port_range, devices=devices, lease=args.lease, wire=args.wire, shm=args.shm,
+                        scan_interval=args.scan_interval, frontends=args.frontends)
+    except ValueError as e:     # a frontends file that cannot be read or is wrong
+        raise SystemExit(f"--frontends: {e}")
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))   # systemd stop: shut down cleanly
     log.info("pysdrlib server on %s (device types: %s; lease %gs; shm %s)", server.endpoint, ", ".join(server.types()),
              args.lease, "on" if args.shm else "off")

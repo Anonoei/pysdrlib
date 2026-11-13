@@ -305,8 +305,13 @@ class Device:
     def set_tx_freq(self, freq=None, channel=0):
         """Set the transmit center frequency (see `set_rx_freq`). Raises `err.NotSupported` on a receiver"""
         return self._tune_freq(freq, "tx", channel, False)
+    def get_rx_inverted(self, channel=0):
+        """Whether the receive spectrum comes mirrored, from a converter whose LO is above the signal (see `caps.Chain`):
+        flip it (`samples[::-1]` of the spectrum, or conjugate the samples) to read it the right way round"""
+        chain = self._chain("rx", channel)
+        return bool(chain and chain.invert)
     def get_rx_freq(self, channel=0):
-        """Receive center frequency [Hz] last set for this channel"""
+        """Receive center frequency [Hz] last set for this channel (over the air, whatever converter is on the radio)"""
         return self._tuning.get(("freq", self._direction("rx", channel), channel), self._cf)
     def get_tx_freq(self, channel=0):
         """Transmit center frequency [Hz] last set for this channel (None: never set)"""
@@ -342,14 +347,30 @@ class Device:
         self._ensure_open(f"set_{direction or 'rx'}_freq")
         self._need_tx(direction)
         dirs = self._tuned_directions(direction, channel, "freq")
+        chain = self._chain(direction or "rx", channel)    # hardware between the radio and the air (None: none)
         if freq is None:
-            freq = self.caps.default_freq
-        freq = self._within(freq, self.caps.freq, "Frequency")
-        hw = freq / self._ppm_scale() if self._ppm else freq
+            freq = self.caps.default_freq if chain is None else chain.to_rf(self.caps.default_freq)
+        radio = freq if chain is None else chain.to_if(freq)    # what the radio itself tunes
+        held = self._within(radio, self.caps.freq, "Frequency")
+        if held != radio:
+            radio, freq = held, held if chain is None else chain.to_rf(held)
         for d in self._hooked(direction, dirs, "freq"):
+            link = chain if d == (direction or "rx") else self._chain(d, channel)
+            hw = radio if link is chain else (freq if link is None else link.to_if(freq))
+            hw = hw / self._ppm_scale() if self._ppm else hw
             (self._set_rx_freq if d == "rx" else self._set_tx_freq)(hw, channel=channel)
         self._tuned("freq", freq, dirs, channel, flush)
         return freq
+
+    def _chain(self, direction, channel=0):
+        """The chain (`caps.chains`) the signal of this direction goes through: the one of the antenna port selected, else the
+        one for any port, else the first. None: nothing between the radio and the air"""
+        chains = [c for c in self.caps.chains if c.direction == direction]
+        if not chains:
+            return None
+        port = self._antenna.get((direction, channel))
+        return next((c for c in chains if port is not None and c.port == port), None) or \
+            next((c for c in chains if c.port is None), chains[0])
 
     def _need_tx(self, direction):
         if direction == "tx" and not self.caps.channels.get("tx"):
@@ -572,8 +593,13 @@ class Device:
         self._ensure_open(f"set_{d}_antenna")
         if name not in self.caps.antennas[d]:
             raise err.NotSupported(f"{type(self).NAME} has no {d.upper()} antenna {name!r} (it has {self.caps.antennas[d]})")
+        before = self._chain(d, channel)
         self._set_antenna(d, name, channel=channel)
         self._antenna[(d, channel)] = name
+        after = self._chain(d, channel)
+        tuned = self._tuning.get(("freq", d, channel))
+        if after is not before and tuned is not None:    # another chain moves frequencies differently: tune the same one over the air through it
+            self._tune_freq(tuned, d, channel, False)
         return name
 
     def clock_sources(self):

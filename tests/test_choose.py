@@ -117,13 +117,25 @@ def test_the_cli_parses_a_span_and_a_flag():
     assert choose.normalize(dict([cli._need("freq=430e6:440e6"), cli._need("tx=true")])) == {"freq": [430e6, 440e6], "tx": True}
 
 
-def test_a_rate_must_be_one_the_radio_can_run_at():
+def test_a_faster_radio_will_do_but_a_slower_one_will_not():
     discrete = caps(rates=((8e6, 8e6), (16e6, 16e6), (32e6, 32e6)))
     assert choose.met(discrete, {"rate": 16e6})
-    assert choose.problems(discrete, {"rate": 20e6}) == ["cannot run at 20 MHz (nearest is 16 MHz)"]
-    assert choose.problems(caps(rates=((2e6, 20e6),)), {"rate": 1e6})      # below its lowest
+    assert choose.met(discrete, {"rate": 20e6}) and choose.granted(discrete, {"rate": 20e6})["rate"] == 32e6   # it runs faster; the client decimates
+    assert choose.problems(discrete, {"rate": 40e6}) == ["top sample rate is 32 MHz, not 40 MHz"]
+    assert choose.granted(discrete, {"rate": 40e6})["rate"] == 32e6     # the nearest it has, short of it
+    assert choose.met(caps(rates=((2e6, 20e6),)), {"rate": 1e6})        # inside the range, below its lowest: it runs at its lowest
+    assert choose.granted(caps(rates=((2e6, 20e6),)), {"rate": 1e6})["rate"] == 2e6
     assert choose.met(caps(rates=((2e6, 20e6),)), {"rate": 20e6})
-    assert choose.met(caps(rates=((0, 20e6, 1e6),)), {"rate": 3e6}) and not choose.met(caps(rates=((0, 20e6, 1e6),)), {"rate": 3.5e6})
+    stepped = caps(rates=((0, 20e6, 1e6),))
+    assert choose.granted(stepped, {"rate": 3.5e6})["rate"] == 4e6     # the next step up, never down
+
+
+def test_the_radio_nearest_above_a_rate_comes_first():
+    exact, discrete = caps(rates=((2e6, 20e6),)), caps(rates=((8e6, 8e6), (16e6, 16e6), (32e6, 32e6)))
+    far = caps(rates=((50e6, 50e6),))
+    need = {"rate": 20e6}
+    assert choose.rank(exact, need) < choose.rank(discrete, need) < choose.rank(far, need)
+    assert not choose.score(discrete, need)[0]      # faster is not a miss
 
 
 def test_rtl_declares_its_rate_gap():

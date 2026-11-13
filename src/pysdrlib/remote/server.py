@@ -17,6 +17,7 @@ of each block however many clients there are: it keeps a ring per streaming chan
 written. The server only does the work of a way someone is using.
 """
 import hmac
+import os
 import secrets
 import socket
 import threading
@@ -28,6 +29,7 @@ from .. import devices
 from .. import err
 from .. import logger
 from . import choose
+from . import frontends as frontends_mod
 from . import protocol
 from . import shm
 from .client import RemoteDevice
@@ -480,7 +482,7 @@ class RelayWorker(DeviceWorker):
 
 class Server:
     def __init__(self, bind="tcp://127.0.0.1:5555", port_range=None, devices=None, lease=15.0, wire="native", shm=True,
-                 shm_samples=None, scan_interval=0.0):
+                 shm_samples=None, scan_interval=0.0, frontends=None):
         """
         bind: C2 endpoint, tcp://host:port (port 0 or * picks one; see `endpoint`) or ipc://path.
         port_range: (low, high) for the per-device tcp ports; default lets the OS pick.
@@ -490,12 +492,14 @@ class Server:
         shm: let clients on this machine take samples from shared memory (the socket still serves the rest).
         shm_samples: samples a shared-memory ring holds (default: a quarter second at the device's top rate).
         scan_interval: seconds between looks at which radios are attached, logging the ones that appear or vanish (0 = never).
+        frontends: what sits between each radio and the air (a `frontends.Frontends`, or the path of its TOML file).
         """
         self.log = logger.new("remote.server")
         self.scheme, self._host, self._port = _parse_bind(bind)
         self.port_range = tuple(port_range) if port_range else None
         self.allowed = list(devices) if devices else None
         self.lease = float(lease)
+        self.frontends = frontends_mod.load(frontends) if isinstance(frontends, (str, os.PathLike)) else (frontends or frontends_mod.Frontends())
         protocol.wire_format(wire) if wire != "native" else None    # validate now
         self.wire = wire
         self.shm = bool(shm)
@@ -666,6 +670,10 @@ class Server:
         module = devices.get(dtype)
         device = module.Device(*init_args, **(init_kwargs or {}))
         device.open(*args, **(kwargs or {}))
+        serial = (unit.serial if unit is not None else None) or device.caps.info.get("serial")
+        fitted = self.frontends.apply(device.caps, dtype, serial, unit.label if unit is not None else module.Device.NAME)
+        if fitted is not device.caps:
+            device.caps.chains = fitted.chains
         n = self._counts[dtype] = self._counts.get(dtype, -1) + 1
         try:
             worker = DeviceWorker(self, f"{dtype}-{n}", dtype, device, wire or self.wire, self.shm, self.shm_samples)
@@ -723,6 +731,7 @@ class Server:
         is of type `dtype`, its serial is `serial` and its label contains `label` (case ignored), and meets all of `need`; those
         that meet most of `want` come first, attached ones before hosted ones (a free hosted radio is one a client left open). Raises `err.NoDevice` saying why when none do."""
         need, want = choose.normalize(need, "need"), choose.normalize(want, "want")
+        wish = {**need, **want}     # what to rank by: of radios that meet the need, the nearest to it (and to `want`, which goes further)
         if dtype is not None and dtype not in self.types():
             raise err.NoDevice(f"device type {dtype!r} is not available on this server (have: {', '.join(self.types())})")
         self.scan()     # what is attached now
@@ -735,12 +744,14 @@ class Server:
                 return
             if not self._matches(name, label):
                 return
+            if kind == "unit":
+                caps = self.frontends.apply(caps, driver, unit_serial, name)
             who = f"{driver}: {name}" + (f" (serial {unit_serial})" if unit_serial else "")
             bad = choose.problems(caps, need) if caps is not None else []
             if bad:
                 reasons.append(f"{who}: {'; '.join(bad)}")
             else:
-                found.append((choose.rank(caps, want), kind == "hosted", len(found), kind, target, caps))
+                found.append((choose.rank(caps, wish), kind == "hosted", len(found), kind, target, caps))
 
         for w in self.workers.values():
             if w.token is not None or isinstance(w, RelayWorker):
@@ -785,6 +796,7 @@ class Server:
         need, want = choose.normalize(need, "need"), choose.normalize(want, "want")
         last = None
         candidates = self.choose(dtype, serial, label, need, want)
+        wish = {**need, **want}
         for i, (kind, target, caps) in enumerate(candidates):
             try:
                 if kind == "hosted":
@@ -805,7 +817,7 @@ class Server:
                 last = err.NoDevice(f"{worker.id}: {'; '.join(bad)}")
                 self._give_back(kind, worker)
                 continue
-            if want and any(choose.rank(c, want) < choose.rank(live, want) for _, _, c in candidates[i + 1:]):
+            if wish and any(choose.rank(c, wish) < choose.rank(live, wish) for _, _, c in candidates[i + 1:]):
                 # opened, it does less of `want` than the class said (discrete rates, a narrower tuner) and a later candidate
                 # is expected to do more: let that one have it
                 self.log.info("%s does less of the request once open than the next candidate is expected to", worker.id)
