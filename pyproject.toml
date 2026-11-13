@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=77.0", "cython", "numpy", "pybind11>=2.13"]
+requires = ["setuptools>=77.0", "numpy", "pybind11>=2.13"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "pysdrlib"
-version = "0.4.2"
+version = "0.4.3"
 description = "wrapper for hardware SDRs"
 readme = "README.md"
 license-files = ["LICENSE"]
@@ -23,7 +23,6 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: C++",
-    "Programming Language :: Cython",
     "Programming Language :: C",
 
     "Operating System :: OS Independent",
@@ -33,7 +32,7 @@ dependencies = ["numpy"]
 
 [project.optional-dependencies]
 remote = ["pyzmq"]
-dev = ["setuptools", "pyzmq", "twine", "build", "cython", "pybind11", "bumpver", "pytest", "pdoc3", "matplotlib", "pybind11-stubgen"]
+dev = ["setuptools", "pyzmq", "twine", "build", "pybind11", "bumpver", "pytest", "pdoc3", "matplotlib", "pybind11-stubgen"]
 
 [project.scripts]
 pysdrlib = "pysdrlib.cli:main"
@@ -47,7 +46,7 @@ Source = "https://github.com/anonoei/pysdrlib"
 
 
 [tool.bumpver]
-current_version = "0.4.2"
+current_version = "0.4.3"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message = "bump version {old_version} -> {new_version}"
 tag_message = "{new_version}"
@@ -55,7 +54,7 @@ tag_scope = "default"
 pre_commit_hook = ""
 post_commit_hook = ""
 commit = true
-tag = true
+tag = false
 push = false
 
 [tool.bumpver.file_patterns]
@@ -64,6 +63,13 @@ push = false
     'version = "{version}"'
 ]
 "src/pysdrlib/__init__.py" = ["{version}"]
+
+
+[tool.cibuildwheel]
+# glibc Linux and 64-bit Windows only; the wheels hold no vendor library, so each just needs to import
+build = "cp312-* cp313-* cp314-*"
+skip = "*-musllinux_* *-win32"
+test-command = 'python -c "import pysdrlib; from pysdrlib.base.lib import _samples"'
 
 
 [tool.pytest.ini_options]

@@ -18,7 +18,7 @@ class RTLSDR(NativeDevice):
     CAPS = Capabilities(
         driver="",
         freq=[Range(24_000_000, 1_766_000_000)], default_freq=100_000_000,
-        rates=[Range(225_001, 3_200_000)], default_rate=2_400_000,
+        rates=[Range(225_001, 300_000), Range(900_001, 3_200_000)], default_rate=2_400_000,
         gains={"rx": {"RF": GainStage(0, 0, 50, 30)}, "tx": {}},
     )
     SAMPLE_RATE_GAP = (300_000, 900_001)   # rates between these are not accepted (exclusive low, inclusive high)
