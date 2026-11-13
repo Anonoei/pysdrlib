@@ -7,7 +7,13 @@ machine when `pysdrlib build uhd` is run (or, with PYSDRLIB_BUILD=auto, the firs
 UHD's sources (see tools/vendor.py), built for the B2xx family only (B200/B210/B200mini). Building it takes a minute or
 more and needs cmake, a C++17 compiler, Boost and libusb; it needs no network and no Python.
 """
+import os
+
 from . import utils
+
+# libuhd prints its own "[INFO] [B200] ..." lines to the console. It reads this when it loads, so keep it to warnings and
+# errors unless the user chose a level (the variable, or `pysdrlib server --uhd-log`)
+os.environ.setdefault("UHD_LOG_CONSOLE_LEVEL", "warning")
 
 VENDOR = "src/pysdrlib/uhd/vendor"   # relative to the repository root, for setup.py
 

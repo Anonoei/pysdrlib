@@ -28,5 +28,5 @@ target_link_libraries(sddc_core PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,SDDC_CORE>
 
 # See usb_guard.cpp. Apple's linker has no --wrap: there a failed open still crashes.
 if(NOT APPLE)
-    target_link_options(sddc_core PRIVATE -Wl,--wrap=usb_device_open -Wl,--wrap=usb_device_control)
+    target_link_options(sddc_core PRIVATE -Wl,--wrap=usb_device_open -Wl,--wrap=usb_device_control -Wl,--wrap=usb_device_handle_events)
 endif()

@@ -20,7 +20,9 @@ For a more robust C implementation with far more hardware, use [SoapySDR](https:
 | [RTL-SDR](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/rtl_sdr) | `rtl_sdr` | |
 | [HackRF](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/hackrf) | `hackrf` | Transmit (half-duplex) |
 | [USRP B210 (UHD)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/uhd) | `uhd` | 2 RX and 2 TX channels |
+| [USRP X310, X410 (UHD)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/uhd#x310-and-x410) | `x310`, `x410` | Experimental, untested on hardware; on a network (`find(addresses=...)`), needs a system libuhd |
 | [RX-888 (ExtIO)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/extio) | `extio` | |
+| [TCP IQ stream](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/tcpiq) | `tcpiq` | Receive raw I/Q from a TCP server; opened by `host=` and `port=`, not listed by `find()` |
 | [BladeRF](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/bladerf) | `bladerf` | Planned |
 
 Also: `sim`, a simulated radio that needs no hardware, and [`File`](#sample-files), which reads recordings the way a
@@ -124,6 +126,23 @@ with FileSink("out.cs16", "ci32t", clip=True) as out:
 ```
 See the [file README](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/file) for the details: partial blocks,
 seeking, appending and clipping.
+
+### Drivers from outside pysdrlib
+A new radio, or a stream from some other source, needs no change to pysdrlib. Register a `Device` subclass in your program,
+or ship it as a package that declares an entry point, and every program that has the package installed sees it.
+```python
+@pysdrlib.register("my_radio")
+class MyRadio(pysdrlib.Device): ...
+
+sdr = pysdrlib.open("my_radio", host="10.0.0.5")       # open() arguments go to the class's _open
+```
+```toml
+[project.entry-points."pysdrlib.drivers"]
+my_radio = "my_package:MyRadio"
+```
+`python -m pysdrlib.scaffold my_radio --out-of-tree` writes such a package. `pysdrlib.find(addresses=["192.168.10.2"])`
+also looks at network addresses, for the drivers that can reach them; plain `find()` probes no network. See
+`pysdrlib.contributing` and `pysdrlib.devices`.
 
 ### Remote devices
 Host SDRs on one machine and use them from another (`pip install pysdrlib[remote]`).

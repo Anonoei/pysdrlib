@@ -10,6 +10,7 @@ driver refines it for the unit that is attached (a tuner's real gain steps, the 
     caps.settings             # {name: Setting}: the device's own controls (sdr.set_setting(name, value))
 """
 import copy
+import math
 from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
 
@@ -54,8 +55,117 @@ def nearest(ranges, value):
             best, best_d = v, d
     return value if best is None else best
 
+def at_least(ranges, value):
+    """The smallest value of `ranges` that is `value` or more (a step is honoured: the next step up), None when they all stop short of it"""
+    best = None
+    for r in ranges:
+        if value > r.hi:
+            continue
+        v = max(value, r.lo)
+        if r.step:
+            v = r.lo + math.ceil((v - r.lo) / r.step - 1e-9) * r.step
+            if v > r.hi:
+                continue
+        if best is None or v < best:
+            best = v
+    return best
+
 def contains(ranges, value):
     return any(value in r for r in ranges)
+
+def _ranges_json(rs):
+    return [[r.lo, r.hi, r.step] for r in rs]
+
+@dataclass(frozen=True)
+class Chain:
+    """Hardware between a radio and the air that moves frequencies (an LNB, an up/downconverter, a mixer + power amplifier)
+    and the antenna on it. Frequencies a program asks for are over the air ("RF"); the radio tunes "IF".
+
+    direction: "rx" or "tx" (a radio can have a chain of each). port: the radio's antenna port it sits behind (None: the
+    one for any port that has no chain of its own). lo: Hz of the external LO (0: none, RF == IF). invert: the LO is above the
+    signal, RF = lo - IF and the spectrum arrives mirrored (RF = IF + lo otherwise).
+    antenna: the standard of antenna fitted to it (see `pysdrlib.base.antennas`). usable: [Range] of RF Hz it works at at all
+    (empty: the antenna's, else whatever the radio's tuning gives). optimal: [Range] of RF Hz it is best at (empty: the antenna's).
+    """
+    direction: str = "rx"
+    port: Optional[str] = None
+    antenna: Optional[str] = None
+    lo: float = 0.0
+    invert: bool = False
+    usable: list = field(default_factory=list)
+    optimal: list = field(default_factory=list)
+    name: str = ""
+    info: dict = field(default_factory=dict, compare=False)     # the antenna's description as the server that sent this chain knew it
+
+    def __post_init__(self):
+        if self.direction not in DIRECTIONS:
+            raise ValueError(f"a chain's direction is rx or tx, not {self.direction!r}")
+        if self.invert and not self.lo:
+            raise ValueError("an inverting chain needs an LO frequency (lo)")
+
+    @property
+    def identity(self):
+        return not self.lo
+
+    def usable_ranges(self):
+        return self.usable or _standard(self.antenna, "usable")
+
+    def optimal_ranges(self):
+        return self.optimal or _standard(self.antenna, "optimal")
+
+    def to_if(self, rf):
+        """The radio frequency for an over-the-air one"""
+        return self.lo - rf if self.invert else rf - self.lo
+
+    def to_rf(self, if_):
+        """The over-the-air frequency for one the radio tunes"""
+        return self.lo - if_ if self.invert else if_ + self.lo
+
+    def span_to_rf(self, lo, hi):
+        a, b = self.to_rf(lo), self.to_rf(hi)
+        return (min(a, b), max(a, b))
+
+    def span_to_if(self, lo, hi):
+        a, b = self.to_if(lo), self.to_if(hi)
+        return (min(a, b), max(a, b))
+
+    def rf_ranges(self, ranges):
+        """`ranges` (what the radio tunes) as the over-the-air ranges they give through this chain, held to what it is usable at"""
+        out = []
+        for r in ranges:
+            lo, hi = self.span_to_rf(r.lo, r.hi)
+            out.append(Range(lo, hi, r.step))
+        use = self.usable_ranges()
+        if not use:
+            return out
+        return [Range(max(a.lo, u.lo), min(a.hi, u.hi)) for a in out for u in use if max(a.lo, u.lo) <= min(a.hi, u.hi)]
+
+    def describe(self):
+        """What is known about the antenna on it (`pysdrlib.base.antennas.Antenna.describe`), None when it names none: from the
+        registry where it has it, else what the server said"""
+        if not self.antenna:
+            return None
+        from . import antennas
+        found = antennas.find(self.antenna)
+        return found.describe() if found else (dict(self.info) or {"name": self.antenna})
+
+    def json(self):
+        return {"direction": self.direction, "port": self.port, "antenna": self.antenna, "lo": self.lo, "invert": self.invert,
+                "usable": _ranges_json(self.usable_ranges()), "optimal": _ranges_json(self.optimal_ranges()), "name": self.name,
+                "antenna_info": self.describe()}
+
+def _standard(name, what):
+    if not name:
+        return []
+    from . import antennas
+    found = antennas.find(name)
+    return list(getattr(found, what)) if found else []
+
+def chain_from_json(obj) -> Chain:
+    return Chain(direction=obj.get("direction", "rx"), port=obj.get("port"), antenna=obj.get("antenna"), lo=obj.get("lo", 0.0),
+                 invert=obj.get("invert", False), usable=[Range(*r) for r in obj.get("usable", [])],
+                 optimal=[Range(*r) for r in obj.get("optimal", [])], name=obj.get("name", ""),
+                 info=dict(obj.get("antenna_info") or {}))
 
 @dataclass(frozen=True)
 class Setting:
@@ -91,6 +201,7 @@ class Capabilities:
     antennas: dict = field(default_factory=lambda: {"rx": [], "tx": []})
     clock_sources: list = field(default_factory=list)
     settings: dict = field(default_factory=dict)        # {name: Setting}
+    chains: list = field(default_factory=list)          # [Chain] hardware between the radio and the air (both directions); empty: none
     retune_settle: float = 0.0     # seconds of samples after a retune that may still be settling (see Device.set_rx_freq)
     retune_samples: int = 0        # ... plus samples already in flight from before it (the driver's USB transfers)
     info: dict = field(default_factory=dict)            # serial, hardware revision, firmware... as the driver knows them
@@ -124,6 +235,7 @@ class Capabilities:
             "settings": {n: {"kind": s.kind.__name__, "doc": s.doc, "choices": s.choices, "default": s.default,
                          "per_channel": s.per_channel}
                          for n, s in self.settings.items()},
+            "chains": [c.json() for c in self.chains],
             "retune_settle": self.retune_settle,
             "retune_samples": self.retune_samples,
             "info": dict(self.info),
@@ -153,6 +265,7 @@ def from_json(obj) -> Capabilities:
                              tuple(s["choices"]) if s.get("choices") else None, default=s.get("default"),
                              per_channel=s.get("per_channel", False))
                   for n, s in obj["settings"].items()},
+        chains=[chain_from_json(c) for c in obj.get("chains", [])],
         retune_settle=obj.get("retune_settle", 0.0),
         retune_samples=obj.get("retune_samples", 0),
         info=dict(obj.get("info", {})),

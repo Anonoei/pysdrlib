@@ -89,8 +89,8 @@ class TestTuning:
 class TestCaps:
     def test_defaults_are_within_limits(self, spec):
         c = spec.caps
-        assert c.default_freq in c.freq[0] and c.default_rate in c.rates[0]
-        assert spec.rate in c.rates[0]
+        assert any(c.default_freq in r for r in c.freq) and any(c.default_rate in r for r in c.rates)
+        assert any(spec.rate in r for r in c.rates)
 
     def test_rx_stages_are_declared(self, spec):
         assert spec.caps.gains["rx"], "a receiver has at least one gain stage"

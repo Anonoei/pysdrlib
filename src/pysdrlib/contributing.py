@@ -5,6 +5,7 @@ whole job, in order. Start from a generated skeleton:
 
     python -m pysdrlib.scaffold my_radio                  # C++ extension + Python (most hardware)
     python -m pysdrlib.scaffold my_radio --python-only    # a Device written in Python alone
+    python -m pysdrlib.scaffold my_radio --out-of-tree    # a package of your own, outside pysdrlib (see "Out of tree")
 
 then fill in each `TODO`, checking as you go with `pysdrlib.testing`.
 
@@ -101,6 +102,17 @@ sources go in `<name>/vendor/`, written by `tools/vendor.py` from a recipe in `t
 attached unit. `open_args` is what `Device.open` takes to open that one (`{"serial": ...}` or `{"index": ...}`), which
 is how `pysdrlib.open(info)` works. It must not open the radio, and must not raise when none is attached.
 
+USB radios are found by enumerating the bus, and `find()` takes no arguments. A radio that can be on a network takes
+`addresses` (a list of hosts, or "host:port") and/or `timeout` (seconds to wait for an answer), which
+`pysdrlib.find(addresses=..., timeout=...)` passes on to the drivers that name them:
+
+    def find(addresses=None, timeout=None):
+        ...   # list what is attached here; look at `addresses` too, if given. With none, probe no network
+
+Probing a network is opt-in: without `addresses`, `find()` must not touch it. Put the address in `open_args`
+(`{"addr": ...}`) and take it in `_open`. A source that can't be enumerated at all (a TCP stream) has no `find()` to
+write: the default lists nothing, and it is opened by name (`pysdrlib.open("tcpiq", host=..., port=...)`).
+
 ## 5. Check it
 
 After changing a binding, regenerate the extension's type stubs (`pip install pybind11-stubgen`, then
@@ -124,4 +136,22 @@ needs the radio is marked `hardware`, runs only with `PYSDRLIB_HW=1`, and skips 
 The reference documentation is generated from docstrings: document the class, and every public method a driver adds,
 as you would for a user. Fill in `README.md`: what the radio is, its specs, what to install, and what you measured.
 Add it to the roadmap list in the top-level README.
+
+## Out of tree
+
+A driver does not have to live in pysdrlib. `python -m pysdrlib.scaffold my_radio --out-of-tree` writes a project,
+`pysdrlib-my-radio/`, with a Python-only `Device`, a `pyproject.toml` and a test. The project declares an entry point,
+
+    [project.entry-points."pysdrlib.drivers"]
+    my_radio = "pysdrlib_my_radio:MyRadio"
+
+so once it is installed (`pip install -e .`) `pysdrlib.devices.ls()`, `find()`, `open("my_radio")`, `pysdrlib server` and
+every program built on them know the radio, with nothing in pysdrlib changed. In a script or a notebook,
+`@pysdrlib.register("my_radio")` on the class does the same for that process. The entry point value is
+`"module:Class"` (or just `"module"`, which must define `Device`); it is imported only when the driver is first used,
+and a driver that fails to import is reported by `get` and skipped by `find`. The class's `find()` classmethod lists its
+units (nothing by default). A name that pysdrlib ships can't be taken, except by `register(..., replace=True)`.
+`testing.check_driver` and `testing.check_package` work on it as on a shipped driver. `PYSDRLIB_NO_PLUGINS=1` makes
+pysdrlib ignore entry points, for the case that something installed breaks a program. `pysdrlib.tcpiq` is the smallest
+complete Python driver to read.
 """

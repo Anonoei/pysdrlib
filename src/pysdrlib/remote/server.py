@@ -17,6 +17,7 @@ of each block however many clients there are: it keeps a ring per streaming chan
 written. The server only does the work of a way someone is using.
 """
 import hmac
+import os
 import secrets
 import socket
 import threading
@@ -27,6 +28,8 @@ import zmq
 from .. import devices
 from .. import err
 from .. import logger
+from . import choose
+from . import frontends as frontends_mod
 from . import protocol
 from . import shm
 from .client import RemoteDevice
@@ -35,8 +38,15 @@ POLL_MS = 100
 SHM_SECONDS = 0.25      # a shared-memory ring holds this much of the stream at the device's highest rate
 IDLE_SLEEP = 0.002   # a pause after an error, so a failing device is not retried in a tight loop
 BATCH_SECONDS = 0.002   # the stream is published in blocks of about this long (the latency a client sees, and no less)
+CLOSE_WAIT = 5.0        # how long a close request waits for the device before replying anyway
 MIN_BATCH = 1024        # ... but not smaller than this many samples
 MAX_WAIT = 0.01         # a block that has not filled by then is published as it is
+
+def _program(name):
+    """The program name a client gave, tidied for logs and `list` (None if it gave none)"""
+    if name is None:
+        return None
+    return " ".join(str(name).split())[:80] or None
 
 def _parse_bind(bind: str):
     """-> (scheme, host_or_path, port or None)"""
@@ -53,6 +63,11 @@ def _parse_bind(bind: str):
 
 class DeviceWorker:
     """One hosted device: its control socket, RX stream socket, and ownership state"""
+    program = None      # name the controller gave for the program it runs (see `Server.open_device`), None if not told
+    need = None         # what that program said it needs ...
+    want = None         # ... and would like (see `choose`)
+    unit = None         # the `DeviceInfo` of the radio it hosts, when it was picked from the attached ones
+
     def __init__(self, server: "Server", dev_id: str, dtype: str, device, wire="native", shm=True, shm_samples=None):
         self.id = dev_id
         self.type = dtype
@@ -99,11 +114,12 @@ class DeviceWorker:
             t.start()
 
     # --- ownership --- #
-    def claim(self) -> str:
+    def claim(self, program=None) -> str:
         """Make a new controller token the owner. Raises `err.Busy` if the device already has a controller"""
         with self.lock:
             if self.token is not None:
-                raise err.Busy(f"{self.id} already has a controller")
+                raise err.Busy(f"{self.id} already has a controller" + (f" ({self.program})" if self.program else ""))
+            self.program = program
             self.token = secrets.token_hex(16)
             self.last_seen = time.monotonic()
             return self.token
@@ -120,6 +136,7 @@ class DeviceWorker:
         """Drop the controller; stop streaming since nobody is left to manage it"""
         with self.lock:
             self.token = None
+            self.program = self.need = self.want = None
             self.streaming.clear()
             for flag, stop in (("rx", self.device.stop_rx), ("tx", self.device.stop_tx)):
                 if self.device.state.get(flag):
@@ -127,6 +144,15 @@ class DeviceWorker:
                         stop()
                     except Exception:
                         self.log.exception("stop_%s failed during release", flag)
+
+    def serial(self):
+        """The serial number of the radio, when the driver or the scan told us it"""
+        if self.unit is not None and self.unit.serial:
+            return self.unit.serial
+        try:
+            return self.device.caps.info.get("serial")
+        except Exception:
+            return None
 
     # --- description --- #
     def _capabilities(self):
@@ -160,9 +186,13 @@ class DeviceWorker:
                 "state": dict(self.device.state),
                 "cf": self.device.get_rx_freq(), "Fs": self.device.get_rx_sample_rate(),
                 "controlled": self.token is not None,
+                "program": self.program, "need": self.need, "want": self.want,
+                "serial": self.serial(),
                 "wire": protocol.wire_name(self.wire),
                 "rx_channels": list(getattr(self.device, "rx_channels", (0,))),
                 "tx_channels": list(getattr(self.device, "tx_channels", (0,))),
+                "chains": [{"direction": c.direction, "port": c.port, "name": c.name, "lo": c.lo, "invert": c.invert,
+                            "antenna": c.describe()} for c in self.device.caps.chains],
             }
 
     # --- control socket --- #
@@ -211,6 +241,8 @@ class DeviceWorker:
         with self.lock:
             try:
                 result = getattr(self.device, method)(*args, **kwargs)
+                if method in ("start_rx", "stop_rx", "start_tx", "stop_tx"):
+                    self.log.info("%s: %s", self.id, method)
                 if method == "start_rx":
                     self._stream_gen += 1   # a new stream: indices start again, and the rings with them
                 return result
@@ -227,6 +259,7 @@ class DeviceWorker:
         """Publish every channel the device streams, each block tagged with its channel and the index of its first
         sample, so clients keep the channels apart and aligned and see where samples were lost"""
         stalled = False   # log a stall once, not on every poll
+        broken = False    # likewise a failing device (e.g. unplugged while streaming)
         while not self._stop.is_set():
             if not self.streaming.wait(POLL_MS / 1000):
                 self._poll_subscriptions()
@@ -243,15 +276,19 @@ class DeviceWorker:
                     samples, index = self.device.read_available(ch)
                     if len(samples):
                         self._publish(ch, samples, index)
+                if broken:
+                    self.log.info("%s: reading the device works again", self.id)
                 stalled = False
+                broken = False
                 failed = False
             except err.StreamStalled as exc:
                 if not stalled:
                     self.log.warning("%s", exc)
                     stalled = True
             except Exception:
-                if not self._stop.is_set() and self.streaming.is_set() and self.device.state.get("rx"):
-                    self.log.exception("reading the device failed")
+                if not self._stop.is_set() and self.streaming.is_set() and self.device.state.get("rx") and not broken:
+                    broken = True
+                    self.log.exception("%s: reading the device failed (disconnected? retrying)", self.id)
             if failed:
                 time.sleep(IDLE_SLEEP)
 
@@ -400,7 +437,8 @@ class RelayWorker(DeviceWorker):
         up = self.upstream
         return {"id": self.id, "type": self.type, "name": up.capabilities["name"], "state": dict(up.state),
                 "cf": up._cf, "Fs": up._Fs, "controlled": self.token is not None, "wire": protocol.wire_name(self.wire),
-                "rx_channels": list(up.rx_channels), "tx_channels": list(up.tx_channels), "lost": self.lost.is_set()}
+                "rx_channels": list(up.rx_channels), "tx_channels": list(up.tx_channels), "lost": self.lost.is_set(),
+                "program": self.program, "need": self.need, "want": self.want, "serial": None}
 
     def _rate(self):
         return self.upstream._Fs or 1e6
@@ -410,6 +448,7 @@ class RelayWorker(DeviceWorker):
             return super().release()
         with self.lock:
             self.token = None   # a viewer relay can't stop the far device
+            self.program = self.need = self.want = None
 
     def _watch_loop(self):
         """Follow the far device: its state, and whether it still answers"""
@@ -445,7 +484,7 @@ class RelayWorker(DeviceWorker):
 
 class Server:
     def __init__(self, bind="tcp://127.0.0.1:5555", port_range=None, devices=None, lease=15.0, wire="native", shm=True,
-                 shm_samples=None):
+                 shm_samples=None, scan_interval=0.0, frontends=None):
         """
         bind: C2 endpoint, tcp://host:port (port 0 or * picks one; see `endpoint`) or ipc://path.
         port_range: (low, high) for the per-device tcp ports; default lets the OS pick.
@@ -454,12 +493,15 @@ class Server:
         wire: default RX wire format: "native" (the device's own sample layout), "complex64", "int8", "int16", ...
         shm: let clients on this machine take samples from shared memory (the socket still serves the rest).
         shm_samples: samples a shared-memory ring holds (default: a quarter second at the device's top rate).
+        scan_interval: seconds between looks at which radios are attached, logging the ones that appear or vanish (0 = never).
+        frontends: what sits between each radio and the air (a `frontends.Frontends`, or the path of its TOML file).
         """
         self.log = logger.new("remote.server")
         self.scheme, self._host, self._port = _parse_bind(bind)
         self.port_range = tuple(port_range) if port_range else None
         self.allowed = list(devices) if devices else None
         self.lease = float(lease)
+        self.frontends = frontends_mod.load(frontends) if isinstance(frontends, (str, os.PathLike)) else (frontends or frontends_mod.Frontends())
         protocol.wire_format(wire) if wire != "native" else None    # validate now
         self.wire = wire
         self.shm = bool(shm)
@@ -471,6 +513,10 @@ class Server:
         self._c2 = None
         self._thread = None
         self._stop = threading.Event()
+        self.scan_interval = float(scan_interval)
+        self._scan_thread = None
+        self._attached = None       # {key: DeviceInfo} at the last scan
+        self._scan_lock = threading.Lock()   # one look at the USB bus at a time
         self._bind_c2(bind)
 
     # --- sockets --- #
@@ -506,10 +552,16 @@ class Server:
         if self._thread is None:
             self._thread = threading.Thread(target=self._run, name="pysdrlib-c2", daemon=True)
             self._thread.start()
+        if self.scan_interval > 0 and self._scan_thread is None:
+            self._scan_thread = threading.Thread(target=self._scan_loop, name="pysdrlib-scan", daemon=True)
+            self._scan_thread.start()
         return self
 
     def serve_forever(self):
-        """Serve in this thread until Ctrl+C, then `stop`"""
+        """Serve in this thread until Ctrl+C or SIGTERM (a service being stopped), then `stop`"""
+        if self.scan_interval > 0 and self._scan_thread is None:
+            self._scan_thread = threading.Thread(target=self._scan_loop, name="pysdrlib-scan", daemon=True)
+            self._scan_thread.start()
         try:
             self._run()
         except KeyboardInterrupt:
@@ -523,6 +575,9 @@ class Server:
         if self._thread is not None:
             self._thread.join()
             self._thread = None
+        if self._scan_thread is not None:
+            self._scan_thread.join()
+            self._scan_thread = None
         for dev_id in list(self.workers):
             self.workers.pop(dev_id).close()
         if self._c2 is not None:
@@ -552,13 +607,53 @@ class Server:
                 self._c2.send_multipart([ident, reply])
             self._expire_leases()
 
+    # --- attached radios --- #
+    @staticmethod
+    def _key(info):
+        return (info.driver, info.serial or info.index, info.label)
+
+    @staticmethod
+    def _describe(info):
+        bits = [f"serial {info.serial}"] if info.serial else ([f"index {info.index}"] if info.index is not None else [])
+        return f"{info.driver}: {info.label}" + (f" ({', '.join(bits)})" if bits else "")
+
+    def scan(self):
+        """Look for attached radios and log what appeared or vanished since the last scan (the first logs all of them).
+        -> the list of `DeviceInfo`"""
+        with self._scan_lock:
+            found = [i for i in devices.find() if i.driver in self.types()]
+        now = {self._key(i): i for i in found}
+        if self._attached is None:
+            if not found:
+                self.log.info("no radios found attached to this machine")
+            for info in found:
+                self.log.info("found %s", self._describe(info))
+        else:
+            for key, info in now.items():
+                if key not in self._attached:
+                    self.log.info("radio connected: %s", self._describe(info))
+            for key, info in self._attached.items():
+                if key not in now:
+                    self.log.warning("radio disconnected: %s", self._describe(info))
+        self._attached = now
+        return found
+
+    def _scan_loop(self):
+        while True:
+            try:
+                self.scan()
+            except Exception:
+                self.log.exception("looking for radios failed")
+            if self._stop.wait(self.scan_interval if self.scan_interval > 0 else 10.0):
+                return
+
     def _expire_leases(self):
         if self.lease <= 0:
             return
         now = time.monotonic()
         for w in list(self.workers.values()):
             if w.token is not None and now - w.last_seen > self.lease:
-                self.log.warning("%s: controller lease expired", w.id)
+                self.log.warning("%s: controller lease expired after %.0f s of silence", w.id, now - w.last_seen)
                 w.release()
 
     # --- C2 ops --- #
@@ -566,23 +661,174 @@ class Server:
         """Device types clients may open: the `devices` given to the server, or every driver"""
         return self.allowed if self.allowed is not None else devices.ls()
 
-    def open_device(self, dtype, init_args=(), init_kwargs=None, args=(), kwargs=None, controlled=False, wire=None):
+    def open_device(self, dtype, init_args=(), init_kwargs=None, args=(), kwargs=None, controlled=False, wire=None,
+                    program=None, need=None, want=None, unit=None):
         """Create and open a device of vendor package `dtype` and start hosting it.
+        program/need/want: what the controller said it runs and needs (shown by `list`; see `choose`). unit: the `DeviceInfo`
+        of the radio, when it was picked from the attached ones.
         -> (worker, token) where token is None unless `controlled`"""
         if dtype not in self.types():
             raise err.NoDevice(f"device type {dtype!r} is not available on this server (have: {', '.join(self.types())})")
         module = devices.get(dtype)
         device = module.Device(*init_args, **(init_kwargs or {}))
         device.open(*args, **(kwargs or {}))
+        serial = (unit.serial if unit is not None else None) or device.caps.info.get("serial")
+        fitted = self.frontends.apply(device.caps, dtype, serial, unit.label if unit is not None else module.Device.NAME)
+        if fitted is not device.caps:
+            device.caps.chains = fitted.chains
         n = self._counts[dtype] = self._counts.get(dtype, -1) + 1
         try:
             worker = DeviceWorker(self, f"{dtype}-{n}", dtype, device, wire or self.wire, self.shm, self.shm_samples)
         except BaseException:
             device.close()
             raise
+        worker.unit = unit
         self.workers[worker.id] = worker
-        self.log.info("hosting %s", worker.id)
-        return worker, (worker.claim() if controlled else None)
+        self.log.info("hosting %s (%s) with %s: ctrl %s, rx %s", worker.id, worker.capabilities.get("name", dtype),
+                      f"{program or 'a client'} in control" if controlled else "no controller", worker.endpoints["ctrl"], worker.endpoints["rx"])
+        token = worker.claim(program) if controlled else None
+        if controlled:
+            worker.need, worker.want = need or None, want or None
+        return worker, token
+
+    # --- choosing a radio --- #
+    def _hosted_serials(self):
+        return {w.serial() for w in self.workers.values()} - {None}
+
+    def available(self):
+        """The radios attached at the last scan, as dicts: driver, label, serial, index and `hosted` (the id of the worker
+        that has it open, or None)"""
+        taken = {}
+        for w in self.workers.values():
+            if w.serial():
+                taken[w.serial()] = w.id
+        out = []
+        unknown = {}    # driver -> workers hosting a radio of it whose serial is not known: each has one of that driver's
+        for w in self.workers.values():
+            if not w.serial():
+                unknown.setdefault(w.type, []).append(w.id)
+        for info in (self._attached or {}).values():
+            hosted = taken.get(info.serial) if info.serial else None
+            if hosted is None and unknown.get(info.driver):
+                hosted = unknown[info.driver].pop(0)
+            out.append({"driver": info.driver, "label": info.label, "serial": info.serial, "index": info.index,
+                        "hosted": hosted})
+        return out
+
+    @staticmethod
+    def _matches(text, wanted):
+        return wanted is None or (text is not None and str(wanted).lower() in str(text).lower())
+
+    def _class_caps(self, dtype):
+        """What a radio of this driver can do, before opening one (None if that cannot be told)"""
+        try:
+            return devices.get(dtype).Device().caps
+        except Exception:
+            self.log.debug("no capabilities known for %s before it is open", dtype, exc_info=True)
+            return None
+
+    def choose(self, dtype=None, serial=None, label=None, need=None, want=None):
+        """The radios a client could use for this request, best first: `[(kind, target, caps)]` with kind "hosted" (a
+        `DeviceWorker` nobody controls) or "unit" (a `DeviceInfo` attached and not hosted). A radio meets the request when it
+        is of type `dtype`, its serial is `serial` and its label contains `label` (case ignored), and meets all of `need`; those
+        that meet most of `want` come first, attached ones before hosted ones (a free hosted radio is one a client left open). Raises `err.NoDevice` saying why when none do."""
+        need, want = choose.normalize(need, "need"), choose.normalize(want, "want")
+        wish = {**need, **want}     # what to rank by: of radios that meet the need, the nearest to it (and to `want`, which goes further)
+        if dtype is not None and dtype not in self.types():
+            raise err.NoDevice(f"device type {dtype!r} is not available on this server (have: {', '.join(self.types())})")
+        self.scan()     # what is attached now
+        reasons, found = [], []
+
+        def consider(kind, target, driver, name, unit_serial, caps):
+            if dtype is not None and driver != dtype:
+                return
+            if serial is not None and str(unit_serial) != str(serial):
+                return
+            if not self._matches(name, label):
+                return
+            if kind == "unit":
+                caps = self.frontends.apply(caps, driver, unit_serial, name)
+            who = f"{driver}: {name}" + (f" (serial {unit_serial})" if unit_serial else "")
+            bad = choose.problems(caps, need) if caps is not None else []
+            if bad:
+                reasons.append(f"{who}: {'; '.join(bad)}")
+            else:
+                found.append((choose.rank(caps, wish), kind == "hosted", len(found), kind, target, caps))
+
+        for w in self.workers.values():
+            if w.token is not None or isinstance(w, RelayWorker):
+                continue    # someone controls it (or it is another server's)
+            consider("hosted", w, w.type, type(w.device).NAME, w.serial(), w.device.caps)
+        unknown = {}
+        for w in self.workers.values():
+            if not w.serial():
+                unknown[w.type] = unknown.get(w.type, 0) + 1
+        by_driver = {}
+        for info in (self._attached or {}).values():
+            if info.serial and info.serial in self._hosted_serials():
+                continue
+            if not info.serial and unknown.get(info.driver):    # one of these is already open: take it to be this one
+                unknown[info.driver] -= 1
+                continue
+            if info.driver not in by_driver:
+                by_driver[info.driver] = self._class_caps(info.driver)
+            consider("unit", info, info.driver, info.label, info.serial, by_driver[info.driver])
+        if not found:
+            what = ", ".join(f"{k}={v}" for k, v in (("type", dtype), ("serial", serial), ("label", label)) if v is not None)
+            what = (what + "; " if what else "") + f"need {need}" if need else what
+            if reasons:
+                raise err.NoDevice(f"no radio on this server meets the request ({what}): " + " | ".join(reasons))
+            raise err.NoDevice(f"no radio on this server is free for the request ({what or 'any'}); "
+                               f"attached: {', '.join(i['label'] for i in self.available()) or 'none'}")
+        found.sort(key=lambda f: f[:3])
+        return [(f[3], f[4], f[5]) for f in found]
+
+    def _give_back(self, kind, worker):
+        """Let go of a radio `open_matching` took but cannot use: a hosted one is released, one it opened is closed"""
+        if kind == "hosted":
+            worker.release()
+        else:
+            self.workers.pop(worker.id, None)
+            worker.close()
+
+    def open_matching(self, dtype=None, serial=None, label=None, need=None, want=None, program=None, init_args=(),
+                      init_kwargs=None, wire=None):
+        """Open (or take over, if it is hosted and nobody controls it) the best radio for the request (see `choose`).
+        -> (worker, token, granted) where `granted` is what the radio can do nearest to `want` (and `need`)"""
+        need, want = choose.normalize(need, "need"), choose.normalize(want, "want")
+        last = None
+        candidates = self.choose(dtype, serial, label, need, want)
+        wish = {**need, **want}
+        for i, (kind, target, caps) in enumerate(candidates):
+            try:
+                if kind == "hosted":
+                    worker, token = target, target.claim(program)
+                    worker.need, worker.want = need or None, want or None
+                    self.log.info("%s: taken over by %s", worker.id, program or "a client")
+                else:
+                    worker, token = self.open_device(target.driver, init_args, init_kwargs, (), dict(target.open_args),
+                                                     controlled=True, wire=wire, program=program, need=need, want=want, unit=target)
+            except Exception as e:      # taken, gone since the scan, in use by another process, no permission...: next best
+                self.log.warning("could not open %s: %s", getattr(target, "label", getattr(target, "id", target)), e)
+                last = e
+                continue
+            live = worker.device.caps
+            bad = choose.problems(live, need) if need else []
+            if bad:     # the unit is not quite what its driver's class said: it refined its capabilities once open
+                self.log.warning("%s does not meet the need once open: %s", worker.id, "; ".join(bad))
+                last = err.NoDevice(f"{worker.id}: {'; '.join(bad)}")
+                self._give_back(kind, worker)
+                continue
+            if wish and any(choose.rank(c, wish) < choose.rank(live, wish) for _, _, c in candidates[i + 1:]):
+                # opened, it does less of `want` than the class said (discrete rates, a narrower tuner) and a later candidate
+                # is expected to do more: let that one have it
+                self.log.info("%s does less of the request once open than the next candidate is expected to", worker.id)
+                last = err.NoDevice(f"{worker.id} meets less of `want` than another radio")
+                self._give_back(kind, worker)
+                continue
+            granted = choose.granted(live, {**need, **want}) if (want or need) else {}
+            return worker, token, granted
+        raise err.NoDevice(f"every radio that fits the request failed to open: {last}")
 
     def relay(self, address, device=None, *, open=None, control="auto", name=None, timeout=5.0, transport="auto"):
         """Host a device of another server here, so programs on this machine share one connection to it (see `RelayWorker`).
@@ -635,20 +881,36 @@ class Server:
         if op == "hello":
             return {"version": protocol.VERSION, "lease": self.lease, "types": self.types()}
         if op == "list":
-            return {"types": self.types(), "devices": [w.status() for w in self.workers.values()]}
+            return {"types": self.types(), "devices": [w.status() for w in self.workers.values()],
+                    "available": self.available()}
         if op == "open":
-            worker, token = self.open_device(
-                msg.get("type"), msg.get("init_args", []), msg.get("init_kwargs"),
-                msg.get("args", []), msg.get("kwargs"), controlled=True, wire=msg.get("wire"))
-            return {"device": worker.id, "token": token, "lease": self.lease, "endpoints": worker.endpoints}
+            program = _program(msg.get("program"))
+            granted = None
+            if any(msg.get(k) is not None for k in ("serial", "label", "need", "want")) or msg.get("type") is None:
+                worker, token, granted = self.open_matching(
+                    msg.get("type"), msg.get("serial"), msg.get("label"), msg.get("need"), msg.get("want"), program,
+                    msg.get("init_args", []), msg.get("init_kwargs"), msg.get("wire"))
+                self.log.info("%s: %s opened by %s", worker.id, worker.capabilities.get("name"), program or "a client")
+            else:
+                worker, token = self.open_device(
+                    msg.get("type"), msg.get("init_args", []), msg.get("init_kwargs"),
+                    msg.get("args", []), msg.get("kwargs"), controlled=True, wire=msg.get("wire"), program=program)
+            return {"device": worker.id, "token": token, "lease": self.lease, "endpoints": worker.endpoints,
+                    "type": worker.type, "granted": granted}
         if op == "attach":
             worker = self._worker(msg)
+            if msg.get("program"):
+                self.log.info("%s: %s attached", worker.id, _program(msg.get("program")))
             return {"device": worker.id, "type": worker.type, "endpoints": worker.endpoints,
                     "controlled": worker.token is not None, "wire": protocol.wire_name(worker.wire)}
         if op == "claim":
-            return {"token": self._worker(msg).claim(), "lease": self.lease}
+            program = _program(msg.get("program"))
+            self.log.info("%s: claimed by %s", msg.get("device"), program or "a client")
+            return {"token": self._worker(msg).claim(program), "lease": self.lease}
         if op == "release":
-            self._controller(msg).release()
+            worker = self._controller(msg)
+            self.log.info("%s: released by its controller", worker.id)
+            worker.release()
             return None
         if op == "ping":
             self._controller(msg)
@@ -656,6 +918,13 @@ class Server:
         if op == "close":
             worker = self._controller(msg)
             del self.workers[worker.id]
-            worker.close()
+            self.log.info("%s: closed by its controller", worker.id)
+            # Closing joins the driver's threads, and a wedged radio can take that a long time. This runs on the
+            # C2 thread, so don't let it stop the server answering anyone: reply after CLOSE_WAIT regardless.
+            closer = threading.Thread(target=worker.close, name=f"pysdrlib-{worker.id}-close", daemon=True)
+            closer.start()
+            closer.join(CLOSE_WAIT)
+            if closer.is_alive():
+                self.log.warning("%s: still closing after %.0fs; continuing in the background", worker.id, CLOSE_WAIT)
             return None
         raise ValueError(f"unknown op {op!r}")
