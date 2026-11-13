@@ -211,6 +211,8 @@ class DeviceWorker:
         with self.lock:
             try:
                 result = getattr(self.device, method)(*args, **kwargs)
+                if method in ("start_rx", "stop_rx", "start_tx", "stop_tx"):
+                    self.log.info("%s: %s", self.id, method)
                 if method == "start_rx":
                     self._stream_gen += 1   # a new stream: indices start again, and the rings with them
                 return result
@@ -227,6 +229,7 @@ class DeviceWorker:
         """Publish every channel the device streams, each block tagged with its channel and the index of its first
         sample, so clients keep the channels apart and aligned and see where samples were lost"""
         stalled = False   # log a stall once, not on every poll
+        broken = False    # likewise a failing device (e.g. unplugged while streaming)
         while not self._stop.is_set():
             if not self.streaming.wait(POLL_MS / 1000):
                 self._poll_subscriptions()
@@ -243,15 +246,19 @@ class DeviceWorker:
                     samples, index = self.device.read_available(ch)
                     if len(samples):
                         self._publish(ch, samples, index)
+                if broken:
+                    self.log.info("%s: reading the device works again", self.id)
                 stalled = False
+                broken = False
                 failed = False
             except err.StreamStalled as exc:
                 if not stalled:
                     self.log.warning("%s", exc)
                     stalled = True
             except Exception:
-                if not self._stop.is_set() and self.streaming.is_set() and self.device.state.get("rx"):
-                    self.log.exception("reading the device failed")
+                if not self._stop.is_set() and self.streaming.is_set() and self.device.state.get("rx") and not broken:
+                    broken = True
+                    self.log.exception("%s: reading the device failed (disconnected? retrying)", self.id)
             if failed:
                 time.sleep(IDLE_SLEEP)
 
@@ -445,7 +452,7 @@ class RelayWorker(DeviceWorker):
 
 class Server:
     def __init__(self, bind="tcp://127.0.0.1:5555", port_range=None, devices=None, lease=15.0, wire="native", shm=True,
-                 shm_samples=None):
+                 shm_samples=None, scan_interval=0.0):
         """
         bind: C2 endpoint, tcp://host:port (port 0 or * picks one; see `endpoint`) or ipc://path.
         port_range: (low, high) for the per-device tcp ports; default lets the OS pick.
@@ -454,6 +461,7 @@ class Server:
         wire: default RX wire format: "native" (the device's own sample layout), "complex64", "int8", "int16", ...
         shm: let clients on this machine take samples from shared memory (the socket still serves the rest).
         shm_samples: samples a shared-memory ring holds (default: a quarter second at the device's top rate).
+        scan_interval: seconds between looks at which radios are attached, logging the ones that appear or vanish (0 = never).
         """
         self.log = logger.new("remote.server")
         self.scheme, self._host, self._port = _parse_bind(bind)
@@ -471,6 +479,9 @@ class Server:
         self._c2 = None
         self._thread = None
         self._stop = threading.Event()
+        self.scan_interval = float(scan_interval)
+        self._scan_thread = None
+        self._attached = None       # {key: DeviceInfo} at the last scan
         self._bind_c2(bind)
 
     # --- sockets --- #
@@ -506,10 +517,16 @@ class Server:
         if self._thread is None:
             self._thread = threading.Thread(target=self._run, name="pysdrlib-c2", daemon=True)
             self._thread.start()
+        if self.scan_interval > 0 and self._scan_thread is None:
+            self._scan_thread = threading.Thread(target=self._scan_loop, name="pysdrlib-scan", daemon=True)
+            self._scan_thread.start()
         return self
 
     def serve_forever(self):
-        """Serve in this thread until Ctrl+C, then `stop`"""
+        """Serve in this thread until Ctrl+C or SIGTERM (a service being stopped), then `stop`"""
+        if self.scan_interval > 0 and self._scan_thread is None:
+            self._scan_thread = threading.Thread(target=self._scan_loop, name="pysdrlib-scan", daemon=True)
+            self._scan_thread.start()
         try:
             self._run()
         except KeyboardInterrupt:
@@ -523,6 +540,9 @@ class Server:
         if self._thread is not None:
             self._thread.join()
             self._thread = None
+        if self._scan_thread is not None:
+            self._scan_thread.join()
+            self._scan_thread = None
         for dev_id in list(self.workers):
             self.workers.pop(dev_id).close()
         if self._c2 is not None:
@@ -552,13 +572,52 @@ class Server:
                 self._c2.send_multipart([ident, reply])
             self._expire_leases()
 
+    # --- attached radios --- #
+    @staticmethod
+    def _key(info):
+        return (info.driver, info.serial or info.index, info.label)
+
+    @staticmethod
+    def _describe(info):
+        bits = [f"serial {info.serial}"] if info.serial else ([f"index {info.index}"] if info.index is not None else [])
+        return f"{info.driver}: {info.label}" + (f" ({', '.join(bits)})" if bits else "")
+
+    def scan(self):
+        """Look for attached radios and log what appeared or vanished since the last scan (the first logs all of them).
+        -> the list of `DeviceInfo`"""
+        found = [i for i in devices.find() if i.driver in self.types()]
+        now = {self._key(i): i for i in found}
+        if self._attached is None:
+            if not found:
+                self.log.info("no radios found attached to this machine")
+            for info in found:
+                self.log.info("found %s", self._describe(info))
+        else:
+            for key, info in now.items():
+                if key not in self._attached:
+                    self.log.info("radio connected: %s", self._describe(info))
+            for key, info in self._attached.items():
+                if key not in now:
+                    self.log.warning("radio disconnected: %s", self._describe(info))
+        self._attached = now
+        return found
+
+    def _scan_loop(self):
+        while True:
+            try:
+                self.scan()
+            except Exception:
+                self.log.exception("looking for radios failed")
+            if self._stop.wait(self.scan_interval if self.scan_interval > 0 else 10.0):
+                return
+
     def _expire_leases(self):
         if self.lease <= 0:
             return
         now = time.monotonic()
         for w in list(self.workers.values()):
             if w.token is not None and now - w.last_seen > self.lease:
-                self.log.warning("%s: controller lease expired", w.id)
+                self.log.warning("%s: controller lease expired after %.0f s of silence", w.id, now - w.last_seen)
                 w.release()
 
     # --- C2 ops --- #
@@ -581,7 +640,8 @@ class Server:
             device.close()
             raise
         self.workers[worker.id] = worker
-        self.log.info("hosting %s", worker.id)
+        self.log.info("hosting %s (%s) with %s: ctrl %s, rx %s", worker.id, worker.capabilities.get("name", dtype),
+                      "a client in control" if controlled else "no controller", worker.endpoints["ctrl"], worker.endpoints["rx"])
         return worker, (worker.claim() if controlled else None)
 
     def relay(self, address, device=None, *, open=None, control="auto", name=None, timeout=5.0, transport="auto"):
@@ -646,9 +706,12 @@ class Server:
             return {"device": worker.id, "type": worker.type, "endpoints": worker.endpoints,
                     "controlled": worker.token is not None, "wire": protocol.wire_name(worker.wire)}
         if op == "claim":
+            self.log.info("%s: claimed by a client", msg.get("device"))
             return {"token": self._worker(msg).claim(), "lease": self.lease}
         if op == "release":
-            self._controller(msg).release()
+            worker = self._controller(msg)
+            self.log.info("%s: released by its controller", worker.id)
+            worker.release()
             return None
         if op == "ping":
             self._controller(msg)
@@ -656,6 +719,7 @@ class Server:
         if op == "close":
             worker = self._controller(msg)
             del self.workers[worker.id]
+            self.log.info("%s: closed by its controller", worker.id)
             worker.close()
             return None
         raise ValueError(f"unknown op {op!r}")

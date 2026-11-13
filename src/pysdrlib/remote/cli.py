@@ -42,7 +42,11 @@ def add_parsers(sub):
     s.add_argument("--wire", "--rx-wire", dest="wire", default="native", help="default RX wire format: native (device's own sample layout, default), complex64, int8, int16, ...")
     s.add_argument("--lease", type=float, default=15.0, help="seconds a silent controller keeps control, 0 = forever (default %(default)s)")
     s.add_argument("--no-shm", dest="shm", action="store_false", help="don't offer clients on this machine the samples in shared memory")
-    s.add_argument("-v", "--verbose", action="store_true")
+    s.add_argument("--scan-interval", type=float, default=10.0, help="seconds between looks at which radios are attached, logging ones that appear or vanish, 0 = only at startup (default %(default)s)")
+    s.add_argument("--uhd-log", metavar="LEVEL", help="how much of UHD's own console log to show: trace, debug, info, warning, error, fatal or off "
+                   "(default: warning, or UHD_LOG_CONSOLE_LEVEL if set)")
+    s.add_argument("--log-timestamps", action="store_true", help="prefix log lines with a time (default off: journald adds one)")
+    s.add_argument("-v", "--verbose", action="store_true", help="also log debug detail")
 
     y = sub.add_parser("relay", help="host a device of another server here, so programs on this machine share one connection to it")
     y.add_argument("address", help="the far server's C2 endpoint, e.g. tcp://host:5555")
@@ -175,24 +179,36 @@ def _transmit(dev, args):
     print(f"transmitted {total:,} samples from {args.input}")
 
 def run_server(args):
-    """`pysdrlib server`: host devices until Ctrl+C"""
+    """`pysdrlib server`: host devices until Ctrl+C or SIGTERM. Logs to stderr (the journal, under systemd)"""
+    import logging
+    import signal
+    import os
+    from .. import logger
+    if args.uhd_log:   # UHD reads this when its library loads (the first scan), so set it before then
+        os.environ["UHD_LOG_CONSOLE_LEVEL"] = args.uhd_log
+    logger.configure(logging.DEBUG if args.verbose else logging.INFO, timestamps=args.log_timestamps)
+    log = logger.new("remote.cli")
     from .server import Server
-    if args.verbose:
-        import logging
-        from .. import logger
-        logger.LOGGING = True
-        logging.basicConfig(level=logging.DEBUG)
     devices = args.devices.split(",") if args.devices else None
-    server = Server(args.bind, port_range=args.port_range, devices=devices, lease=args.lease, wire=args.wire, shm=args.shm)
+    server = Server(args.bind, port_range=args.port_range, devices=devices, lease=args.lease, wire=args.wire, shm=args.shm,
+                    scan_interval=args.scan_interval)
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))   # systemd stop: shut down cleanly
+    log.info("pysdrlib server on %s (device types: %s; lease %gs; shm %s)", server.endpoint, ", ".join(server.types()),
+             args.lease, "on" if args.shm else "off")
+    try:
+        server.scan()
+    except Exception:
+        log.exception("looking for radios failed")
     try:
         for dtype in args.open:
-            worker, _ = server.open_device(dtype)
-            print(f"hosting {worker.id}")
+            server.open_device(dtype)
     except Exception as e:
         server.stop()
         raise SystemExit(f"failed to open device: {e}")
-    print(f"pysdrlib server on {server.endpoint} (devices: {', '.join(server.types())}); Ctrl+C to stop")
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        log.info("server stopped")
 
 def run_relay(args):
     """`pysdrlib relay`: host a far device here until Ctrl+C, or until the far server stops answering"""
