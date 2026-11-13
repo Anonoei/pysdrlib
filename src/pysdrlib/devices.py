@@ -282,7 +282,7 @@ def connect(address: str, device: Optional[str] = None, *, claim=False, reuse=Fa
     them the ones that say who you are and what you need, so the server can pick a radio:
 
         sdr = pysdrlib.connect(addr, program="pyspecan", need={"freq": 433e6, "rate": 2e6}, want={"rate": 10e6})
-        sdr = pysdrlib.connect(addr, "hackrf", serial="0000...c3", program="pyspecan")
+        sdr = pysdrlib.connect(addr, "<driver>", serial="SERIAL", program="pyspecan")
         sdr.granted                         # what the radio can do nearest to what you wanted
 
     `program` names your program (the server shows it in `list`), `serial`/`label` choose a unit, `need`/`want` are dicts of
