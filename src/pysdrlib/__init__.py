@@ -37,7 +37,7 @@ PyPI: https://pypi.org/project/pysdrlib/
 | `pysdrlib.contributing` | How to add a driver for a new radio |
 """
 
-__version__ = "0.4.2"
+__version__ = "0.4.3"
 __author__ = "Anonoei <to+dev@an0.us>"
 
 from . import err
