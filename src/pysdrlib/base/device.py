@@ -146,6 +146,13 @@ class Device:
     def __str__(self):
         return f"{type(self).__name__}: {self.state}"
 
+    @classmethod
+    def find(cls, **kwargs) -> list:
+        """[DeviceInfo] of the units of this driver that are attached, for `pysdrlib.find`. A driver that can list them
+        overrides it (it must not open a radio, and takes `addresses` and/or `timeout` if it can look at a network:
+        see `pysdrlib.find`); by default there are none to list, and `pysdrlib.open(name, ...)` is how it is opened"""
+        return []
+
     def open(self, *args, **kwargs):
         """Connect to device. serial=...: the unit with this serial number (where the driver can choose)"""
         if self.state["open"]:

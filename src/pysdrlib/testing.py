@@ -191,6 +191,8 @@ def check_package(name) -> list:
     problems += check_driver(device)
     if not callable(getattr(module, "find", None)):
         add(WARNING, "has no find(): pysdrlib.find() cannot list its units")
+    if name not in devices._packages():   # a driver from outside pysdrlib: no package of ours to look into
+        return problems
     folder = Path(module.__file__).parent
     if not (folder / "README.md").is_file():
         add(WARNING, "has no README.md (what it is, its specs, what to install)")

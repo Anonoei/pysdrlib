@@ -3,6 +3,7 @@
     python -m pysdrlib.scaffold my_radio                       # a driver on a compiled extension (C++ and Python)
     python -m pysdrlib.scaffold my_radio --class MyRadio       # name the Device class (default: CamelCase of the name)
     python -m pysdrlib.scaffold my_radio --python-only         # no extension: a Device that talks to its radio in Python
+    python -m pysdrlib.scaffold my_radio --out-of-tree         # a package of its own (not in pysdrlib) that pysdrlib finds once installed
 
 It writes the files `pysdrlib.contributing` lists, filled in with the names, and fails if any already exists. The
 Python driver imports and passes `pysdrlib.testing.check_driver` as generated; what it can't know (the vendor's API,
@@ -213,6 +214,63 @@ TODO: what the first import looks for (system library, cache, bundled build) and
 TODO: anything measured (retune settling, rates that drop samples), udev rules, quirks.
 '''
 
+# --------------------------------------------------------------------------- out-of-tree templates
+# A driver that lives in its own package: the Python-only device with absolute imports, an entry point, and a test.
+DEVICE_OUT = DEVICE_PY.replace("from ..base.", "from pysdrlib.base.").replace("from .. import err", "from pysdrlib import err")
+
+INIT_OUT = '''from .@NAME@ import @CLASS@
+
+Device = @CLASS@
+'''
+
+PYPROJECT_OUT = '''[build-system]
+requires = ["setuptools>=77.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pysdrlib-@DIST@"
+version = "0.1.0"
+description = "TODO: one line on the radio. A pysdrlib driver"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["pysdrlib"]
+
+# This is how pysdrlib learns of the driver: once installed, pysdrlib.find / open / ls know "@NAME@".
+[project.entry-points."pysdrlib.drivers"]
+@NAME@ = "pysdrlib_@NAME@:@CLASS@"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+'''
+
+README_OUT = '''# pysdrlib-@DIST@
+
+TODO: what the radio is, and links.
+
+    pip install -e .
+    python -c "import pysdrlib; print(pysdrlib.devices.ls())"      # includes "@NAME@"
+    python -c "import pysdrlib; sdr = pysdrlib.open('@NAME@')"
+
+See `pysdrlib.contributing` for what the `Device` hooks do.
+'''
+
+TEST_OUT = '''from pysdrlib import testing
+
+from pysdrlib_@NAME@ import @CLASS@
+
+
+def test_conforms_to_pysdrlib():
+    problems = testing.check_driver(@CLASS@)
+    assert not testing.errors(problems), "\\n".join(map(str, problems))
+
+
+def test_pysdrlib_finds_it():
+    """Needs the package installed (pip install -e .), which is what registers the entry point"""
+    import pysdrlib
+    assert "@NAME@" in pysdrlib.devices.ls()
+    assert pysdrlib.devices.get("@NAME@").Device is @CLASS@
+'''
+
 # --------------------------------------------------------------------------- C++ templates
 HPP = '''#pragma once
 
@@ -356,9 +414,20 @@ PYBIND11_MODULE(_@NAME@, m) {
 }
 '''
 
-def files(name, cls, native=True):
-    """{path relative to the pysdrlib package: text} of a new driver"""
-    names = {"NAME": name, "CLASS": cls, "UPPER": name.upper()}
+def files(name, cls, native=True, out_of_tree=False):
+    """{path relative to the pysdrlib package (or, out of tree, to the folder that holds the new project): text} of a
+    new driver"""
+    names = {"NAME": name, "CLASS": cls, "UPPER": name.upper(), "DIST": name.replace("_", "-")}
+    if out_of_tree:
+        project = f"pysdrlib-{names['DIST']}"
+        out = {
+            f"{project}/pyproject.toml": PYPROJECT_OUT,
+            f"{project}/README.md": README_OUT,
+            f"{project}/src/pysdrlib_{name}/__init__.py": INIT_OUT,
+            f"{project}/src/pysdrlib_{name}/{name}.py": DEVICE_OUT,
+            f"{project}/tests/test_{name}.py": TEST_OUT,
+        }
+        return {path: _fill(text, names) for path, text in out.items()}
     out = {
         f"{name}/__init__.py": INIT if native else INIT_PY,
         f"{name}/{name}.py": DEVICE if native else DEVICE_PY,
@@ -374,17 +443,21 @@ def files(name, cls, native=True):
         })
     return {path: _fill(text, names) for path, text in out.items()}
 
-def new_driver(name, cls=None, native=True, root=None):
+def new_driver(name, cls=None, native=True, root=None, out_of_tree=False):
     """Write the skeleton of the driver `name` under `root` (default: the pysdrlib package). Returns the paths written;
-    raises FileExistsError, writing nothing, if any already exists"""
-    if not re.fullmatch(r"[a-z][a-z0-9_]*", name) or name in ("base", "file", "remote", "testing", "scaffold"):
+    raises FileExistsError, writing nothing, if any already exists.
+    out_of_tree: a project of its own, `pysdrlib-<name>/` under `root` (default: the current folder), which pysdrlib
+    finds through an entry point once installed. It is always a Python-only driver (`native` is ignored)"""
+    from . import devices
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", name) or name in ("base", "file", "remote", "testing", "scaffold") \
+            or name in devices.ls() or name in devices._packages():
         raise ValueError(f"{name!r}: a driver name is lower case letters, digits and underscores, starting with a letter, "
                          "and not one pysdrlib already uses")
     cls = cls or camel(name)
     if not cls.isidentifier():
         raise ValueError(f"{cls!r} is not a valid class name")
-    root = Path(root) if root else PACKAGE
-    planned = {root / path: text for path, text in files(name, cls, native).items()}
+    root = Path(root) if root else (Path.cwd() if out_of_tree else PACKAGE)
+    planned = {root / path: text for path, text in files(name, cls, native, out_of_tree).items()}
     existing = [str(p) for p in planned if p.exists()]
     if existing:
         raise FileExistsError("already exists: " + ", ".join(existing))
@@ -393,7 +466,15 @@ def new_driver(name, cls=None, native=True, root=None):
         path.write_text(text, encoding="utf-8")
     return list(planned)
 
-def next_steps(name, cls, native=True):
+def next_steps(name, cls, native=True, out_of_tree=False):
+    if out_of_tree:
+        return "\n".join([
+            f"1. Fill in every TODO: pysdrlib-{name.replace('_', '-')}/src/pysdrlib_{name}/{name}.py, starting with CAPS "
+            "(the radio's limits and gain stages)",
+            f"2. cd pysdrlib-{name.replace('_', '-')} && pip install -e . && pytest   (the install registers the driver with pysdrlib)",
+            f"3. pysdrlib.open('{name}') now works in any program, and `pysdrlib server` can host it.",
+            "See pysdrlib.contributing for the whole guide.",
+        ])
     steps = [
         f"1. Fill in every TODO: src/pysdrlib/{name}/{name}.py, starting with CAPS (the radio's limits and gain stages)"
         + (f", then the C++ in src/pysdrlib/_native/{name}/ and _ext/{name}.py (make get() return the extension)." if native else "."),
@@ -411,18 +492,21 @@ def main(argv=None):
     parser.add_argument("name", help="driver name: its package, lower case with underscores (e.g. bladerf, rtl_sdr)")
     parser.add_argument("--class", dest="cls", help="Device class name (default: CamelCase of the name)")
     parser.add_argument("--python-only", action="store_true", help="no compiled extension: a Device written in Python")
-    parser.add_argument("--root", help="directory to write into (default: the installed pysdrlib package)")
+    parser.add_argument("--out-of-tree", action="store_true",
+                        help="a project of its own that pysdrlib finds once installed (implies --python-only)")
+    parser.add_argument("--root", help="directory to write into (default: the installed pysdrlib package; "
+                                       "with --out-of-tree, the current folder)")
     args = parser.parse_args(argv)
     try:
-        written = new_driver(args.name, args.cls, not args.python_only, args.root)
+        written = new_driver(args.name, args.cls, not args.python_only, args.root, args.out_of_tree)
     except (ValueError, FileExistsError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    base = Path(args.root) if args.root else PACKAGE
+    base = Path(args.root) if args.root else (Path.cwd() if args.out_of_tree else PACKAGE)
     for path in written:
         print("created", path.relative_to(base))
     print()
-    print(next_steps(args.name, args.cls or camel(args.name), not args.python_only))
+    print(next_steps(args.name, args.cls or camel(args.name), not args.python_only, args.out_of_tree))
     return 0
 
 if __name__ == "__main__":

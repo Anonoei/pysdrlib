@@ -26,7 +26,7 @@ PyPI: https://pypi.org/project/pysdrlib/
 
 | Module | What it is |
 | --- | --- |
-| `pysdrlib.devices` | Finding and opening devices: `pysdrlib.find`, `pysdrlib.open`, `pysdrlib.device`, `pysdrlib.connect` (one a server hosts) |
+| `pysdrlib.devices` | Finding and opening devices: `pysdrlib.find`, `pysdrlib.open`, `pysdrlib.device`, `pysdrlib.connect` (one a server hosts), `pysdrlib.register` (a driver from outside pysdrlib) |
 | `pysdrlib.base.device` | `pysdrlib.Device`, the API every driver implements (start here for method docs) |
 | `pysdrlib.base.caps` | `pysdrlib.Capabilities`, `pysdrlib.Range` and `pysdrlib.Setting`: what a radio can do |
 | `pysdrlib.<driver>`, one subpackage per supported radio | The hardware drivers |
@@ -47,13 +47,13 @@ from .base.device import Device
 from . import devices
 from .file import File, FileSink
 
-from .devices import device, find, open, connect, DeviceInfo
+from .devices import device, find, open, connect, register, DeviceInfo
 from .base.caps import Capabilities, Range, Setting
 from .base.stream import RxMeta, Event
 
 __all__ = [
     "err", "warn", "devices",
     "Device", "Formats", "File", "FileSink",
-    "device", "find", "open", "connect", "DeviceInfo",
+    "device", "find", "open", "connect", "register", "DeviceInfo",
     "Capabilities", "Range", "Setting", "RxMeta", "Event",
 ]
