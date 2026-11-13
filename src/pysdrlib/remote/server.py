@@ -770,13 +770,22 @@ class Server:
         found.sort(key=lambda f: f[:3])
         return [(f[3], f[4], f[5]) for f in found]
 
+    def _give_back(self, kind, worker):
+        """Let go of a radio `open_matching` took but cannot use: a hosted one is released, one it opened is closed"""
+        if kind == "hosted":
+            worker.release()
+        else:
+            self.workers.pop(worker.id, None)
+            worker.close()
+
     def open_matching(self, dtype=None, serial=None, label=None, need=None, want=None, program=None, init_args=(),
                       init_kwargs=None, wire=None):
         """Open (or take over, if it is hosted and nobody controls it) the best radio for the request (see `choose`).
         -> (worker, token, granted) where `granted` is what the radio can do nearest to `want` (and `need`)"""
         need, want = choose.normalize(need, "need"), choose.normalize(want, "want")
         last = None
-        for kind, target, caps in self.choose(dtype, serial, label, need, want):
+        candidates = self.choose(dtype, serial, label, need, want)
+        for i, (kind, target, caps) in enumerate(candidates):
             try:
                 if kind == "hosted":
                     worker, token = target, target.claim(program)
@@ -794,11 +803,14 @@ class Server:
             if bad:     # the unit is not quite what its driver's class said: it refined its capabilities once open
                 self.log.warning("%s does not meet the need once open: %s", worker.id, "; ".join(bad))
                 last = err.NoDevice(f"{worker.id}: {'; '.join(bad)}")
-                if kind == "hosted":
-                    worker.release()
-                else:
-                    self.workers.pop(worker.id, None)
-                    worker.close()
+                self._give_back(kind, worker)
+                continue
+            if want and any(choose.rank(c, want) < choose.rank(live, want) for _, _, c in candidates[i + 1:]):
+                # opened, it does less of `want` than the class said (discrete rates, a narrower tuner) and a later candidate
+                # is expected to do more: let that one have it
+                self.log.info("%s does less of the request once open than the next candidate is expected to", worker.id)
+                last = err.NoDevice(f"{worker.id} meets less of `want` than another radio")
+                self._give_back(kind, worker)
                 continue
             granted = choose.granted(live, {**need, **want}) if (want or need) else {}
             return worker, token, granted

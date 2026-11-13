@@ -117,6 +117,15 @@ def test_the_cli_parses_a_span_and_a_flag():
     assert choose.normalize(dict([cli._need("freq=430e6:440e6"), cli._need("tx=true")])) == {"freq": [430e6, 440e6], "tx": True}
 
 
+def test_a_rate_must_be_one_the_radio_can_run_at():
+    discrete = caps(rates=((8e6, 8e6), (16e6, 16e6), (32e6, 32e6)))
+    assert choose.met(discrete, {"rate": 16e6})
+    assert choose.problems(discrete, {"rate": 20e6}) == ["cannot run at 20 MHz (nearest is 16 MHz)"]
+    assert choose.problems(caps(rates=((2e6, 20e6),)), {"rate": 1e6})      # below its lowest
+    assert choose.met(caps(rates=((2e6, 20e6),)), {"rate": 20e6})
+    assert choose.met(caps(rates=((0, 20e6, 1e6),)), {"rate": 3e6}) and not choose.met(caps(rates=((0, 20e6, 1e6),)), {"rate": 3.5e6})
+
+
 def test_rtl_declares_its_rate_gap():
     from pysdrlib.rtl_sdr.rtlsdr import RTLSDR
     c = RTLSDR.CAPS
@@ -223,3 +232,45 @@ def test_a_need_the_open_unit_cannot_meet_moves_on(server, monkeypatch):
     with pytest.raises(err.NoDevice, match="refined away"):
         connect(server, need={"rate": 1e6})
     assert not server.workers
+
+
+class _Narrow:
+    """Makes the first unit opened run at 1 MS/s only once open, as a driver with discrete rates does"""
+    done = False
+
+
+@pytestmark_zmq
+def test_an_open_unit_that_does_less_of_want_hands_over_to_the_next(server, monkeypatch):
+    from pysdrlib.sim.sim import Sim
+    real, state = Sim._capabilities, _Narrow()
+
+    def narrow(self, c):
+        c = real(self, c)
+        if not state.done:
+            state.done = True
+            c.rates = [Range(1e6, 1e6)]
+        return c
+    monkeypatch.setattr(Sim, "_capabilities", narrow)
+    sdr = connect(server, need={"rate": 1e6}, want={"rate": 10e6}, program="x")
+    try:
+        assert sdr.granted["rate"] == 10e6
+        assert len(server.workers) == 1     # the one that could not do it was closed
+    finally:
+        sdr.close()
+
+
+@pytestmark_zmq
+def test_a_unit_that_does_less_is_kept_when_nothing_is_better(server, monkeypatch):
+    from pysdrlib.sim.sim import Sim
+    real = Sim._capabilities
+
+    def narrow(self, c):
+        c = real(self, c)
+        c.rates = [Range(1e6, 1e6)]
+        return c
+    monkeypatch.setattr(Sim, "_capabilities", narrow)
+    sdr = connect(server, want={"rate": 10e6}, program="x", serial="AAA")
+    try:
+        assert sdr.granted["rate"] == 1e6
+    finally:
+        sdr.close()

@@ -7,7 +7,7 @@ A client says what it needs (`need`: below this it is of no use) and what it wou
 Both are dicts with any of these keys:
 
     freq        Hz to tune to, or a (low, high) pair of Hz the radio has to be able to tune across without a gap
-    rate        samples/s
+    rate        samples/s the radio has to be able to run at exactly (inside its range, on one of its steps)
     bandwidth   Hz of spectrum seen (the analog filter where the radio has one, else its sample rate)
     channels    how many channels
     tx          True if it must be able to transmit
@@ -23,6 +23,8 @@ This module is pure functions of `pysdrlib.base.caps.Capabilities`: no sockets, 
 import math
 
 from ..base import caps as _caps
+
+RATE_TOLERANCE = 1e-6    # a rate is met when the radio gets within this share of it
 
 FIELDS = ("freq", "rate", "bandwidth", "channels", "tx")
 
@@ -145,10 +147,15 @@ def problems(caps, spec) -> list:
         wanted = _fmt(lo) if lo == hi else f"{_fmt(lo)}-{_fmt(hi)}"
         have = ", ".join(f"{_fmt(r.lo)}-{_fmt(r.hi)}" for r in caps.freq)
         out.append(f"cannot tune {wanted} (tunes {have})")
-    if "rate" in spec:
-        top = _widest(caps.rates)
-        if top is not None and spec["rate"] > top:
-            out.append(f"top sample rate is {_fmt(top)}, not {_fmt(spec['rate'])}")
+    if "rate" in spec and caps.rates:
+        # the radio has to be able to run at it: inside one of its ranges and, where a range steps (or is one value), on a step
+        near = _caps.nearest(caps.rates, spec["rate"])
+        if abs(near - spec["rate"]) > RATE_TOLERANCE * spec["rate"]:
+            top = _widest(caps.rates)
+            if spec["rate"] > top:
+                out.append(f"top sample rate is {_fmt(top)}, not {_fmt(spec['rate'])}")
+            else:
+                out.append(f"cannot run at {_fmt(spec['rate'])} (nearest is {_fmt(near)})")
     if "bandwidth" in spec:
         top = _bandwidth_limit(caps)
         if top is not None and spec["bandwidth"] > top:
