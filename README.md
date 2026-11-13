@@ -20,6 +20,7 @@ For a more robust C implementation with far more hardware, use [SoapySDR](https:
 | [RTL-SDR](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/rtl_sdr) | `rtl_sdr` | |
 | [HackRF](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/hackrf) | `hackrf` | Transmit (half-duplex) |
 | [USRP B210 (UHD)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/uhd) | `uhd` | 2 RX and 2 TX channels |
+| [USRP X310, X410 (UHD)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/uhd#x310-and-x410) | `x310`, `x410` | Experimental, untested on hardware; on a network (`find(addresses=...)`), needs a system libuhd |
 | [RX-888 (ExtIO)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/extio) | `extio` | |
 | [TCP IQ stream](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/tcpiq) | `tcpiq` | Receive raw I/Q from a TCP server; opened by `host=` and `port=`, not listed by `find()` |
 | [BladeRF](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/bladerf) | `bladerf` | Planned |
