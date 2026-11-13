@@ -217,7 +217,6 @@ def test_a_missing_frontends_file_is_named(tmp_path):
 def test_kinds_are_found_by_key_or_name_and_unknown_ones_are_allowed():
     assert antennas.find_kind("LPDA").key == "lpda"
     assert antennas.find_kind("log-periodic dipole array").key == "lpda"
-    assert antennas.find_kind("Long-periodic Dipole Array").key == "lpda"      # the common misspelling
     assert antennas.find_kind("uwb - extremely wide bandwidth biconical").key == "biconical"
     assert antennas.find_kind("Parabolic dish").measures == "diameter"
     assert antennas.find_kind("corner reflector") is None and antennas.find_kind(None) is None

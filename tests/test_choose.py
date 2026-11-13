@@ -139,10 +139,13 @@ def test_the_radio_nearest_above_a_rate_comes_first():
 
 
 def test_rtl_declares_its_rate_gap():
-    from pysdrlib.rtl_sdr.rtlsdr import RTLSDR
+    try:
+        from pysdrlib.rtl_sdr.rtlsdr import RTLSDR
+    except ImportError as exc:      # its compiled extension is not built on every platform (as in tests/devices.py)
+        pytest.skip(f"rtl_sdr unavailable: {exc}")
     c = RTLSDR.CAPS
     assert choose.problems(c, {"rate": 2.4e6}) == []
-    assert choose.granted(c, {"rate": 500e3})["rate"] in (300e3, 900_001)
+    assert choose.granted(c, {"rate": 500e3})["rate"] == 900_001       # the next rate up, across the gap
 
 
 # --- through a server --- #
