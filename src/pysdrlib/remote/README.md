@@ -81,7 +81,8 @@ sdr = pysdrlib.connect(addr, label="RX-888", program="recorder")                
   [frontends.py](frontends.py)) that an LNB, converter or antenna sits on a radio, the server maps it to the radio's own
   tuning, `set_rx_freq`/`set_tx_freq` take and `get_*_freq` return the over-the-air frequency, and `granted` adds `if_freq`,
   `antenna` and `inverted` (`get_rx_inverted()`: the spectrum comes mirrored). Among radios that do equally well, the one
-  whose antenna (`ANT500`: 75 MHz to 1 GHz, and any you define) is best at the wanted `freq` comes first; outside its best
+  whose antenna (`ANT500`: a 20-88 cm 50 ohm whip, best 75 MHz to 1 GHz; add your own with a `kind` such as `lpda` or `dish`, a
+  `size` in metres and an `impedance`, all shown by `list`) is best at the wanted `freq` comes first; outside its best
   band it is only less preferred, not refused.
 - Nothing stops a controller from tuning outside `need`/`want`: they are for choosing and for show, not limits.
 - Command line: `rx --serial SN --program NAME`, or `rx --need rate=2e6 --freq 433.92e6 --rate 10e6` (with no type).

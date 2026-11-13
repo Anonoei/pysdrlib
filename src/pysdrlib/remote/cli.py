@@ -272,6 +272,27 @@ def run_relay(args):
     finally:
         server.stop()
 
+def format_antenna(info):
+    """One antenna as text, e.g. `ANT500 (Whip / monopole, length 20-88 cm, 50 ohm)`; `info` is `Antenna.describe()`"""
+    if not info:
+        return "none"
+    parts = []
+    if info.get("kind_name"):
+        parts.append(info["kind_name"])
+    size = info.get("size")
+    if size:
+        lo, hi = (f"{v * 100:g}" for v in size)
+        parts.append(f"{info.get('measures') or 'size'} {lo} cm" if lo == hi else f"{info.get('measures') or 'size'} {lo}-{hi} cm")
+    if info.get("impedance"):
+        parts.append(f"{info['impedance']:g} ohm")
+    return info["name"] + (f" ({', '.join(parts)})" if parts else "")
+
+def format_chain(chain):
+    """A chain as one line for `list`: its direction, port, the LO it has and the antenna on it"""
+    where = f"{chain['direction']}" + (f" {chain['port']}" if chain.get("port") else "")
+    lo = f", LO {chain['lo'] / 1e6:g} MHz{' (inverted)' if chain.get('invert') else ''}" if chain.get("lo") else ""
+    return f"antenna {where}: {format_antenna(chain.get('antenna'))}{lo}"
+
 def run_client(args):
     """`pysdrlib client`: list, info, rx, watch, set and tx"""
     import pysdrlib
@@ -289,6 +310,8 @@ def run_client(args):
                 for key in ("need", "want"):
                     if d.get(key):
                         print(f"{'':<14} {key}: {d[key]}")
+                for chain in d.get("chains", []):
+                    print(f"{'':<14} {format_chain(chain)}")
             if not devs:
                 print("no devices hosted")
             free = [a for a in res.get("available", []) if not a["hosted"]]

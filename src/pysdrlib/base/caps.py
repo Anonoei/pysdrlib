@@ -95,6 +95,7 @@ class Chain:
     usable: list = field(default_factory=list)
     optimal: list = field(default_factory=list)
     name: str = ""
+    info: dict = field(default_factory=dict, compare=False)     # the antenna's description as the server that sent this chain knew it
 
     def __post_init__(self):
         if self.direction not in DIRECTIONS:
@@ -139,9 +140,19 @@ class Chain:
             return out
         return [Range(max(a.lo, u.lo), min(a.hi, u.hi)) for a in out for u in use if max(a.lo, u.lo) <= min(a.hi, u.hi)]
 
+    def describe(self):
+        """What is known about the antenna on it (`pysdrlib.base.antennas.Antenna.describe`), None when it names none: from the
+        registry where it has it, else what the server said"""
+        if not self.antenna:
+            return None
+        from . import antennas
+        found = antennas.find(self.antenna)
+        return found.describe() if found else (dict(self.info) or {"name": self.antenna})
+
     def json(self):
         return {"direction": self.direction, "port": self.port, "antenna": self.antenna, "lo": self.lo, "invert": self.invert,
-                "usable": _ranges_json(self.usable_ranges()), "optimal": _ranges_json(self.optimal_ranges()), "name": self.name}
+                "usable": _ranges_json(self.usable_ranges()), "optimal": _ranges_json(self.optimal_ranges()), "name": self.name,
+                "antenna_info": self.describe()}
 
 def _standard(name, what):
     if not name:
@@ -153,7 +164,8 @@ def _standard(name, what):
 def chain_from_json(obj) -> Chain:
     return Chain(direction=obj.get("direction", "rx"), port=obj.get("port"), antenna=obj.get("antenna"), lo=obj.get("lo", 0.0),
                  invert=obj.get("invert", False), usable=[Range(*r) for r in obj.get("usable", [])],
-                 optimal=[Range(*r) for r in obj.get("optimal", [])], name=obj.get("name", ""))
+                 optimal=[Range(*r) for r in obj.get("optimal", [])], name=obj.get("name", ""),
+                 info=dict(obj.get("antenna_info") or {}))
 
 @dataclass(frozen=True)
 class Setting:

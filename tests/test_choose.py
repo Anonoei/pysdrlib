@@ -286,3 +286,21 @@ def test_a_unit_that_does_less_is_kept_when_nothing_is_better(server, monkeypatc
         assert sdr.granted["rate"] == 1e6
     finally:
         sdr.close()
+
+
+@pytestmark_zmq
+def test_a_unit_with_a_converter_is_the_one_that_reaches_the_frequency(tmp_path, monkeypatch):
+    from pysdrlib.base.caps import Chain
+    from pysdrlib.remote import frontends
+    units = [DeviceInfo("sim", "Sim A", "AAA", 0, {"serial": "AAA"}), DeviceInfo("sim", "Sim B", "BBB", 1, {"serial": "BBB"})]
+    monkeypatch.setattr("pysdrlib.remote.server.devices.find", lambda *a, **k: list(units))
+    fe = frontends.Frontends([({"serial": "BBB"}, [Chain(lo=9.75e9, antenna="ANT500", name="lnb")])])
+    with Server(f"ipc://{tmp_path}/c2", devices=["sim"], lease=0, frontends=fe) as server:
+        sdr = connect(server, need={"freq": 12e9}, program="x")     # only B, behind the LNB, reaches 12 GHz
+        try:
+            assert sdr.granted["freq"] == 12e9 and sdr.granted["if_freq"] == 2.25e9 and sdr.granted["antenna"] == "ANT500"
+            assert sdr.caps.chains[0].describe()["kind"] == "whip"      # what the client sees of its antenna
+            (chain,) = server.workers[sdr.id].status()["chains"]       # what `list` shows
+            assert chain["antenna"]["name"] == "ANT500" and chain["lo"] == 9.75e9
+        finally:
+            sdr.close()

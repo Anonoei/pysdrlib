@@ -191,6 +191,8 @@ class DeviceWorker:
                 "wire": protocol.wire_name(self.wire),
                 "rx_channels": list(getattr(self.device, "rx_channels", (0,))),
                 "tx_channels": list(getattr(self.device, "tx_channels", (0,))),
+                "chains": [{"direction": c.direction, "port": c.port, "name": c.name, "lo": c.lo, "invert": c.invert,
+                            "antenna": c.describe()} for c in self.device.caps.chains],
             }
 
     # --- control socket --- #

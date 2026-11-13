@@ -5,7 +5,10 @@ just ask for the over-the-air frequency they want (see `choose`, `pysdrlib.base.
 
     {
       "antenna": {                              // antenna standards of your own (ANT500 is built in); usable/optimal: [low, high] Hz
-        "MYWHIP": {"optimal": [[430e6, 440e6]]}
+        "MYLPDA": {"optimal": [[430e6, 440e6]],
+                   "kind": "lpda",                // whip, dipole, biconical, lpda, yagi, dish, horn, discone, patch, helical, loop, or any text
+                   "size": [0.5, 0.9],            // metres: what the kind measures (boom length for lpda, diameter for dish)
+                   "impedance": 50}               // ohms
       },
       "radio": [{                               // picked by any of driver, serial and label (a part of it, case ignored); first match wins
         "serial": "0123ABCD",
@@ -23,7 +26,7 @@ just ask for the over-the-air frequency they want (see `choose`, `pysdrlib.base.
 
 (Comments and `e` notation are for reading here: JSON proper has neither, so write 9750000000 and no comments.) The file is
 read as JSON, unless its name ends in `.toml`; one that is not valid JSON is tried as TOML, with the same keys
-(`[antenna.MYWHIP]`, `[[radio]]`, `[[radio.chain]]`).
+(`[antenna.MYLPDA]`, `[[radio]]`, `[[radio.chain]]`).
 """
 import copy
 import json
@@ -32,7 +35,7 @@ import tomllib
 from ..base import antennas as _antennas
 from ..base import caps as _caps
 
-_ANTENNA_KEYS = {"usable", "optimal", "doc"}
+_ANTENNA_KEYS = {"usable", "optimal", "doc", "kind", "size", "length", "impedance"}
 _RADIO_KEYS = {"driver", "serial", "label", "chain"}
 _CHAIN_KEYS = {"direction", "port", "antenna", "lo", "invert", "usable", "optimal", "name"}
 
@@ -87,9 +90,18 @@ def parse(data) -> Frontends:
     _check("the file", data, {"antenna", "radio"})
     for name, table in (data.get("antenna") or {}).items():
         _check(f"[antenna.{name}]", table, _ANTENNA_KEYS)
-        _antennas.register(_antennas.Antenna(name, usable=_ranges(f"antenna.{name}.usable", table.get("usable", [])),
-                                             optimal=_ranges(f"antenna.{name}.optimal", table.get("optimal", [])),
-                                             doc=str(table.get("doc", ""))), replace=True)
+        if "size" in table and "length" in table:
+            raise ValueError(f"[antenna.{name}] has both 'size' and its old name 'length': keep one")
+        size = table.get("size", table.get("length"))
+        try:
+            _antennas.register(_antennas.Antenna(
+                name, usable=_ranges(f"antenna.{name}.usable", table.get("usable", [])),
+                optimal=_ranges(f"antenna.{name}.optimal", table.get("optimal", [])), doc=str(table.get("doc", "")),
+                kind=str(table["kind"]) if "kind" in table else None,
+                size=tuple(float(v) for v in size) if size is not None else None,
+                impedance=float(table["impedance"]) if "impedance" in table else None), replace=True)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"[antenna.{name}]: {e}") from None
     radios = []
     for i, radio in enumerate(data.get("radio") or []):
         where = f"[[radio]] #{i + 1}"
