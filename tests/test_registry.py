@@ -88,12 +88,13 @@ class TestRegister:
             pysdrlib.register(name, Plugin)
 
     def test_a_shipped_driver_cant_be_taken_unless_asked(self):
-        with pytest.raises(ValueError, match="hackrf"):
-            pysdrlib.register("hackrf", Plugin)
-        pysdrlib.register("hackrf", Plugin, replace=True)
-        assert devices.get("hackrf").Device is Plugin
-        assert devices.unregister("hackrf") is True
-        assert devices.get("hackrf").__name__ == "pysdrlib.hackrf"   # the shipped one is back
+        # "sim", not a hardware driver: those need a compiled extension, which not every platform has
+        with pytest.raises(ValueError, match="sim"):
+            pysdrlib.register("sim", Plugin)
+        pysdrlib.register("sim", Plugin, replace=True)
+        assert devices.get("sim").Device is Plugin
+        assert devices.unregister("sim") is True
+        assert devices.get("sim").__name__ == "pysdrlib.sim"   # the shipped one is back
 
     def test_two_registrations_of_one_name(self):
         pysdrlib.register("dup", Plugin)
@@ -153,9 +154,9 @@ class TestEntryPoints:
         assert "plugin" in drivers and "ghost" not in drivers and "sim" in drivers
 
     def test_cannot_shadow_a_shipped_driver(self, monkeypatch):
-        entry_points(monkeypatch, hackrf=f"{__name__}:Plugin")
-        assert devices.get("hackrf").__name__ == "pysdrlib.hackrf"
-        assert "hackrf" not in devices._registered
+        entry_points(monkeypatch, sim=f"{__name__}:Plugin")
+        assert devices.get("sim").__name__ == "pysdrlib.sim"
+        assert "sim" not in devices._registered
 
     def test_bad_name_is_ignored(self, monkeypatch):
         entry_points(monkeypatch, **{"Bad-Name": f"{__name__}:Plugin"})
