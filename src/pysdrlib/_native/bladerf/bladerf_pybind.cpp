@@ -38,7 +38,8 @@ PYBIND11_MODULE(_bladerf, m) {
         {BRF_PY_UNSUPPORTED_BOARD, "UNSUPPORTED_BOARD", "A bladeRF, but not a 2.0 micro: only that one is supported"},
     });
 
-    py::enum_<Dir>(m, "DIR").value("RX", Dir::RX).value("TX", Dir::TX);
+    // module_local: the UHD extension binds a C++ `Dir` too, and a second global registration of it fails to import
+    py::enum_<Dir>(m, "DIR", py::module_local()).value("RX", Dir::RX).value("TX", Dir::TX);
     py::enum_<bladerf_gain_mode>(m, "GAIN_MODE")
         .value("DEFAULT", BLADERF_GAIN_DEFAULT)
         .value("MGC", BLADERF_GAIN_MGC)

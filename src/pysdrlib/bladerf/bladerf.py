@@ -6,6 +6,7 @@ from .. import err
 from . import lib
 
 CLOCK_SOURCES = ("internal", "external")
+GAIN_MODE = lib.bladerf.GAIN_MODE   # the extension's enum (bound here: tests replace `lib.bladerf` with a fake)
 
 class BladeRF(NativeDevice):
     """Nuand bladeRF 2.0 micro (xA4, xA9) through libbladeRF. Two channels each way: every control takes `channel`, and
@@ -32,9 +33,13 @@ class BladeRF(NativeDevice):
     CAN_TRANSMIT = True
     DUPLEX = True
     SAMPLE_FORMAT = convert.INT12   # SC16 Q11: interleaved signed 16-bit I/Q, 12 significant bits
-    # After a retune: transfers in flight on USB (libbladeRF keeps 16 of 16384 samples) and the AD9361's PLL lock. Estimates
-    # from the stream settings, not measured: re-measure on hardware as the HackRF's comments describe
-    RETUNE_SAMPLES = 16 * 16384
+    # After a retune: bladerf_set_frequency returns only once the AD9361's PLL is locked, ~11 ms for a hop within a band and
+    # ~130 ms across bands (100 MHz <-> 2.4/5 GHz, which recalibrates), and the stream mark is taken when it returns. Measured
+    # on a bladeRF 2.0 micro xA4 (FPGA 0.16.0, firmware 2.6.0, USB 3) at 2, 10 and 40 MS/s, retuning at random moments
+    # between an FM station and a quiet frequency (100 <-> 125 MHz, 100 MHz <-> 5 GHz): at most 2034 samples from before
+    # the retune after the mark (2 MS/s), and none at 10 or 40; the level had settled before the mark every time. So one
+    # 16384-sample buffer plus 5 ms is margin, checked with flush=True (see the README)
+    RETUNE_SAMPLES = 16384
     RETUNE_SETTLE = 0.005
 
     SETTINGS = {
@@ -53,7 +58,7 @@ class BladeRF(NativeDevice):
         if serial_number is not None:
             args = f"*:serial={serial_number}"
         try:
-            return lib.bladerf.open(args)
+            device = lib.bladerf.open(args)
         except lib.err.NOT_FOUND as exc:
             raise err.NoDevice("No bladeRF devices found!") from exc
         except lib.err.UNSUPPORTED_BOARD as exc:
@@ -62,6 +67,11 @@ class BladeRF(NativeDevice):
             raise err.NoDevice(f"{exc}: install libbladeRF's udev rules (88-nuand-bladerf2.rules) or run as root") from exc
         except (lib.err.UPDATE_FW, lib.err.UPDATE_FPGA) as exc:
             raise err.NoDevice(f"{exc}: update it with `bladeRF-cli --flash-firmware` / `--flash-fpga`") from exc
+        # libbladeRF opens the receivers in the AD9361's AGC, which overrides any gain set; pysdrlib's gain mode starts at
+        # "manual" (get_rx_gain_mode), so make the hardware match it
+        for ch in range(device.num_rx_channels()):
+            device.set_rx_gain_mode(GAIN_MODE.MGC, ch)
+        return device
 
     def _channels(self, direction):
         return range(self.device.num_rx_channels() if direction == "rx" else self.device.num_tx_channels())
@@ -105,7 +115,7 @@ class BladeRF(NativeDevice):
         if direction == "tx":
             raise err.NotSupported(f"{type(self).NAME} has no TX gain modes")
         # "auto" is libbladeRF's default mode: the AD9361's slow-attack AGC
-        self.device.set_rx_gain_mode(lib.bladerf.GAIN_MODE.DEFAULT if mode == "auto" else lib.bladerf.GAIN_MODE.MGC, channel)
+        self.device.set_rx_gain_mode(GAIN_MODE.DEFAULT if mode == "auto" else GAIN_MODE.MGC, channel)
     def _set_bandwidth(self, direction, bandwidth, channel=0):
         if direction == "rx":
             return self.device.set_rx_bandwidth(float(bandwidth), channel)
