@@ -75,7 +75,13 @@ class TestGain:
         assert sdr.rx_gain_modes() == ["manual", "auto"] and sdr.tx_gain_modes() == ["manual"]
         sdr.set_rx_gain_mode("auto")
         sdr.set_rx_gain_mode("manual")
-        assert calls(sdr, "set_rx_gain_mode") == [(native.GAIN_MODE.DEFAULT, 0), (native.GAIN_MODE.MGC, 0)]
+        assert calls(sdr, "set_rx_gain_mode")[-2:] == [(native.GAIN_MODE.DEFAULT, 0), (native.GAIN_MODE.MGC, 0)]
+
+    def test_open_leaves_the_receivers_in_manual(self, sdr):
+        # libbladeRF opens in the AGC, which would override every gain set while get_rx_gain_mode() says "manual"
+        from pysdrlib.bladerf.lib import bladerf as native
+        assert calls(sdr, "set_rx_gain_mode")[:2] == [(native.GAIN_MODE.MGC, 0), (native.GAIN_MODE.MGC, 1)]
+        assert sdr.get_rx_gain_mode() == "manual"
 
 
 class TestControls:

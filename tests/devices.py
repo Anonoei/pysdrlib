@@ -97,7 +97,7 @@ class FakeDevice:
     def __init__(self, returns, fmt=None):
         self.calls = []
         self.rx_callback = None
-        self._returns = returns
+        self._returns = dict(returns)      # a copy: a test that changes one must not change the spec for the rest
         self.format = fmt
         self.clock = time.monotonic        # a test may replace it, with the watchdog's
         self._ring = RotatingBuffer()
@@ -114,6 +114,11 @@ class FakeDevice:
             raise AttributeError(name)
         def call(*args):
             self.calls.append((name, *args))
+            if name not in self._returns and name.startswith("get_"):   # a getter reads back what its setter set
+                setter = "set_" + name[4:]
+                for call in reversed(self.calls):
+                    if call[0] == setter:
+                        return call[1]
             result = self._returns.get(name)
             return result(*args) if callable(result) else result
         return call
@@ -237,7 +242,7 @@ BLADERF_FAKE = {
     "num_rx_channels": lambda: 2, "num_tx_channels": lambda: 2,
     "rx_bandwidth_range": lambda c=0: (200e3, 56e6, 1.0), "tx_bandwidth_range": lambda c=0: (200e3, 56e6, 1.0),
     "set_rx_bandwidth": lambda bw, c=0: bw, "set_tx_bandwidth": lambda bw, c=0: bw,
-    "get_clock_output": lambda: False, "sensors": lambda: {"rfic_temperature": "41.5", "pll_locked": "true"},
+    "sensors": lambda: {"rfic_temperature": "41.5", "pll_locked": "true"},
     "info": lambda: {"serial": "ABC123", "board": "bladerf2", "usb_speed": "super"},
 }
 

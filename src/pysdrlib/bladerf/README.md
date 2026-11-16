@@ -34,9 +34,21 @@ The transmit stream carries none: if `write` falls behind, silence is sent and c
 
 The gain is in whole dB because libbladeRF takes it as an integer: the AD9361's attenuator has quarter-dB steps that it does not offer.
 
-**Not measured.** This driver was written without a bladeRF attached: it builds and passes the contract tests over a fake
-extension, but `RETUNE_SAMPLES` and `RETUNE_SETTLE` are estimates from the stream settings, and nothing here has streamed
-real samples. Run the `hardware` tests (`PYSDRLIB_HW=1 pytest`) with a unit attached before relying on it.
+**Tested on hardware** (bladeRF 2.0 micro xA4, FPGA 0.16.0, firmware 2.6.0, libbladeRF 2.6.0, USB 3, Linux): the `hardware`
+tests (`PYSDRLIB_HW=1 pytest -m hardware -k bladerf`) pass, and a reader keeps up with no loss from 0.52 to 61.44 MS/s.
+
+- Retuning: `bladerf_set_frequency` returns once the PLL is locked, ~11 ms within a band and ~130 ms across bands
+  (100 MHz <-> 2.4/5 GHz), and pysdrlib marks the stream when it returns. At most 2034 samples from before a retune arrived
+  after the mark (2 MS/s, none at 10 and 40 MS/s), so `RETUNE_SAMPLES` is one 16384-sample buffer and `RETUNE_SETTLE` 5 ms;
+  `set_rx_freq(f, flush=True)` gave a clean next block in 72 of 72 tries (100 <-> 125 MHz and 100 MHz <-> 5 GHz, at 2, 10
+  and 40 MS/s). A retune's event in `read(meta=True)` is placed at that mark, so it is late by the call's duration: the
+  samples just before it are already at the new frequency.
+- Gain: libbladeRF opens the receivers in the AD9361's AGC; the driver switches them to manual, which is what
+  `get_rx_gain_mode()` reports. The AD9361 reports the gain of an enabled receiver only: read back while streaming.
+- A host that falls behind can lose samples with no break in the stream's timestamps, so `stats.missing` (the rate
+  check), not a gap, is what shows it.
+
+Two-channel streaming and transmitting (zeros at -89 dB) were checked for plumbing only; no RF was measured on TX.
 
 ## Libraries
 libbladeRF is the system one if installed (`apt install libbladerf2`), else built (`pysdrlib build bladerf`) from a trimmed
