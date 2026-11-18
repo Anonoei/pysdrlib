@@ -1,0 +1,77 @@
+#pragma once
+
+#include <atomic>
+#include <cstdint>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "hardware_wrapper.hpp"
+
+enum TcpIqErrorCode {
+    TCPIQ_ERROR_FAILED = -1001,    // a socket call failed; the message says which
+    TCPIQ_ERROR_CONNECT = -1002,   // could not connect to the server
+    TCPIQ_ERROR_BIND = -1003,      // could not listen on the address (in use, no permission, bad address)
+    TCPIQ_ERROR_NOT_OPEN = -1004,
+    TCPIQ_ERROR_BUSY = -1005,
+};
+
+// The sockets of an open stream (opaque outside the .cpp: the platform's socket type lives there)
+struct TcpIqConn;
+
+// Raw interleaved I/Q over TCP, either end of the connection:
+//   connect: pysdrlib is the client of a server that sends samples
+//   listen:  pysdrlib is the server, and a client connects and sends samples
+// Either way a thread of the device's own reads the socket and hands whole samples to the receive path
+// (hardware_rx.hpp: complex64 conversion and the ring), never touching Python. The socket is drained as fast
+// as the network delivers: if Python reads too slowly the ring drops the oldest samples, the sender is never held up.
+//
+// Listening, the thread runs from open to close: it serves one client at a time and accepts the next when one
+// disconnects, and reads (and discards) what arrives while not receiving. Connected, it reads while receiving.
+class TcpIqDevice : public HardwareDevice<TcpIqConn*> {
+public:
+    TcpIqDevice() = default;
+    ~TcpIqDevice() override;
+
+    // Connect to `host`:`port`, waiting up to `timeout` seconds
+    void open_connect(const std::string& host, uint16_t port, double timeout, const SampleFormat& format);
+    // Listen on `host`:`port` (port 0: any free one, see port())
+    void open_listen(const std::string& host, uint16_t port, const SampleFormat& format);
+    void close() override;
+
+    SampleFormat rx_sample_format() const override { return format_; }
+
+    void start_rx() override;
+    void stop_rx() override;
+    bool is_streaming() const override { return streaming_; }
+
+    bool listening() const { return listening_; }
+    bool eof() const { return eof_; }                       // connected: the server closed the stream
+    std::string peer() const;                               // "host:port" of the other end; "" when none
+    uint64_t connections() const { return connections_; }  // clients accepted since open (listening)
+    uint16_t port() const { return port_; }                 // the local port
+
+protected:
+    HardwareError not_open_error() const override;
+
+private:
+    void io_loop();
+    void stop_thread();
+    void drop_client();
+    void receive(size_t got);
+
+    SampleFormat format_{SampleKind::Float, 32, 32, false};
+    std::thread io_;
+    std::mutex stream_mutex_;          // start/stop/close
+    mutable std::mutex peer_mutex_;
+    std::string peer_;
+    std::atomic<bool> stop_{false};
+    std::atomic<bool> streaming_{false};
+    std::atomic<bool> eof_{false};
+    std::atomic<uint64_t> connections_{0};
+    bool listening_ = false;
+    uint16_t port_ = 0;
+    std::vector<unsigned char> buf_;   // a read, after `carry_` bytes of a sample split by the previous one
+    size_t carry_ = 0;
+};

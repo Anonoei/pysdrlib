@@ -1,23 +1,17 @@
-"""Drivers from outside pysdrlib (`pysdrlib.register`, the "pysdrlib.drivers" entry points), `find`'s addresses, and tcpiq.
+"""Drivers from outside pysdrlib (`pysdrlib.register`, the "pysdrlib.drivers" entry points), `find`'s addresses.
 
-No hardware: the plugins are classes made here, and tcpiq talks to a server on the loopback.
+No hardware: the plugins are classes made here. (tcpiq: tests/test_tcpiq.py)
 """
 import importlib
-import socket
 import sys
-import threading
-import time
 import tomllib
 from importlib.metadata import EntryPoint
 
-import numpy as np
 import pytest
 
 import pysdrlib
 from pysdrlib import devices, err, scaffold, testing
-from pysdrlib.base import convert
 from pysdrlib.sim import Sim
-from pysdrlib.tcpiq import TcpIq
 
 
 class Plugin(Sim):
@@ -250,87 +244,6 @@ class TestFindAddresses:
     def test_shipped_finders_take_no_arguments_and_still_work(self):
         assert pysdrlib.find(addresses="192.168.10.2", timeout=1) is not None
         assert [i.driver for i in pysdrlib.find("sim", virtual=True, addresses="1.2.3.4")] == ["sim"]
-
-
-# ---------------------------------------------------------------- tcpiq
-@pytest.fixture
-def server():
-    """A TCP server on the loopback that sends `payload` to the first client, then holds the connection `hold` seconds"""
-    srv = socket.socket()
-    srv.bind(("127.0.0.1", 0))
-    srv.listen(1)
-    state = {"payload": b"", "hold": 0.5}
-
-    def serve():
-        try:
-            conn, _ = srv.accept()
-        except OSError:
-            return
-        with conn:
-            conn.sendall(state["payload"])
-            time.sleep(state["hold"])
-
-    threading.Thread(target=serve, daemon=True).start()
-    state["port"] = srv.getsockname()[1]
-    yield state
-    srv.close()
-
-
-def tone(n=100_000):
-    return np.exp(2j * np.pi * 0.1 * np.arange(n)).astype(np.complex64)
-
-
-class TestTcpIq:
-    def test_is_a_shipped_driver_that_conforms(self):
-        assert "tcpiq" in devices.ls()
-        assert not testing.errors(testing.check_package("tcpiq"))
-        assert pysdrlib.find("tcpiq") == []   # nothing to enumerate
-
-    def test_reads_what_the_server_sends(self, server):
-        x = tone()
-        server["payload"] = x.tobytes()
-        with pysdrlib.open("tcpiq", host="127.0.0.1", port=server["port"]) as sdr:
-            sdr.initialize(cf=100e6, Fs=1e6)
-            sdr.start_rx()
-            y = sdr.read(65536, timeout=2.0)
-            sdr.stop_rx()
-        assert y.dtype == np.complex64 and np.array_equal(y, x[:65536])
-
-    def test_other_sample_formats_and_split_samples(self, server):
-        x = (0.5 * tone(40_000)).astype(np.complex64)
-        raw = convert.INT16.from_complex64(x).tobytes()
-        server["payload"] = raw[:1001] + b""   # ends mid-sample on purpose: whole samples only reach the ring
-        sdr = TcpIq(sample_format=convert.INT16)
-        sdr.open(host="127.0.0.1", port=server["port"])
-        sdr.initialize(cf=1e6, Fs=1e6)
-        sdr.start_rx()
-        y = sdr.read(250, timeout=2.0)
-        sdr.stop_rx()
-        sdr.close()
-        assert len(y) == 250 and np.allclose(y, x[:250], atol=2 / 32768)
-
-    def test_end_of_stream_is_noticed(self, server):
-        server["payload"] = tone(1000).tobytes()
-        server["hold"] = 0.05
-        sdr = TcpIq()
-        sdr.open(host="127.0.0.1", port=server["port"])
-        sdr.initialize(cf=1e6, Fs=1e6)
-        sdr.start_rx()
-        deadline = time.time() + 2
-        while not sdr.eof and time.time() < deadline:
-            time.sleep(0.01)
-        assert sdr.eof and len(sdr.read(1000, timeout=1.0)) == 1000
-        sdr.stop_rx()
-        sdr.close()
-
-    def test_needs_a_server_that_is_there(self):
-        with pytest.raises(err.NoDevice, match="host"):
-            pysdrlib.open("tcpiq")
-        with socket.socket() as s:   # a port nothing listens on
-            s.bind(("127.0.0.1", 0))
-            port = s.getsockname()[1]
-        with pytest.raises(err.NoDevice, match="cannot connect"):
-            pysdrlib.open("tcpiq", host="127.0.0.1", port=port, timeout=1.0)
 
 
 # ---------------------------------------------------------------- the out-of-tree scaffold

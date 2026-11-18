@@ -201,8 +201,8 @@ def check_package(name) -> list:
             add(ERROR, f"has no _ext/{name}.py (how its vendor library is found or built, and its extension)")
         else:
             ext = importlib.import_module(f"pysdrlib._ext.{name}")
-            if getattr(ext, "LIB", None) is None:
-                add(ERROR, f"_ext/{name}.py defines no LIB (a utils.VendorLibrary)")
+            if not hasattr(ext, "LIB"):   # LIB = None: an extension that needs no vendor library (tcpiq)
+                add(ERROR, f"_ext/{name}.py defines no LIB (a utils.VendorLibrary, or None if it needs no library)")
         for needed in ("lib/__init__.py",):
             if not (folder / needed).is_file():
                 add(ERROR, f"has no {needed} (the compiled extension's import and its error classes)")

@@ -152,6 +152,6 @@ every program built on them know the radio, with nothing in pysdrlib changed. In
 and a driver that fails to import is reported by `get` and skipped by `find`. The class's `find()` classmethod lists its
 units (nothing by default). A name that pysdrlib ships can't be taken, except by `register(..., replace=True)`.
 `testing.check_driver` and `testing.check_package` work on it as on a shipped driver. `PYSDRLIB_NO_PLUGINS=1` makes
-pysdrlib ignore entry points, for the case that something installed breaks a program. `pysdrlib.tcpiq` is the smallest
-complete Python driver to read.
+pysdrlib ignore entry points, for the case that something installed breaks a program. `pysdrlib.sim` is a complete
+Python driver to read.
 """

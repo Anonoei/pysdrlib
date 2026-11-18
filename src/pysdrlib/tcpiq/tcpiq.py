@@ -1,19 +1,18 @@
-"""A TCP stream of raw I/Q samples (receive only): see the README"""
-import socket
-import threading
-
+"""A TCP stream of raw I/Q samples (receive only), as the client or the server: see the README"""
 from ..base import convert
-from ..base.buffer import RotatingBuffer
 from ..base.caps import Capabilities, Range
-from ..base.device import Device
+from ..base.native import NativeDevice
 from .. import err
 
-MAX_BUFFER_SAMPLES = 2**24
-CHUNK_BYTES = 1 << 18
+from . import lib
 
-class TcpIq(Device):
-    """Samples from a TCP server that sends raw interleaved I/Q. Open it with `host` and `port`; `cf` and `Fs` say what
-    the stream is (nothing is sent to the server)"""
+class TcpIq(NativeDevice):
+    """Samples over TCP, raw interleaved I/Q. Connect to a server that sends them (`host`, `port`), or listen for a
+    client that does (`listen=True`). `cf` and `Fs` say what the stream is (nothing is sent back).
+
+    The socket is read on a thread of the extension's own, without the GIL, as fast as the network delivers: a sender is
+    never held up by Python. Samples not read within `BUFFER_SECONDS` are dropped (oldest first) and reported like any
+    native device's (`on_drop`, `warn.Dropped`)."""
     NAME = "TCP IQ"
     CAPS = Capabilities(
         driver="",
@@ -23,89 +22,56 @@ class TcpIq(Device):
     )
     CAN_TRANSMIT = False
     DUPLEX = False
+    STALL_TIMEOUT = None          # the sender sets the pace, and a server may have no client yet
+    MAX_BUFFER_SAMPLES = 2**24    # the rate is only declared: don't let it size a huge queue
+    SAMPLE_FORMAT = convert.FLOAT32   # the default; each instance has the one it was made with
+
+    device: lib.tcpiq.device   # the extension's device (None until `open`)
 
     def __init__(self, sample_format=convert.FLOAT32):
-        """sample_format: layout of what the server sends (a `pysdrlib.base.convert.SampleFormat`)"""
+        """sample_format: layout of what the other end sends (a `pysdrlib.base.convert.SampleFormat`)"""
         super().__init__()
         self.SAMPLE_FORMAT = sample_format
-        self.buffer = RotatingBuffer()
-        self.buffers = [self.buffer]
-        self._sock = None
-        self._thread = None
-        self._stop = threading.Event()
-        self.eof = False        # the server closed the stream
 
-    def _open(self, host=None, port=1234, timeout=5.0):
-        """host, port: the server. timeout: seconds to connect"""
+    def _open(self, host=None, port=1234, timeout=5.0, listen=False):
+        """host, port: the server to connect to; or, with `listen`, the address to listen on (host default: every
+        interface; port 0: any free one, see `port`). timeout: seconds to connect"""
+        f = self.SAMPLE_FORMAT
+        layout = (f.kind, f.bits, f.storage, f.packed, f.byteorder == ">")
+        if listen:
+            host = "0.0.0.0" if host is None else host
+            try:
+                return lib.tcpiq.listen(host, int(port), *layout)
+            except lib.err.TcpIqError as exc:
+                raise err.NoDevice(f"cannot listen on {host}:{port}: {exc}") from exc
         if host is None:
-            raise err.NoDevice("tcpiq needs a server: open('tcpiq', host=..., port=...)")
+            raise err.NoDevice("tcpiq needs a server: open('tcpiq', host=..., port=...), or listen=True to be one")
         try:
-            self._sock = socket.create_connection((host, int(port)), timeout=timeout)
-        except OSError as exc:
-            raise err.NoDevice(f"cannot connect to {host}:{port}: {exc}") from exc
-        self._sock.settimeout(0.2)   # so the receive thread notices a stop
-        self.eof = False
-        return self._sock
-    def _close(self):
-        if self.state["rx"]:
-            self.stop_rx()
-        if self._sock is not None:
-            self._sock.close()
-        self._sock = None
-        self.device = None
+            return lib.tcpiq.connect(host, int(port), float(timeout), *layout)
+        except lib.err.TcpIqError as exc:
+            raise err.NoDevice(str(exc)) from exc
+
+    @property
+    def eof(self):
+        """The server closed the stream (connected only: a listening device accepts the next client)"""
+        return self.device is not None and self.device.eof
+    @property
+    def peer(self):
+        """"host:port" of the other end, or None when nothing is connected"""
+        return (self.device.peer or None) if self.device is not None else None
+    @property
+    def connections(self):
+        """Clients accepted since `open` (listening)"""
+        return self.device.connections if self.device is not None else 0
+    @property
+    def port(self):
+        """The local port (the one chosen, after listening on port 0)"""
+        return self.device.port if self.device is not None else None
 
     def _set_rx_freq(self, freq, channel=0):
-        pass   # declared, not sent: the server decides what it streams
+        pass   # declared, not sent: the sender decides what it streams
     def _set_rx_sample_rate(self, Fs, channel=0):
-        if not self.state["rx"]:
-            self._resize_buffer()
-
-    def _resize_buffer(self):
-        self.buffer.reset(min(int(0.5 * self._Fs), MAX_BUFFER_SAMPLES))
-
-    def _start_rx(self):
-        self._resize_buffer()
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="pysdrlib-tcpiq", daemon=True)
-        self._thread.start()
-    def _stop_rx(self):
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join()
-            self._thread = None
-
-    def _run(self):
-        """Receive, keep whole samples, convert, hand to the ring"""
-        unit = self.SAMPLE_FORMAT.bytes_per_sample
-        pending = bytearray()
-        while not self._stop.is_set():
-            try:
-                data = self._sock.recv(CHUNK_BYTES)
-            except socket.timeout:
-                continue
-            except OSError:
-                data = b""
-            if not data:
-                self.eof = True
-                return
-            pending += data
-            whole = len(pending) - len(pending) % unit
-            if whole:
-                self.buffer.update(self.SAMPLE_FORMAT.to_complex64(bytes(pending[:whole]), whole))
-                del pending[:whole]
-
-    def _get_samples(self):
-        return self.buffer.samples
-
-    # the generic read path (Device.read) on the ring the receive thread fills
-    def _rx_wait(self, count, timeout, slot=0):
-        return self.buffer.wait(int(count), float(timeout))
-    def _rx_read(self, count, slot=0):
-        return self.buffer.read_indexed(int(count))
-    def _rx_position(self, slot=0):
-        return self.buffer.total, self.buffer.age
-    def _rx_flush(self, slot=0):
-        return len(self.buffer.read())
+        self._rate_changed()
 
     def _set_rx_gain(self, gain, channel=0):
         return {}   # a stream has no gain to set (initialize asks)
