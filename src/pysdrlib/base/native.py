@@ -24,6 +24,7 @@ class NativeDevice(Device):
     `stats` has the counts; `read(..., meta=True)` says where in the stream they were lost.
     """
     BUFFER_SECONDS = 0.5   # how much stream `get_samples` may fall behind by before dropping the oldest
+    MAX_BUFFER_SAMPLES = None   # caps that queue, for a device whose declared rate can be anything (None: no cap)
     STALL_TIMEOUT = 1.0    # seconds without samples before the stream is considered stalled; None: never
     TX_BUFFER_SECONDS = 0.25   # how much stream `write` may queue ahead of the radio before it blocks
 
@@ -54,7 +55,10 @@ class NativeDevice(Device):
         if self.state["rx"]:   # resizing the queue discards it and restarts its count: keep the stream's indices going
             self._rx_base += self.device.rx_stats()["total"]
             self._rx_discard = max(self._rx_discard, self._rx_base)
-        self.device.set_rx_buffer(int(type(self).BUFFER_SECONDS * self._Fs), len(self._rx_channels))   # a queue per channel
+        size = int(type(self).BUFFER_SECONDS * self._Fs)
+        if type(self).MAX_BUFFER_SAMPLES is not None:
+            size = min(size, type(self).MAX_BUFFER_SAMPLES)
+        self.device.set_rx_buffer(size, len(self._rx_channels))   # a queue per channel
         self._dropped_reported = 0
         self._watchdog.set_rate(self._Fs)
 
