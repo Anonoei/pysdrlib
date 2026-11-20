@@ -20,6 +20,35 @@ def calls(sdr, name):
     return sdr.device.of(name)
 
 
+class TestOpen:
+    def test_open_puts_the_reported_defaults_on_the_radio(self, sdr):
+        """Untuned, the RX888 has no input selected and its ADC idle: a stream started straight after open got nothing"""
+        assert calls(sdr, "set_sample_rate") == [(float(config.default_rate),)]
+        assert calls(sdr, "set_freq") == [(config.default_freq,)]
+        assert sdr.get_rx_freq() == config.default_freq and sdr.get_rx_sample_rate() == config.default_rate
+
+    def test_tuning_that_fails_at_open_closes_the_radio(self, make_sdr, monkeypatch):
+        sdr = make_sdr()
+        opened = []
+        real_open = sdr_lib(sdr).extio.open
+        def open_then_fail():
+            device = real_open()
+            opened.append(device)
+            def fail(*a):
+                raise RuntimeError("tuner said no")
+            device.set_freq = fail
+            return device
+        monkeypatch.setattr(sdr_lib(sdr).extio, "open", open_then_fail)
+        with pytest.raises(RuntimeError, match="tuner said no"):
+            sdr.open()
+        assert "close" in opened[0].names() and not sdr.state["open"]
+
+
+def sdr_lib(sdr):
+    import sys
+    return sys.modules[type(sdr).__module__].lib
+
+
 class TestSampleRate:
     def test_a_supported_rate_is_kept(self, sdr):
         assert sdr.set_rx_sample_rate(16e6) == 16e6

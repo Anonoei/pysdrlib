@@ -13,6 +13,7 @@ LIB = utils.VendorLibrary(
     source=utils.PATH_MOD / "extio" / "vendor",   # CMake project wrapping the vendored ExtIO_sddc/Core
     files=("libsddc_core.so", "libsddc_core.dylib"),
     missing_hints=("sddc",),
+    inputs=("_native/extio/usb_guard.cpp",),   # linked into the library (see the vendor CMakeLists.txt)
     help=("Install cmake, a C++17 compiler and the libusb-1.0 and fftw3f development files (e.g. "
           "`apt install cmake libusb-1.0-0-dev libfftw3-dev`) so pysdrlib can build its bundled copy."),
 )

@@ -38,8 +38,10 @@ POLL_MS = 100
 SHM_SECONDS = 0.25      # a shared-memory ring holds this much of the stream at the device's highest rate
 IDLE_SLEEP = 0.002   # a pause after an error, so a failing device is not retried in a tight loop
 BATCH_SECONDS = 0.002   # the stream is published in blocks of about this long (the latency a client sees, and no less)
-CLOSE_WAIT = 5.0        # how long a close request waits for the device before replying anyway
 MIN_BATCH = 1024        # ... but not smaller than this many samples
+# The C2 thread answers everyone, so it never waits long on one device (a wedged radio can block a call for a minute):
+CLOSE_WAIT = 1.0        # how long a close request waits for the device before replying anyway (well inside client timeouts)
+STATUS_WAIT = 0.1       # how long `list` waits for a busy device before showing its last known status
 MAX_WAIT = 0.01         # a block that has not filled by then is published as it is
 
 def _program(name):
@@ -74,6 +76,8 @@ class DeviceWorker:
         self.device = device
         self.log = logger.new(f"remote.worker.{dev_id}")
         self.lock = threading.RLock()           # serializes calls into the device
+        self._owner_lock = threading.Lock()     # guards who controls it (never held while calling the device)
+        self._last_status = None                # what `status` last saw, shown while the device is busy
         self.token = None                       # controller token, None if uncontrolled
         self.last_seen = time.monotonic()
         self.streaming = threading.Event()
@@ -116,7 +120,7 @@ class DeviceWorker:
     # --- ownership --- #
     def claim(self, program=None) -> str:
         """Make a new controller token the owner. Raises `err.Busy` if the device already has a controller"""
-        with self.lock:
+        with self._owner_lock:
             if self.token is not None:
                 raise err.Busy(f"{self.id} already has a controller" + (f" ({self.program})" if self.program else ""))
             self.program = program
@@ -132,11 +136,22 @@ class DeviceWorker:
         """Note that the controller is still there (renews its lease)"""
         self.last_seen = time.monotonic()
 
-    def release(self):
-        """Drop the controller; stop streaming since nobody is left to manage it"""
-        with self.lock:
+    def release(self, wait=True):
+        """Drop the controller; stop streaming since nobody is left to manage it.
+        wait=False: stop it in the background, so a radio slow to stop holds up nobody (the C2 thread answers everyone).
+        A controller that claims the radio before that happens keeps its stream."""
+        with self._owner_lock:
             self.token = None
             self.program = self.need = self.want = None
+        if wait:
+            self._stop_streams()
+        else:
+            threading.Thread(target=self._stop_streams, args=(True,), name=f"pysdrlib-{self.id}-release", daemon=True).start()
+
+    def _stop_streams(self, unless_claimed=False):
+        with self.lock:
+            if unless_claimed and self.token is not None:
+                return
             self.streaming.clear()
             for flag, stop in (("rx", self.device.stop_rx), ("tx", self.device.stop_tx)):
                 if self.device.state.get(flag):
@@ -179,14 +194,21 @@ class DeviceWorker:
         }
 
     def status(self):
-        """What `list` shows clients: id, type, name, state, frequency, sample rate, wire format and whether it is controlled"""
-        with self.lock:
-            return {
+        """What `list` shows clients: id, type, name, state, frequency, sample rate, wire format and whether it is controlled.
+        While a call into the device is under way (a slow stop_rx...), the last status seen, with `busy` set"""
+        owner = {"controlled": self.token is not None, "program": self.program, "need": self.need, "want": self.want}
+        if not self.lock.acquire(timeout=STATUS_WAIT):
+            last = self._last_status or {   # never seen yet: what can be read without the device (its cached settings)
+                "id": self.id, "type": self.type, "name": type(self.device).NAME, "state": dict(self.device.state),
+                "cf": self.device.get_rx_freq(), "Fs": self.device.get_rx_sample_rate(), "serial": None,
+                "wire": protocol.wire_name(self.wire), "rx_channels": [0], "tx_channels": [0], "chains": []}
+            return {**last, **owner, "busy": True}
+        try:
+            self._last_status = {
                 "id": self.id, "type": self.type, "name": type(self.device).NAME,
                 "state": dict(self.device.state),
                 "cf": self.device.get_rx_freq(), "Fs": self.device.get_rx_sample_rate(),
-                "controlled": self.token is not None,
-                "program": self.program, "need": self.need, "want": self.want,
+                **owner,
                 "serial": self.serial(),
                 "wire": protocol.wire_name(self.wire),
                 "rx_channels": list(getattr(self.device, "rx_channels", (0,))),
@@ -194,6 +216,9 @@ class DeviceWorker:
                 "chains": [{"direction": c.direction, "port": c.port, "name": c.name, "lo": c.lo, "invert": c.invert,
                             "antenna": c.describe()} for c in self.device.caps.chains],
             }
+            return dict(self._last_status)
+        finally:
+            self.lock.release()
 
     # --- control socket --- #
     def _control_loop(self):
@@ -443,10 +468,10 @@ class RelayWorker(DeviceWorker):
     def _rate(self):
         return self.upstream._Fs or 1e6
 
-    def release(self):
+    def release(self, wait=True):
         if self.upstream.token:   # we control the far device, so a local controller leaving stops it as it would anywhere
-            return super().release()
-        with self.lock:
+            return super().release(wait)
+        with self._owner_lock:
             self.token = None   # a viewer relay can't stop the far device
             self.program = self.need = self.want = None
 
@@ -682,7 +707,7 @@ class Server:
         for w in list(self.workers.values()):
             if w.token is not None and now - w.last_seen > self.lease:
                 self.log.warning("%s: controller lease expired after %.0f s of silence", w.id, now - w.last_seen)
-                w.release()
+                w.release(wait=False)
 
     # --- C2 ops --- #
     def types(self):
@@ -837,7 +862,7 @@ class Server:
     def _give_back(self, kind, worker):
         """Let go of a radio `open_matching` took but cannot use: a hosted one is released, one it opened is closed"""
         if kind == "hosted":
-            worker.release()
+            worker.release(wait=False)
         else:
             self.workers.pop(worker.id, None)
             worker.close()
@@ -975,7 +1000,7 @@ class Server:
         if op == "release":
             worker = self._controller(msg)
             self.log.info("%s: released by its controller", worker.id)
-            worker.release()
+            worker.release(wait=False)
             return None
         if op == "ping":
             self._controller(msg)

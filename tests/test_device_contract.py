@@ -320,6 +320,19 @@ def test_double_start_and_stop_only_warn(sdr):
 
 
 @pytest.mark.hardware
+def test_hardware_streams_straight_after_open(spec, hardware):
+    """Opened and started with no tuning, the device streams at the rate it reports (as a remote client that only
+    calls start_rx does). The RX888 streamed nothing like this: its ADC idles until it is first tuned"""
+    import time
+    with spec.device_class() as sdr:
+        sdr.start_rx()
+        time.sleep(1.0)
+        received = sdr.device.rx_stats()["total"]
+        sdr.stop_rx()
+    assert received > 0.5 * sdr.get_rx_sample_rate(), f"{received:,} samples in 1 s at {sdr.get_rx_sample_rate():,.0f} S/s"
+
+
+@pytest.mark.hardware
 def test_hardware_rx_roundtrip(spec, hardware):
     """The real device through the whole Python stack: tune, stream, read complex64"""
     import time

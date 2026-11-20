@@ -1,16 +1,21 @@
 import ctypes
 import ctypes.util
+import hashlib
 import importlib
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
 PATH_MOD = Path(__file__).parent.parent
 PATH_LIB = PATH_MOD / "_ext" / "cache"
+
+class _StaleLibrary(UserWarning):
+    """A cached vendor library was built from older sources than the installed pysdrlib's"""
 
 def rmdir(path: Path):
     for file in path.iterdir():
@@ -76,6 +81,7 @@ class VendorLibrary:
     missing_hints: tuple = ()       # in an ImportError: the extension loaded but this library didn't
     driver: str = ""                # the driver it belongs to: what `pysdrlib build` takes
     note: str = ""                  # about building it ("takes several minutes")
+    inputs: tuple = ()              # pysdrlib's own sources compiled into it (paths under PATH_MOD), e.g. a link-time shim
 
     def cache_dirs(self):
         """Where a built library may live: next to the package (dev checkouts), then the user cache"""
@@ -89,17 +95,48 @@ class VendorLibrary:
                     return directory / file
         return None
 
+    # A built copy is only as current as what it was built from: the vendored snapshot (its PROVENANCE names the upstream
+    # commit), the CMake project, and any of pysdrlib's own sources compiled in. Their hash is stamped beside the library
+    # when it is built; a copy whose stamp differs (or has none) is stale and is rebuilt when building is allowed.
+    def stamp_inputs(self):
+        """The files whose content decides what gets built"""
+        found = [p for p in (self.source / "CMakeLists.txt", self.source / "PROVENANCE", self.source.parent / "PROVENANCE")
+                 if p.is_file()]
+        return found + [PATH_MOD / p for p in self.inputs]
+
+    def fingerprint(self) -> str:
+        """Hash of `stamp_inputs` (a missing input counts too, so removing one changes it)"""
+        digest = hashlib.sha256()
+        for path in self.stamp_inputs():
+            digest.update(path.name.encode() + b"\0")
+            digest.update(path.read_bytes() if path.is_file() else b"<missing>")
+            digest.update(b"\0")
+        return digest.hexdigest()[:16]
+
+    def stamp_path(self, directory: Path) -> Path:
+        return directory / f"{self.name}.stamp"
+
+    def is_stale(self, library: Path) -> bool:
+        """True if the cached `library` was built from other sources than the ones here (or before stamps existed)"""
+        try:
+            return self.stamp_path(Path(library).parent).read_text().strip() != self.fingerprint()
+        except OSError:
+            return True
+
     def available(self) -> bool:
-        """True if the library can be loaded without building it (installed, or built before)"""
+        """True if the library can be loaded without building it (installed, or built before, even if stale)"""
         return self.locate() is not None
 
     def locate(self):
-        """("system", name) if installed, ("cached", path) if built before, else None"""
+        """("system", name) if installed, ("cached", path) if built from these sources, ("stale", path) if built from
+        older ones, else None"""
         system = ctypes.util.find_library(self.name)
         if system:
             return "system", system
         cached = self.find_cached()
-        return ("cached", str(cached)) if cached is not None else None
+        if cached is None:
+            return None
+        return ("stale" if self.is_stale(cached) else "cached"), str(cached)
 
     def not_built(self) -> str:
         """What to tell a user whose driver needs this library and it is not there"""
@@ -142,6 +179,7 @@ class VendorLibrary:
         found = next((target / f for f in self.files if (target / f).exists()), None)
         if found is None:
             raise RuntimeError(f"Could not find the built {self.name} in {target}. {self.help}")
+        self.stamp_path(target).write_text(self.fingerprint() + "\n")
         return found
 
     def load(self, build=None) -> str:
@@ -155,15 +193,20 @@ class VendorLibrary:
                 return f"system library {system}"
             except OSError:
                 pass
-        cached = self.find_cached()
-        if cached is not None:
-            try:
-                load_global(cached)
-                return f"cached {cached}"
-            except OSError:
-                pass
         if build is None:
             build = os.environ.get("PYSDRLIB_BUILD", "").lower() in ("auto", "1", "yes", "true")
+        cached = self.find_cached()
+        stale = cached is not None and self.is_stale(cached)
+        if cached is not None and not (stale and build):   # a stale copy is rebuilt when allowed, else used with a warning
+            try:
+                load_global(cached)
+                if stale:
+                    driver = self.driver or self.name
+                    warnings.warn(f"{cached} was built from older sources than this pysdrlib's: run "
+                                  f"`pysdrlib build {driver} --force` (or set PYSDRLIB_BUILD=auto) to rebuild it", _StaleLibrary)
+                return f"{'stale' if stale else 'cached'} {cached}"
+            except OSError:
+                pass
         if not build:
             raise RuntimeError(self.not_built())
         built = self.build()
