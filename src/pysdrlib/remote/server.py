@@ -811,10 +811,17 @@ class Server:
         found.sort(key=lambda f: f[:3])
         return [(f[3], f[4], f[5]) for f in found]
 
+    def _pick_key(self, kind, target):
+        """A candidate's `key`: names that radio to `open_matching(pick=...)`"""
+        if kind == "hosted":
+            return f"hosted:{target.id}"
+        return "unit:" + "|".join(str(part) for part in self._key(target))
+
     def candidates(self, dtype=None, serial=None, label=None, need=None, want=None):
         """`choose` for a client that has not decided which server to use: the radios that fit the request, best first, as
         dicts of `kind` ("unit" attached, "hosted" open and uncontrolled), `driver`, `label`, `serial`, `id` (a hosted one's),
-        `rank` (`choose.rank`, comparable between servers) and `granted`. Opens nothing; raises `err.NoDevice` like `choose`"""
+        `rank` (`choose.rank`, comparable between servers), `granted` and `key` (give it to `open_matching` as `pick` to open
+        that radio and no other). Opens nothing; raises `err.NoDevice` like `choose`"""
         need, want = choose.normalize(need, "need"), choose.normalize(want, "want")
         wish = {**need, **want}
         out = []
@@ -823,7 +830,7 @@ class Server:
                 info = {"driver": target.type, "label": type(target.device).NAME, "serial": target.serial(), "id": target.id}
             else:
                 info = {"driver": target.driver, "label": target.label, "serial": target.serial, "id": None}
-            out.append({"kind": kind, **info, "rank": list(choose.rank(caps, wish)),
+            out.append({"kind": kind, **info, "key": self._pick_key(kind, target), "rank": list(choose.rank(caps, wish)),
                         "granted": choose.granted(caps, wish) if caps is not None else None})
         return out
 
@@ -836,12 +843,23 @@ class Server:
             worker.close()
 
     def open_matching(self, dtype=None, serial=None, label=None, need=None, want=None, program=None, init_args=(),
-                      init_kwargs=None, wire=None):
+                      init_kwargs=None, wire=None, pick=None):
         """Open (or take over, if it is hosted and nobody controls it) the best radio for the request (see `choose`).
+        pick: the `key` of one of `candidates`: open that radio or none, `err.Busy` if it no longer fits the request or is
+        no longer free (a client that compared servers by `candidates` then tries its next best, which may be elsewhere).
         -> (worker, token, granted) where `granted` is what the radio can do nearest to `want` (and `need`)"""
         need, want = choose.normalize(need, "need"), choose.normalize(want, "want")
         last = None
-        candidates = self.choose(dtype, serial, label, need, want)
+        try:
+            candidates = self.choose(dtype, serial, label, need, want)
+        except err.NoDevice as e:
+            if pick is None:
+                raise
+            raise err.Busy(f"the radio picked is no longer free for the request: {e}") from e
+        if pick is not None:
+            candidates = [c for c in candidates if self._pick_key(c[0], c[1]) == pick]
+            if not candidates:
+                raise err.Busy("the radio picked has been taken or has gone since it was offered")
         wish = {**need, **want}
         for i, (kind, target, caps) in enumerate(candidates):
             try:
@@ -933,10 +951,10 @@ class Server:
         if op == "open":
             program = _program(msg.get("program"))
             granted = None
-            if any(msg.get(k) is not None for k in ("serial", "label", "need", "want")) or msg.get("type") is None:
+            if any(msg.get(k) is not None for k in ("serial", "label", "need", "want", "pick")) or msg.get("type") is None:
                 worker, token, granted = self.open_matching(
                     msg.get("type"), msg.get("serial"), msg.get("label"), msg.get("need"), msg.get("want"), program,
-                    msg.get("init_args", []), msg.get("init_kwargs"), msg.get("wire"))
+                    msg.get("init_args", []), msg.get("init_kwargs"), msg.get("wire"), pick=msg.get("pick"))
                 self.log.info("%s: %s opened by %s", worker.id, worker.capabilities.get("name"), program or "a client")
             else:
                 worker, token = self.open_device(

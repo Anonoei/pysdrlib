@@ -310,25 +310,31 @@ def test_a_unit_with_a_converter_is_the_one_that_reaches_the_frequency(tmp_path,
 
 
 # --- across servers (pysdrlib.remote.discovery.rank, and connect with no address) --- #
-@pytest.fixture
-def two_servers(tmp_path, monkeypatch):
-    """`plain` has sim unit AAA; `lnb` has sim unit BBB behind a 9.75 GHz LNB, so only it reaches 12 GHz"""
+def _servers(tmp_path, monkeypatch, layout):
+    """Servers named by `layout`'s keys, each with the sim units it lists as (serial, LO or None); `discover` finds them all.
+    A unit with an LO sits behind that converter (an LNB at 9.75 GHz, say). -> ({name: Server}, the `discover` result)"""
     from pysdrlib.base.caps import Chain
     from pysdrlib.remote import frontends
-    units = {"plain": [DeviceInfo("sim", "Sim A", "AAA", 0, {"serial": "AAA"})],
-             "lnb": [DeviceInfo("sim", "Sim B", "BBB", 0, {"serial": "BBB"})]}
-    fe = frontends.Frontends([({"serial": "BBB"}, [Chain(lo=9.75e9, antenna="ANT500", name="lnb")])])
-    servers = {"plain": Server(f"ipc://{tmp_path}/plain", devices=["sim"], lease=0),
-               "lnb": Server(f"ipc://{tmp_path}/lnb", devices=["sim"], lease=0, frontends=fe)}
-    for name, s in servers.items():
-        def scan(s=s, u=units[name]):
-            s._attached = {s._key(i): i for i in u}
-            return list(u)
+    servers = {}
+    for name, units in layout.items():
+        infos = [DeviceInfo("sim", f"Sim {sn}", sn, i, {"serial": sn}) for i, (sn, _) in enumerate(units)]
+        fe = frontends.Frontends([({"serial": sn}, [Chain(lo=lo, antenna="ANT500", name="lnb")]) for sn, lo in units if lo])
+        s = servers[name] = Server(f"ipc://{tmp_path}/{name}", devices=["sim"], lease=0, frontends=fe)
+        def scan(s=s, infos=infos):
+            s._attached = {s._key(i): i for i in infos}
+            return list(infos)
         s.scan = scan
         s.start()
     found = [{"name": name, "address": s.endpoint, "addresses": [s.endpoint], "host": "test", "kind": "server",
               "proto": 3, "version": pysdrlib.__version__} for name, s in servers.items()]
     monkeypatch.setattr("pysdrlib.remote.discovery.discover", lambda *a, **k: list(found))
+    return servers, found
+
+
+@pytest.fixture
+def two_servers(tmp_path, monkeypatch):
+    """`plain` has sim unit AAA; `lnb` has sim unit BBB behind a 9.75 GHz LNB, so only it reaches 12 GHz"""
+    servers, found = _servers(tmp_path, monkeypatch, {"plain": [("AAA", None)], "lnb": [("BBB", 9.75e9)]})
     try:
         yield servers, found
     finally:
@@ -395,3 +401,61 @@ def test_connect_without_an_address_passes_over_a_server_that_fails(two_servers,
 def test_connect_without_an_address_says_why_nothing_fits(two_servers):
     with pytest.raises(err.NoDevice, match=r"plain.*cannot tune.*\|.*lnb.*cannot tune"):
         pysdrlib.connect(need={"freq": 50e9})
+
+
+@pytest.fixture
+def raced(tmp_path, monkeypatch):
+    """`x` has a sim that reaches 2 GHz (AAA) and one behind an LNB that does not (XXB); `y` has one that reaches it (CCC).
+    So for want={"freq": 2e9} the order is AAA, CCC, XXB"""
+    servers, found = _servers(tmp_path, monkeypatch, {"x": [("AAA", None), ("XXB", 9.75e9)], "y": [("CCC", None)]})
+    try:
+        yield servers
+    finally:
+        for s in servers.values():
+            s.stop()
+
+
+@pytestmark_zmq
+def test_rank_orders_every_radio_of_every_server(raced):
+    from pysdrlib.remote import discovery
+    choices, _, _ = discovery.rank(discovery.discover(), want={"freq": 2e9})
+    assert [(c["name"], c["candidate"]["serial"]) for c in choices] == [("x", "AAA"), ("y", "CCC"), ("x", "XXB")]
+
+
+@pytestmark_zmq
+def test_a_pick_opens_that_radio_or_says_busy(raced):
+    x = raced["x"]
+    with Client(x.endpoint) as c:
+        (best, worse) = c.candidates(want={"freq": 2e9})
+    taken = connect(x, serial="AAA")
+    try:
+        with pytest.raises(err.Busy, match="taken or has gone"):
+            connect(x, want={"freq": 2e9}, pick=best["key"])
+        assert len(x.workers) == 1          # it did not open XXB in AAA's place
+        other = connect(x, want={"freq": 2e9}, pick=worse["key"])
+        try:
+            assert x.workers[other.id].serial() == "XXB"
+        finally:
+            other.close()
+    finally:
+        taken.close()
+
+
+@pytestmark_zmq
+def test_a_radio_taken_after_ranking_goes_to_the_next_best_anywhere(raced, monkeypatch):
+    """Between ranking and opening, someone takes AAA: the next best is CCC on the other server, not XXB beside AAA"""
+    from pysdrlib.remote import discovery
+    x, y = raced["x"], raced["y"]
+    real, taken = discovery.rank, []
+    def rank_then_race(*a, **k):
+        out = real(*a, **k)
+        taken.append(connect(x, serial="AAA", program="someone else"))
+        return out
+    monkeypatch.setattr(discovery, "rank", rank_then_race)
+    sdr = pysdrlib.connect(want={"freq": 2e9}, program="me", init_kwargs=SIM)
+    try:
+        assert sdr.address == y.endpoint and y.workers[sdr.id].serial() == "CCC"
+        assert [w.serial() for w in x.workers.values()] == ["AAA"]      # XXB was never opened
+    finally:
+        sdr.close()
+        taken[0].close()

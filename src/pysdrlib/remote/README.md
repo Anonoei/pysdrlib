@@ -58,7 +58,10 @@ sdr.address                                     # where it ended up
 - Radios are compared across servers as one server compares its own (see below): what fits `need`, nearest `want`, the
   antenna best for the frequency, one attached before one a client left open. Of equals, a server on this machine wins
   (samples come through shared memory).
-- A server that fails to open its radio is passed over for the next; `err.NoDevice` says why each server was left out.
+- Every fitting radio of every server is put in one order, and `connect` opens exactly the radio it ranked (the open names
+  it, `pick=`): if someone took it in the meantime, the server says `Busy` rather than opening its next best in its
+  place, and the next radio in the order is tried, on whichever server it is. A radio that fails to open is passed over
+  the same way; `err.NoDevice` says why each was left out.
 - `discover_timeout=` (default 2 s) is how long it listens for servers. A server too old to be asked is tried last,
   as is one that can open the device type asked for but has none attached (`sim`, say).
 - The announcement says only where a server is, its protocol and pysdrlib version, and whether it is a `server` or a

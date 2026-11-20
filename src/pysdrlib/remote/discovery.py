@@ -160,10 +160,11 @@ def _is_local(address):
 def rank(servers, device=None, serial=None, label=None, need=None, want=None, timeout=5.0):
     """Ask each of `servers` (from `discover`) for its radios that fit the request, without opening any.
 
-    -> (choices, hosting, reasons): `choices` the servers that have a radio for it, best radio first (by `choose.rank`, then a
-    radio attached before one a client left open, then a server on this machine, which can share samples through shared
-    memory), as dicts of the server and its best `candidate` (None, tried last, for a server too old to say, or that has
-    no `device` attached but can open one, as a plain `connect(address, device)` would); `hosting` the
+    -> (choices, hosting, reasons): `choices` every radio that fits on any server, best first (by `choose.rank`, then one
+    attached before one a client left open, then one on this machine, which can share samples through shared memory), as
+    dicts of its server and the `candidate` (from `Client.candidates`: open it with its `key` as `pick`). A server too old
+    to be asked, or that has no `device` attached but can open one (as a plain `connect(address, device)` would), is there
+    once with `candidate` None, after the rest; `hosting` the
     servers that host a device whose id is `device`; `reasons` why each other server was left out, as text.
     """
     from .client import Client
@@ -180,22 +181,24 @@ def rank(servers, device=None, serial=None, label=None, need=None, want=None, ti
                     continue
                 choosing = any(v is not None for v in (serial, label, need, want))
                 try:
-                    best = c.candidates(device, serial, label, need, want)[0]
+                    offered = c.candidates(device, serial, label, need, want)
                 except err.RemoteError as e:      # a server from before `choose`: it may still have one
                     if "unknown op" not in str(e):
                         raise
-                    best = None
+                    offered = [None]
                 except err.NoDevice:
                     if choosing or device is None:
                         raise
-                    best = None     # none of the type attached, but it can open one (a driver nothing finds, like sim)
+                    offered = [None]    # none of the type attached, but it can open one (a driver nothing finds, like sim)
         except err.NoDevice as e:
             reasons.append(f"{where}: {e}")
             continue
         except (err._Error, TimeoutError, OSError) as e:
             reasons.append(f"{where}: {type(e).__name__}: {e}")
             continue
-        key = (1,) if best is None else (0, *best["rank"], best["kind"] == "hosted")
-        ranked.append((key, not _is_local(server["address"]), i, {**server, "candidate": best}))
-    ranked.sort(key=lambda r: r[:3])
-    return [r[3] for r in ranked], hosting, reasons
+        local = _is_local(server["address"])
+        for j, cand in enumerate(offered):
+            key = (1,) if cand is None else (0, *cand["rank"], cand["kind"] == "hosted")
+            ranked.append((key, not local, i, j, {**server, "candidate": cand}))
+    ranked.sort(key=lambda r: r[:4])
+    return [r[4] for r in ranked], hosting, reasons
