@@ -4,6 +4,7 @@
     pysdrlib server --bind tcp://0.0.0.0:5555            host the radios on this machine             (pysdrlib.remote.cli)
     pysdrlib relay tcp://host:5555 <driver>-0          share a far radio with programs here        (pysdrlib.remote.cli)
     pysdrlib client tcp://host:5555 list                 use the radios of a server                  (pysdrlib.remote.cli)
+    pysdrlib discover --list                             find servers on this network (mDNS)         (pysdrlib.remote.cli)
 
 `build` needs nothing beyond pysdrlib; the others need pyzmq (`pip install pysdrlib[remote]`).
 """

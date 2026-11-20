@@ -2,6 +2,7 @@
 
 What B210 does is in test_uhd_api.py; this is what is particular to the X series and to finding the families.
 """
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -144,13 +145,13 @@ class TestOpen:
         with pytest.raises(err.NoDevice, match=r"USRP X410.*addr=10.0.0.5"):
             uhd_module.X410().open(addr="10.0.0.5")
 
-    def test_experimental_is_said_once(self, monkeypatch, capsys):
+    def test_experimental_is_said_once(self, monkeypatch, caplog):
         monkeypatch.setattr(uhd_module, "lib", SimpleNamespace(
             uhd=SimpleNamespace(open=lambda args="": FakeDevice(fake(), uhd_module.X310.SAMPLE_FORMAT), init=lambda: None), err=real_lib.err))
         monkeypatch.setattr(uhd_module._XSeries, "_warned", False)
         for _ in range(3):
             uhd_module.X310().open(addr="a")
-        assert capsys.readouterr().err.count("experimental") == 1   # (pysdrlib's logger writes to stderr)
+        assert sum("experimental" in r.getMessage() for r in caplog.records if r.levelno == logging.WARNING) == 1
 
 
 # ---------------------------------------------------------------- the radios

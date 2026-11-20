@@ -45,6 +45,8 @@ def add_parsers(sub):
     s.add_argument("--wire", "--rx-wire", dest="wire", default="native", help="default RX wire format: native (device's own sample layout, default), complex64, int8, int16, ...")
     s.add_argument("--lease", type=float, default=15.0, help="seconds a silent controller keeps control, 0 = forever (default %(default)s)")
     s.add_argument("--no-shm", dest="shm", action="store_false", help="don't offer clients on this machine the samples in shared memory")
+    s.add_argument("--advertise", action="store_true", help="announce this server on the local network (mDNS) so `pysdrlib discover` finds it; needs a --bind others can reach")
+    s.add_argument("--advertise-name", metavar="NAME", help="the name to announce (default: this machine's host name)")
     s.add_argument("--scan-interval", type=float, default=10.0, help="seconds between looks at which radios are attached, logging ones that appear or vanish, 0 = only at startup (default %(default)s)")
     s.add_argument("--uhd-log", metavar="LEVEL", help="how much of UHD's own console log to show: trace, debug, info, warning, error, fatal or off "
                    "(default: warning, or UHD_LOG_CONSOLE_LEVEL if set)")
@@ -63,6 +65,13 @@ def add_parsers(sub):
     y.add_argument("--lease", type=float, default=15.0, help="seconds a silent local controller keeps control, 0 = forever (default %(default)s)")
     y.add_argument("--no-shm", dest="shm", action="store_false", help="don't offer programs on this machine the samples in shared memory")
     y.add_argument("-v", "--verbose", action="store_true")
+    y.add_argument("--advertise", action="store_true", help="announce this relay on the local network (mDNS) so `pysdrlib discover` finds it; needs a --bind others can reach")
+    y.add_argument("--advertise-name", metavar="NAME", help="the name to announce (default: this machine's host name)")
+
+    d = sub.add_parser("discover", help="list the pysdrlib servers announcing themselves on the local network")
+    d.add_argument("--timeout", type=float, default=2.0, help="seconds to listen (default %(default)s)")
+    d.add_argument("--list", action="store_true", help="also ask each server what it has (as `client ADDRESS list`)")
+    d.add_argument("--all-versions", action="store_true", help="also show servers speaking another protocol version")
 
     c = sub.add_parser("client", help="talk to a pysdrlib server")
     c.add_argument("address", help="server C2 endpoint, e.g. tcp://host:5555")
@@ -211,18 +220,27 @@ def _transmit(dev, args):
 def run_server(args):
     """`pysdrlib server`: host devices until Ctrl+C or SIGTERM. Logs to stderr (the journal, under systemd)"""
     import logging
-    import signal
     import os
     from .. import logger
     if args.uhd_log:   # UHD reads this when its library loads (the first scan), so set it before then
         os.environ["UHD_LOG_CONSOLE_LEVEL"] = args.uhd_log
     logger.configure(logging.DEBUG if args.verbose else logging.INFO, timestamps=args.log_timestamps)
-    log = logger.new("remote.cli")
+    try:
+        _serve(args, logger.new("remote.cli"))
+    finally:
+        logger.unconfigure()
+
+def _serve(args, log):
+    import signal
     from .server import Server
+    from .discovery import NotAdvertisable
     devices = args.devices.split(",") if args.devices else None
     try:
         server = Server(args.bind, port_range=args.port_range, devices=devices, lease=args.lease, wire=args.wire, shm=args.shm,
-                        scan_interval=args.scan_interval, frontends=args.frontends)
+                        scan_interval=args.scan_interval, frontends=args.frontends, advertise=args.advertise,
+                        name=args.advertise_name)
+    except NotAdvertisable as e:
+        raise SystemExit(f"--advertise: {e}")
     except ValueError as e:     # a frontends file that cannot be read or is wrong
         raise SystemExit(f"--frontends: {e}")
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))   # systemd stop: shut down cleanly
@@ -245,15 +263,24 @@ def run_server(args):
 
 def run_relay(args):
     """`pysdrlib relay`: host a far device here until Ctrl+C, or until the far server stops answering"""
-    from .server import Server
+    import logging
+    from .. import logger
     if args.verbose:
-        import logging
-        from .. import logger
-        logger.LOGGING = True
-        logging.basicConfig(level=logging.DEBUG)
+        logger.configure(logging.DEBUG)
+    try:
+        _relay(args)
+    finally:
+        if args.verbose:
+            logger.unconfigure()
+
+def _relay(args):
+    from .server import Server
     if (args.device is None) == (args.open is None):
         raise SystemExit("error: give the id of a device on the far server, or --open TYPE")
-    server = Server(args.bind, lease=args.lease, shm=args.shm)
+    try:
+        server = Server(args.bind, lease=args.lease, shm=args.shm, advertise=args.advertise, name=args.advertise_name, kind="relay")
+    except ValueError as e:
+        raise SystemExit(f"error: {e}")
     try:
         worker = server.relay(args.address, args.device, open=args.open, name=args.name, timeout=args.timeout,
                               control={"auto": "auto", "yes": True, "no": False}[args.control])
@@ -293,32 +320,58 @@ def format_chain(chain):
     lo = f", LO {chain['lo'] / 1e6:g} MHz{' (inverted)' if chain.get('invert') else ''}" if chain.get("lo") else ""
     return f"antenna {where}: {format_antenna(chain.get('antenna'))}{lo}"
 
+def print_list(c):
+    """Print what the server `c` (a `Client`) allows, hosts and has attached, as `client ADDRESS list` does"""
+    print("types:", ", ".join(c.types()) or "(none)")
+    res = c._c2.request("list")
+    devs = res["devices"]
+    for d in devs:
+        flags = [k for k, v in d["state"].items() if v and k != "open"]
+        who = f" by {d['program']}" if d.get("program") else ""
+        print(f"{d['id']:<14} {d['name']:<20} cf={d['cf']:,.0f} Fs={d['Fs']:,.0f} "
+              f"{d['wire']:<9} {'controlled' + who if d['controlled'] else 'free'} {' '.join(flags)}")
+        for key in ("need", "want"):
+            if d.get(key):
+                print(f"{'':<14} {key}: {d[key]}")
+        for chain in d.get("chains", []):
+            print(f"{'':<14} {format_chain(chain)}")
+    if not devs:
+        print("no devices hosted")
+    free = [a for a in res.get("available", []) if not a["hosted"]]
+    if free:
+        print("attached, not open:")
+        for a in free:
+            print(f"{'':<14} {a['driver']}: {a['label']}" + (f"  serial {a['serial']}" if a["serial"] else ""))
+
+def run_discover(args):
+    """`pysdrlib discover`: the servers announcing themselves here, and with --list what each has"""
+    from .discovery import discover
+    from .client import Client
+    from . import protocol
+    found = discover(args.timeout, all_versions=args.all_versions)
+    if not found:
+        print("no servers found (a server must run with --advertise, on this network)")
+    for i, s in enumerate(found):
+        if args.list and i:
+            print()
+        other = f" protocol {s['proto']}" if s["proto"] != protocol.VERSION else ""
+        print(f"{s['address']:<24} {s['name']} ({s['kind']}, pysdrlib {s['version'] or '?'}{other})")
+        for extra in s["addresses"][1:]:
+            print(f"{'':<24} also {extra}")
+        if args.list:
+            try:
+                with Client(s["address"], timeout=max(args.timeout, 2.0)) as c:
+                    print_list(c)
+            except Exception as e:
+                print(f"  cannot ask it: {e}")
+
 def run_client(args):
     """`pysdrlib client`: list, info, rx, watch, set and tx"""
     import pysdrlib
     from .client import Client, RemoteDevice
     if args.cmd == "list":
         with Client(args.address, args.timeout) as c:
-            print("types:", ", ".join(c.types()) or "(none)")
-            res = c._c2.request("list")
-            devs = res["devices"]
-            for d in devs:
-                flags = [k for k, v in d["state"].items() if v and k != "open"]
-                who = f" by {d['program']}" if d.get("program") else ""
-                print(f"{d['id']:<14} {d['name']:<20} cf={d['cf']:,.0f} Fs={d['Fs']:,.0f} "
-                      f"{d['wire']:<9} {'controlled' + who if d['controlled'] else 'free'} {' '.join(flags)}")
-                for key in ("need", "want"):
-                    if d.get(key):
-                        print(f"{'':<14} {key}: {d[key]}")
-                for chain in d.get("chains", []):
-                    print(f"{'':<14} {format_chain(chain)}")
-            if not devs:
-                print("no devices hosted")
-            free = [a for a in res.get("available", []) if not a["hosted"]]
-            if free:
-                print("attached, not open:")
-                for a in free:
-                    print(f"{'':<14} {a['driver']}: {a['label']}" + (f"  serial {a['serial']}" if a["serial"] else ""))
+            print_list(c)
     elif args.cmd == "info":
         with RemoteDevice(args.address, id=args.device, timeout=args.timeout) as dev:
             print(json.dumps(dev.capabilities, indent=2))
@@ -360,7 +413,7 @@ def run(args):
     except ImportError:
         raise SystemExit("pysdrlib's remote support needs pyzmq: pip install pysdrlib[remote]")
     try:
-        {"server": run_server, "relay": run_relay, "client": run_client}[args.mode](args)
+        {"server": run_server, "relay": run_relay, "client": run_client, "discover": run_discover}[args.mode](args)
     except (TimeoutError, OSError) as e:
         raise SystemExit(f"error: {e}")
     except Exception as e:

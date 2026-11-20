@@ -307,3 +307,91 @@ def test_a_unit_with_a_converter_is_the_one_that_reaches_the_frequency(tmp_path,
             assert chain["antenna"]["name"] == "ANT500" and chain["lo"] == 9.75e9
         finally:
             sdr.close()
+
+
+# --- across servers (pysdrlib.remote.discovery.rank, and connect with no address) --- #
+@pytest.fixture
+def two_servers(tmp_path, monkeypatch):
+    """`plain` has sim unit AAA; `lnb` has sim unit BBB behind a 9.75 GHz LNB, so only it reaches 12 GHz"""
+    from pysdrlib.base.caps import Chain
+    from pysdrlib.remote import frontends
+    units = {"plain": [DeviceInfo("sim", "Sim A", "AAA", 0, {"serial": "AAA"})],
+             "lnb": [DeviceInfo("sim", "Sim B", "BBB", 0, {"serial": "BBB"})]}
+    fe = frontends.Frontends([({"serial": "BBB"}, [Chain(lo=9.75e9, antenna="ANT500", name="lnb")])])
+    servers = {"plain": Server(f"ipc://{tmp_path}/plain", devices=["sim"], lease=0),
+               "lnb": Server(f"ipc://{tmp_path}/lnb", devices=["sim"], lease=0, frontends=fe)}
+    for name, s in servers.items():
+        def scan(s=s, u=units[name]):
+            s._attached = {s._key(i): i for i in u}
+            return list(u)
+        s.scan = scan
+        s.start()
+    found = [{"name": name, "address": s.endpoint, "addresses": [s.endpoint], "host": "test", "kind": "server",
+              "proto": 3, "version": pysdrlib.__version__} for name, s in servers.items()]
+    monkeypatch.setattr("pysdrlib.remote.discovery.discover", lambda *a, **k: list(found))
+    try:
+        yield servers, found
+    finally:
+        for s in servers.values():
+            s.stop()
+
+
+@pytestmark_zmq
+def test_rank_puts_the_server_that_reaches_the_frequency_first(two_servers):
+    from pysdrlib.remote import discovery
+    servers, found = two_servers
+    choices, hosting, reasons = discovery.rank(found, need={"freq": 12e9})
+    assert [c["name"] for c in choices] == ["lnb"] and not hosting
+    assert choices[0]["candidate"]["serial"] == "BBB" and choices[0]["candidate"]["granted"]["if_freq"] == 2.25e9
+    assert len(reasons) == 1 and "plain" in reasons[0] and "cannot tune" in reasons[0]
+    assert not any(s.workers for s in servers.values())       # asking opened nothing
+
+
+@pytestmark_zmq
+def test_connect_without_an_address_uses_the_best_server(two_servers):
+    servers, _ = two_servers
+    sdr = pysdrlib.connect(need={"freq": 12e9}, program="x", init_kwargs=SIM)
+    try:
+        assert sdr.address == servers["lnb"].endpoint and sdr.granted["if_freq"] == 2.25e9
+    finally:
+        sdr.close()
+
+
+@pytestmark_zmq
+def test_connect_without_an_address_finds_a_hosted_id(two_servers):
+    servers, _ = two_servers
+    owner = pysdrlib.connect(servers["plain"].endpoint, "sim", init_kwargs=SIM)
+    try:
+        view = pysdrlib.connect(None, owner.id)
+        try:
+            assert view.address == servers["plain"].endpoint and not view.is_controller
+        finally:
+            view.close()
+    finally:
+        owner.close()
+
+
+@pytestmark_zmq
+def test_connect_without_an_address_passes_over_a_server_that_fails(two_servers, monkeypatch):
+    servers, _ = two_servers
+    def broken(*a, **k):
+        raise err.NoDevice("it fell over")
+    from pysdrlib.remote import discovery
+    want = {"freq": 2e9}     # only a wish, so both servers qualify and the rank says which is tried first
+    choices, _, _ = discovery.rank(two_servers[1], want=want)
+    first, second = (servers[c["name"]] for c in choices)
+    monkeypatch.setattr(first, "open_matching", broken)
+    sdr = pysdrlib.connect(want=want, program="x", init_kwargs=SIM)
+    try:
+        assert sdr.address == second.endpoint      # the best one failed, so the next was used
+    finally:
+        sdr.close()
+    monkeypatch.setattr(servers["lnb"], "open_matching", broken)
+    with pytest.raises(err.NoDevice, match="it fell over"):
+        pysdrlib.connect(need={"freq": 12e9}, program="x", init_kwargs=SIM)          # only lnb fits, and it fails
+
+
+@pytestmark_zmq
+def test_connect_without_an_address_says_why_nothing_fits(two_servers):
+    with pytest.raises(err.NoDevice, match=r"plain.*cannot tune.*\|.*lnb.*cannot tune"):
+        pysdrlib.connect(need={"freq": 50e9})

@@ -9,5 +9,6 @@ except ImportError as e:
 
 from .client import Client, RemoteDevice
 from .server import Server
+from .discovery import discover
 
 Device = RemoteDevice

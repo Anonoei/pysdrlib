@@ -4,7 +4,7 @@ Host SDRs on one machine and use them from another over [ZeroMQ](https://zeromq.
 `pysdrlib.Device`, so code written for a local radio works unchanged.
 
 ```
-pip install pysdrlib[remote]        # adds pyzmq
+pip install pysdrlib[remote]        # adds pyzmq (and zeroconf, for finding servers)
 ```
 
 ## Quick start
@@ -30,6 +30,45 @@ sdr.close()                                                    # also closes the
 `sdr.caps` comes from the hosted device, and every control (`set_rx_gain`, `set_bandwidth`, `set_setting`, a driver's own
 setters such as `set_rx_lna_gain`...) is forwarded to it. Channels, transmit, `read(meta=True)` gaps and `stream()` work
 as they do locally.
+
+## Finding servers
+
+A server can announce itself on the local network (mDNS / DNS-SD, as `_pysdrlib._tcp`), so clients find it without being
+told its address:
+```
+pysdrlib server --bind tcp://0.0.0.0:5555 --advertise              # --advertise-name NAME (default: the host name)
+pysdrlib discover --list                                            # every server announcing itself, and what each has
+```
+```python
+import pysdrlib.remote
+from pysdrlib.remote import Client
+
+for s in pysdrlib.remote.discover(timeout=2):                       # [{"name", "address", "addresses", "kind", ...}]
+    with Client(s["address"]) as c:
+        print(s["name"], c.types(), c.list(), c.available())
+```
+Or let `connect` pick: with no address it asks every server it finds which of its radios fit, without opening any, and
+connects to the best:
+```python
+sdr = pysdrlib.connect(need={"freq": 433e6, "rate": 2e6}, want={"rate": 10e6}, program="pyspecan")
+sdr = pysdrlib.connect(device="hackrf")         # a server with a HackRF attached
+sdr = pysdrlib.connect(device="hackrf-0")       # the server hosting this device (an error if several do)
+sdr.address                                     # where it ended up
+```
+- Radios are compared across servers as one server compares its own (see below): what fits `need`, nearest `want`, the
+  antenna best for the frequency, one attached before one a client left open. Of equals, a server on this machine wins
+  (samples come through shared memory).
+- A server that fails to open its radio is passed over for the next; `err.NoDevice` says why each server was left out.
+- `discover_timeout=` (default 2 s) is how long it listens for servers. A server too old to be asked is tried last,
+  as is one that can open the device type asked for but has none attached (`sim`, say).
+- The announcement says only where a server is, its protocol and pysdrlib version, and whether it is a `server` or a
+  `relay` (`pysdrlib relay --advertise`). What it has is asked of the server itself, so it is never out of date.
+- A server bound to every interface (`0.0.0.0`) announces each of its addresses; `address` is one on a network the client
+  is on, `addresses` all of them. A server on `127.0.0.1` or `ipc://` cannot be advertised (`--advertise` says so).
+- Servers of another protocol version are left out (`--all-versions` / `all_versions=True` shows them).
+- mDNS stays on the local network: a server across a router or a VPN still has to be given by address. Advertising is off
+  unless asked for; it makes a server easier to find, not easier to use (see *Security*). `avahi-browse -rt _pysdrlib._tcp`
+  sees the same announcements.
 
 ## Controllers and viewers
 
@@ -183,9 +222,10 @@ So a relay costs a little for one program, and pays for itself from two or three
 ## Command line
 
 ```
-pysdrlib server [--bind ENDPOINT] [--port-range LOW-HIGH] [--devices a,b] [--open TYPE]... [--frontends FILE] [--wire FMT] [--lease S] [--no-shm] [-v]
-pysdrlib relay ADDRESS (DEVICE | --open TYPE) [--bind ENDPOINT] [--control auto|yes|no] [--name ID] [--timeout S] [--lease S] [--no-shm] [-v]
+pysdrlib server [--bind ENDPOINT] [--port-range LOW-HIGH] [--devices a,b] [--open TYPE]... [--frontends FILE] [--wire FMT] [--lease S] [--no-shm] [--advertise [--advertise-name NAME]] [-v]
+pysdrlib relay ADDRESS (DEVICE | --open TYPE) [--bind ENDPOINT] [--control auto|yes|no] [--name ID] [--timeout S] [--lease S] [--no-shm] [--advertise [--advertise-name NAME]] [-v]
 pysdrlib client ADDRESS [--timeout S] COMMAND
+pysdrlib discover [--timeout S] [--list] [--all-versions]
 ```
 
 | Client command | What it does |
@@ -227,6 +267,7 @@ server.serve_forever()          # or server.start() ... server.stop()
 | `remote/client.py` | `Client` (discovery) and `RemoteDevice` (a `Device` backed by a server) |
 | `remote/server.py` also has | `RelayWorker`, a device of another server hosted here (`Server.relay`) |
 | `remote/shm.py` | `ShmWriter` (the server's ring in shared memory) and `ShmReader` (a client's view of it); the ring is C++ in `_native/include/hardware_shm.hpp` |
+| `remote/discovery.py` | `Advertiser` (a server's mDNS announcement) and `discover` |
 | `remote/protocol.py` | Wire format: message framing, sample block headers, wire formats. The file documents the sockets |
 | `remote/cli.py` | The `pysdrlib` command |
 

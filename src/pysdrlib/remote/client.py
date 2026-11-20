@@ -107,6 +107,11 @@ class Client:
         `hosted` (the id of the device that has it open, or None)"""
         return self._c2.request("list").get("available", [])
 
+    def candidates(self, device=None, serial=None, label=None, need=None, want=None):
+        """The server's radios that fit the request, best first, without opening any (see `Server.candidates`); raises
+        `err.NoDevice` saying why when none do"""
+        return self._c2.request("choose", type=device, serial=serial, label=label, need=need, want=want)["candidates"]
+
     def close(self):
         """Close the connection"""
         self._c2.close()

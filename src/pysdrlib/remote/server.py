@@ -484,7 +484,7 @@ class RelayWorker(DeviceWorker):
 
 class Server:
     def __init__(self, bind="tcp://127.0.0.1:5555", port_range=None, devices=None, lease=15.0, wire="native", shm=True,
-                 shm_samples=None, scan_interval=0.0, frontends=None):
+                 shm_samples=None, scan_interval=0.0, frontends=None, advertise=False, name=None, kind="server"):
         """
         bind: C2 endpoint, tcp://host:port (port 0 or * picks one; see `endpoint`) or ipc://path.
         port_range: (low, high) for the per-device tcp ports; default lets the OS pick.
@@ -495,6 +495,9 @@ class Server:
         shm_samples: samples a shared-memory ring holds (default: a quarter second at the device's top rate).
         scan_interval: seconds between looks at which radios are attached, logging the ones that appear or vanish (0 = never).
         frontends: what sits between each radio and the air (a `frontends.Frontends`, or the path of its TOML file).
+        advertise: announce the server on the local network while it serves, for `discovery.discover` (needs zeroconf, and a
+            bind other clients can reach such as tcp://0.0.0.0:5555). name: the name it announces (default: the host name).
+        kind: what it announces itself as, "server" or "relay".
         """
         self.log = logger.new("remote.server")
         self.scheme, self._host, self._port = _parse_bind(bind)
@@ -518,6 +521,15 @@ class Server:
         self._attached = None       # {key: DeviceInfo} at the last scan
         self._scan_lock = threading.Lock()   # one look at the USB bus at a time
         self._bind_c2(bind)
+        self._advertiser = None
+        if advertise:
+            from .discovery import Advertiser
+            try:
+                self._advertiser = Advertiser(self.endpoint, name=name, kind=kind)
+            except BaseException:
+                self._c2.close(0)
+                self._ctx.term()
+                raise
 
     # --- sockets --- #
     def _socket(self, kind):
@@ -552,6 +564,7 @@ class Server:
         if self._thread is None:
             self._thread = threading.Thread(target=self._run, name="pysdrlib-c2", daemon=True)
             self._thread.start()
+        self._advertise()
         if self.scan_interval > 0 and self._scan_thread is None:
             self._scan_thread = threading.Thread(target=self._scan_loop, name="pysdrlib-scan", daemon=True)
             self._scan_thread.start()
@@ -563,6 +576,7 @@ class Server:
             self._scan_thread = threading.Thread(target=self._scan_loop, name="pysdrlib-scan", daemon=True)
             self._scan_thread.start()
         try:
+            self._advertise()
             self._run()
         except KeyboardInterrupt:
             pass
@@ -572,6 +586,11 @@ class Server:
     def stop(self):
         """Stop serving and close every hosted device"""
         self._stop.set()
+        if self._advertiser is not None:
+            try:
+                self._advertiser.stop()
+            except Exception:
+                self.log.exception("withdrawing the announcement failed")
         if self._thread is not None:
             self._thread.join()
             self._thread = None
@@ -584,6 +603,15 @@ class Server:
             self._c2.close(0)
             self._c2 = None
             self._ctx.term()
+
+    def _advertise(self):
+        if self._advertiser is not None and not self._stop.is_set():
+            self._advertiser.start()
+
+    @property
+    def advertised_name(self):
+        """The name the server announces on the network (None when not advertising)"""
+        return self._advertiser.name if self._advertiser is not None else None
 
     def __enter__(self):
         return self.start()
@@ -783,6 +811,22 @@ class Server:
         found.sort(key=lambda f: f[:3])
         return [(f[3], f[4], f[5]) for f in found]
 
+    def candidates(self, dtype=None, serial=None, label=None, need=None, want=None):
+        """`choose` for a client that has not decided which server to use: the radios that fit the request, best first, as
+        dicts of `kind` ("unit" attached, "hosted" open and uncontrolled), `driver`, `label`, `serial`, `id` (a hosted one's),
+        `rank` (`choose.rank`, comparable between servers) and `granted`. Opens nothing; raises `err.NoDevice` like `choose`"""
+        need, want = choose.normalize(need, "need"), choose.normalize(want, "want")
+        wish = {**need, **want}
+        out = []
+        for kind, target, caps in self.choose(dtype, serial, label, need, want):
+            if kind == "hosted":
+                info = {"driver": target.type, "label": type(target.device).NAME, "serial": target.serial(), "id": target.id}
+            else:
+                info = {"driver": target.driver, "label": target.label, "serial": target.serial, "id": None}
+            out.append({"kind": kind, **info, "rank": list(choose.rank(caps, wish)),
+                        "granted": choose.granted(caps, wish) if caps is not None else None})
+        return out
+
     def _give_back(self, kind, worker):
         """Let go of a radio `open_matching` took but cannot use: a hosted one is released, one it opened is closed"""
         if kind == "hosted":
@@ -883,6 +927,9 @@ class Server:
         if op == "list":
             return {"types": self.types(), "devices": [w.status() for w in self.workers.values()],
                     "available": self.available()}
+        if op == "choose":
+            return {"candidates": self.candidates(msg.get("type"), msg.get("serial"), msg.get("label"), msg.get("need"),
+                                                  msg.get("want"))}
         if op == "open":
             program = _program(msg.get("program"))
             granted = None
