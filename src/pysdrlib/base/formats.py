@@ -188,6 +188,18 @@ class Formats(Enum):
             x = x - (x.dtype.type(offset * (1 + 1j)) if x.dtype.kind == "c" else x.dtype.type(offset))
         return x / x.real.dtype.type(self.full_scale)
 
+    def unscale(self, samples):
+        """The inverse of `scale`: samples with full scale at +-1 (a device's) as this format stores them, ready for
+        `write` (integer formats are rounded there; +1.0 is one step past the largest signed value, see FileSink's clip)"""
+        x = np.asarray(samples)
+        if self.value.kind == "f":
+            return x
+        x = x * x.real.dtype.type(self.full_scale) if x.dtype.kind in "fc" else x.astype(np.float32) * np.float32(self.full_scale)
+        offset = self.value.offset()
+        if offset:
+            x = x + (x.dtype.type(offset * (1 + 1j)) if x.dtype.kind == "c" else x.dtype.type(offset))
+        return x
+
     @property
     def bits(self):
         """Size of one value (I or Q of a complex format) in bits"""

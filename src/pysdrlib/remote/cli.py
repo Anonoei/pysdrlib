@@ -7,11 +7,14 @@
     pysdrlib client tcp://host:5555 rx --serial <serial> --program myapp -o out.cfile -t 5
     pysdrlib client tcp://host:5555 rx --need freq=433e6 --need rate=2e6 --freq 433.92e6 --rate 10e6 -o out.cfile -t 5
     pysdrlib client tcp://host:5555 watch <driver>-0 -o out.cfile -t 5
+    pysdrlib client tcp://host:5555 rx <driver> --freq 433.92e6 --rate 2e6 -f ci8 -o capture.sigmf -t 10
     pysdrlib client tcp://host:5555 tx <driver> -i out.cfile --freq 915e6 --rate 2e6 --tx-gain 0 --tx-wire int8
     pysdrlib client tcp://host:5555 set <driver>-0 rx_freq=101e6 rx_lna_gain=16
     pysdrlib relay tcp://host:5555 <driver>-0 --bind tcp://127.0.0.1:5556      # programs here share one connection to it
 
-Recordings and transmit files are raw complex64 (GNU Radio `.cfile`).
+Recordings are raw complex64 (GNU Radio `.cfile`) by default; `-f` picks another format (ci16, ci8, cu8...), and an
+output ending in `.sigmf` (or `--sigmf`) records SigMF, with the rate, frequency, retunes and lost samples in its
+metadata. Transmit files are raw complex64.
 --rx-wire / --tx-wire choose the format samples cross the network in (native = the device's own layout).
 """
 import argparse
@@ -138,7 +141,12 @@ def _choice(args, **want):
     return dict(program=args.program, serial=args.serial, label=args.label, need=need or None, want=want or None)
 
 def _record_args(p):
-    p.add_argument("-o", "--output", required=True, help="file to write raw complex64 to")
+    p.add_argument("-o", "--output", required=True,
+                   help="file to record to; a name ending in .sigmf records SigMF (NAME.sigmf-data and NAME.sigmf-meta)")
+    p.add_argument("-f", "--format", default="cf32",
+                   help="sample format of the file (default %(default)s: two float32, a GNU Radio .cfile): see pysdrlib.Formats, "
+                        "e.g. ci16, ci8, cu8; integer formats saturate at full scale")
+    p.add_argument("--sigmf", action="store_true", help="record SigMF whatever the output's name")
     p.add_argument("-n", "--samples", type=int, help="stop after this many samples")
     p.add_argument("-t", "--time", type=float, help="stop after this many seconds")
 
@@ -162,25 +170,34 @@ def _apply(dev, settings):
         print(f"{name}({value}) -> {getattr(dev, name)(value)}")
 
 def _record(dev, args):
+    """Record the stream to `args.output` until -n samples or -t seconds (or Ctrl-C). The RxMeta of every block goes to
+    the sink: a SigMF recording gets the rate, frequency, retunes and lost samples"""
+    from ..file import FileSink
+    from ..base import Formats
     if args.samples is None and args.time is None:
         raise SystemExit("give a stop condition: -n SAMPLES and/or -t SECONDS")
+    try:
+        fmt = Formats.get(args.format)
+    except KeyError as e:
+        raise SystemExit(f"error: {e.args[0]}")
+    rate = dev.get_rx_sample_rate() or 1e6
     total = 0
     start = time.monotonic()
-    with open(args.output, "wb") as f:
+    sink = FileSink(args.output, fmt.name, clip=True, scale=True, sigmf=True if args.sigmf else None, hw=dev.id)
+    with sink:
         try:
-            while True:
-                if args.samples is not None and total >= args.samples:
-                    break
+            while args.samples is None or total < args.samples:
                 if args.time is not None and time.monotonic() - start >= args.time:
                     break
-                samples = dev.get_samples(timeout=0.25)
-                if args.samples is not None:
-                    samples = samples[:args.samples - total]
-                samples.tofile(f)
-                total += samples.size
+                count = CHUNK_SAMPLES if args.samples is None else min(CHUNK_SAMPLES, args.samples - total)
+                x, m = dev.read(count, timeout=args.timeout + count / rate, meta=True)
+                sink.write(x, meta=m)
+                total += len(x)
         except KeyboardInterrupt:
             pass
-    print(f"wrote {total:,} samples to {args.output}" + (f" ({dev.dropped_blocks} blocks dropped)" if dev.dropped_blocks else ""))
+    lost = f" ({dev.dropped_blocks} blocks dropped)" if dev.dropped_blocks else ""
+    clipped = f", {sink.clipped:,} clipped" if sink.clipped else ""
+    print(f"wrote {total:,} samples to {sink.path}{' (SigMF)' if sink.sigmf else ''}{clipped}{lost}")
 
 CHUNK_SAMPLES = 65536
 

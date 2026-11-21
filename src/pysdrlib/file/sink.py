@@ -15,7 +15,8 @@ class FileSink:
 
     Truncates an existing file unless `append=True` (the format of an existing file is not checked).
     `open=True` opens it on construction.
-    `clip=True` saturates values outside the format's range (and stores NaN as 0 in integer formats)
+    `scale=True` takes samples as a device gives them (full scale at +-1) and stores them at the format's full scale, the
+    inverse of `File(..., scale=True)`. `clip=True` saturates values outside the format's range (and stores NaN as 0 in integer formats)
     instead of raising ValueError, and logs one warning
     ("N samples clipped") when the sink closes. `clipped` holds the running count. Usable as a context manager.
 
@@ -26,7 +27,7 @@ class FileSink:
     samples were lost; `retune(freq)` starts a capture by hand.
     """
     def __init__(self, path, fmt: str = "cf32", append: bool = False, open: bool = False, clip: bool = False,
-                 sigmf: bool | None = None, rate: float | None = None, freq: float | None = None, hw: str | None = None):
+                 scale: bool = False, sigmf: bool | None = None, rate: float | None = None, freq: float | None = None, hw: str | None = None):
         self.log = logger.new("device.FileSink")
         self.sigmf = _sigmf.is_sigmf(path) if sigmf is None else bool(sigmf)
         self.path = _sigmf.paths(path)[0] if self.sigmf else Path(path)
@@ -37,6 +38,7 @@ class FileSink:
             raise ValueError("appending to a SigMF recording is not supported")
         self.append = append
         self.clip = clip
+        self.scale = scale   # samples come with full scale at +-1, like a device's (see Formats.unscale)
         self.count = 0    # samples written through this sink
         self.clipped = 0  # samples that were saturated (clip=True only)
         self.rate = rate
@@ -128,6 +130,8 @@ class FileSink:
         arr = np.asarray(samples)
         if arr.ndim != 1:
             raise ValueError(f"write() takes 1-D samples, got shape {arr.shape}; flatten or write per channel")
+        if self.scale:
+            arr = self.fmt.unscale(arr)
         nclipped = 0
         if self.clip:
             arr, nclipped = self._clip(arr)

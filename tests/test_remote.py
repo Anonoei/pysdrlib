@@ -397,6 +397,24 @@ class TestCli:
         cli(["client", server.endpoint, "watch", worker.id, "-n", "30000", "-o", str(out_file)])
         assert np.fromfile(out_file, dtype=np.complex64).size == 30000
 
+    def test_rx_records_sigmf_in_any_format(self, server, tmp_path, capsys):
+        out = tmp_path / "cap.sigmf"
+        cli(["client", server.endpoint, "rx", "sim", "--freq", "433e6", "--rate", "1e6", "-n", "100000", "-f", "ci8",
+             "-o", str(out)])
+        assert "wrote 100,000 samples" in capsys.readouterr().out
+        f = pysdrlib.File(out, scale=True)
+        assert f.fmt is pysdrlib.Formats.ci8t and f.max_samp == 100_000
+        assert f.rate == 1e6 and f.freq == 433e6 and f.meta.raw["global"]["core:hw"].startswith("sim")
+        with f:
+            x = f.next(4096)
+        assert 0.4 < np.abs(x).mean() < 0.6   # sim's tone, at half scale, survived the trip through int8
+
+        raw = tmp_path / "cap.cu8"
+        cli(["client", server.endpoint, "rx", "sim", "--rate", "1e6", "-t", "0.2", "-f", "cu8", "--sigmf", "-o", str(raw)])
+        assert pysdrlib.File(tmp_path / "cap.cu8.sigmf-data").fmt is pysdrlib.Formats.cui8
+        with pytest.raises(SystemExit, match="unknown format"):
+            cli(["client", server.endpoint, "rx", "sim", "-n", "10", "-f", "cx99", "-o", str(raw)])
+
     def test_errors_are_one_line(self, server):
         with pytest.raises(SystemExit, match="no hosted device"):
             cli(["client", server.endpoint, "info", "sim-42"])

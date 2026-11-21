@@ -236,12 +236,15 @@ pysdrlib discover [--timeout S] [--list] [--all-versions]
 | --- | --- |
 | `list` | Device types the server allows and the devices it hosts |
 | `info DEVICE` | A hosted device's capabilities, as JSON |
-| `rx TYPE -o FILE (-n SAMPLES \| -t SECONDS)` | Open a device, configure it (`--freq`, `--rate`, `--rx-gain`, `--set KEY=VALUE`) and record |
+| `rx TYPE -o FILE [-f FORMAT] [--sigmf] (-n SAMPLES \| -t SECONDS)` | Open a device, configure it (`--freq`, `--rate`, `--rx-gain`, `--set KEY=VALUE`) and record |
 | `watch DEVICE -o FILE (-n \| -t)` | Record from an already hosted device without controlling it |
 | `set DEVICE KEY=VALUE...` | Change settings on a hosted device (takes control briefly) |
 | `tx TYPE -i FILE` | Open a device, configure it (`--freq`, `--rate`, `--tx-gain`, `--set`) and transmit; `--loop` repeats |
 
-Recordings and transmit files are raw `complex64` (GNU Radio `.cfile`). Numbers accept scientific notation (`100e6`).
+Recordings are raw `complex64` (GNU Radio `.cfile`) unless `-f FORMAT` picks another (`ci16`, `ci8`, `cu8`... see
+`pysdrlib.Formats`; integer formats saturate at full scale). An output ending in `.sigmf`, or `--sigmf`, records
+[SigMF](https://sigmf.org): `NAME.sigmf-data` and `NAME.sigmf-meta`, with the sample rate, frequency, every retune and
+where samples were lost. Transmit files are raw `complex64`. Numbers accept scientific notation (`100e6`).
 `--port-range` limits the ports the per-device sockets use, which is what you open in a firewall. `python -m pysdrlib`
 is the same as the `pysdrlib` command.
 

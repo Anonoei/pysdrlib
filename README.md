@@ -158,6 +158,7 @@ Host SDRs on one machine and use them from another (`pip install pysdrlib[remote
 ```
 pysdrlib server --bind tcp://0.0.0.0:5555
 pysdrlib client tcp://host:5555 rx hackrf --freq 100e6 --rate 10e6 -t 5 -o out.cfile
+pysdrlib client tcp://host:5555 rx hackrf --freq 100e6 --rate 10e6 -t 5 -f ci8 -o capture.sigmf   # SigMF, as int8
 ```
 ```python
 sdr = pysdrlib.connect("tcp://host:5555", "hackrf")          # same API as a local device (opened, and yours to control)

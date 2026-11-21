@@ -342,3 +342,15 @@ class TestScale:
         buf = _io.BytesIO()
         formats.Formats.cf32.write(buf, x)
         assert buf.getvalue() == x.tobytes()
+
+def test_unscale_is_the_inverse_of_scale(tmp_path):
+    import numpy as np
+    from pysdrlib import File, FileSink
+    x = (0.5 * np.exp(2j * np.pi * np.arange(256) / 16)).astype(np.complex64)
+    for name in ("ci8", "ci16", "cu8", "cui16", "cf32", "cf16"):
+        fmt = formats.Formats.get(name)
+        assert np.allclose(fmt.scale(fmt.unscale(x)), x, atol=1e-6), name
+        with FileSink(tmp_path / name, name, scale=True) as out:
+            out.write(x)
+        with File(tmp_path / name, name, scale=True) as f:
+            assert np.allclose(f.next(256), x, atol=1.5 / fmt.full_scale + 1e-3), name
