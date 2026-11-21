@@ -107,6 +107,11 @@ class Client:
         `hosted` (the id of the device that has it open, or None)"""
         return self._c2.request("list").get("available", [])
 
+    def candidates(self, device=None, serial=None, label=None, need=None, want=None):
+        """The server's radios that fit the request, best first, without opening any (see `Server.candidates`); raises
+        `err.NoDevice` saying why when none do"""
+        return self._c2.request("choose", type=device, serial=serial, label=label, need=need, want=want)["candidates"]
+
     def close(self):
         """Close the connection"""
         self._c2.close()
@@ -121,7 +126,7 @@ class RemoteDevice(Device):
     NAME = "pysdrlib Remote Device"
 
     def __init__(self, address: str, device=None, *, id=None, timeout=DEFAULT_TIMEOUT, init_args=(), init_kwargs=None, wire=None, tx_wire="native",
-                 transport="auto", program=None, serial=None, label=None, need=None, want=None):
+                 transport="auto", program=None, serial=None, label=None, need=None, want=None, pick=None):
         """
         address: server C2 endpoint, e.g. tcp://host:5555
         device: device type to open on the server (this client becomes its controller)
@@ -133,6 +138,7 @@ class RemoteDevice(Device):
         need, want: what the program needs (a radio that cannot is not used) and would like: dicts with `freq` (Hz, or a
               (low, high) pair), `rate`, `bandwidth`, `channels`, `tx`. The server opens the best radio that meets `need`
               (or takes over a free hosted one); `granted` says what it can do nearest to `want` and `need`.
+        pick: the `key` of one of `Client.candidates`: open that radio and no other (`err.Busy` if it has been taken since).
         init_args/init_kwargs: passed to the device type's constructor on the server
         wire: RX wire format to request when opening a device type (default: the server's, normally the
               device's native layout). See `set_wire`.
@@ -143,7 +149,7 @@ class RemoteDevice(Device):
               offers it (any number of clients then read one copy, each at its own pace), else over the socket; "zmq":
               always over the socket; "shm": shared memory, or `err.NotSupported`.
         """
-        choosing = any(v is not None for v in (serial, label, need, want))
+        choosing = any(v is not None for v in (serial, label, need, want, pick))
         if id is not None and (device is not None or choosing):
             raise ValueError("`id` attaches to a hosted device: it takes no `device`, `serial`, `label`, `need` or `want`")
         if id is None and device is None and not choosing:
@@ -151,7 +157,7 @@ class RemoteDevice(Device):
         self.program = program
         self.granted = None         # what the radio the server chose can do nearest to `want` (see `need`, `want`)
         self._choice = {k: v for k, v in (("serial", serial), ("label", label), ("need", choose.normalize(need, "need") or None),
-                                          ("want", choose.normalize(want, "want") or None)) if v is not None}
+                                          ("want", choose.normalize(want, "want") or None), ("pick", pick)) if v is not None}
         self.log = logger.new(f"device.{type(self).__name__}")
         self.device = None
         self.state = {"open": False, "rx": False, "tx": False}

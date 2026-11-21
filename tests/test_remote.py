@@ -286,6 +286,78 @@ def test_lease_expiry_releases_controller():
             d.set_rx_freq(1e6)
 
 
+class TestSlowDevice:
+    """A radio can take a long time to stop (the RX888's stop_rx once took a minute). The C2 thread answers every client,
+    so it must keep answering meanwhile: `hello` and `list` (busy devices show their last status), lease expiry, release"""
+    SLOW = 2.0
+
+    @pytest.fixture
+    def slow(self):
+        def make(lease=0):
+            server = Server("tcp://127.0.0.1:0", devices=["sim"], lease=lease).start()
+            d = RemoteDevice(server.endpoint, "sim")
+            d.open()
+            d.initialize(Fs=1e6)
+            d.start_rx()
+            device = server.workers[d.id].device
+            real_stop, stops = device.stop_rx, []
+            def stop_rx():
+                time.sleep(self.SLOW)
+                stops.append(time.monotonic())
+                return real_stop()
+            device.stop_rx = stop_rx
+            made.append((server, d))
+            return server, d, stops
+        made = []
+        yield make
+        for server, d in made:
+            server.stop()
+
+    def answers_quickly(self, server, dev_id):
+        start = time.monotonic()
+        with Client(server.endpoint, 1.0) as c:
+            (info,) = [w for w in c.list() if w["id"] == dev_id]
+        assert time.monotonic() - start < 0.8, "the C2 thread waited on the device"
+        return info
+
+    def test_list_answers_while_a_controller_stops_the_stream(self, slow):
+        import threading
+        server, d, stops = slow()
+        stopping = threading.Thread(target=d.stop_rx)
+        stopping.start()
+        time.sleep(0.3)   # the control thread is in stop_rx, holding the device
+        info = self.answers_quickly(server, d.id)
+        assert info["busy"] and info["controlled"] and info["Fs"] == 1e6
+        stopping.join()
+        info = self.answers_quickly(server, d.id)
+        assert not info.get("busy") and not info["state"]["rx"] and stops
+
+    def test_lease_expiry_does_not_stall_the_server(self, slow):
+        server, d, stops = slow(lease=0.4)
+        d._beat_stop.set()          # the controller "dies" while streaming
+        d._beat.join()
+        time.sleep(0.8)             # the lease runs out: the stream is stopped, slowly, off the C2 thread
+        info = self.answers_quickly(server, d.id)
+        assert not info["controlled"]
+        time.sleep(self.SLOW + 0.3)
+        assert stops and not self.answers_quickly(server, d.id)["state"]["rx"]
+
+    def test_release_does_not_stall_the_server_or_stop_a_new_controllers_stream(self, slow):
+        server, d, stops = slow()
+        worker = server.workers[d.id]
+        with worker.lock:                    # the device is busy (another call into it)
+            start = time.monotonic()
+            d.release()
+            assert time.monotonic() - start < 0.8
+            token = worker.claim("next")     # and someone takes it over before the old stream is stopped
+        time.sleep(0.3)
+        assert worker.token == token
+        # the background stop found a controller: that one decides about the stream
+        assert worker.device.state["rx"] and not stops
+        worker.release()
+        assert stops and not worker.device.state["rx"]
+
+
 def test_heartbeat_keeps_control():
     with Server("tcp://127.0.0.1:0", devices=["sim"], lease=0.6) as s:
         with RemoteDevice(s.endpoint, "sim") as d:

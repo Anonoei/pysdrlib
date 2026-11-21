@@ -45,6 +45,15 @@ def no_system_library(monkeypatch):
     monkeypatch.setattr(utils.ctypes.util, "find_library", lambda name: None)
 
 
+def cached_copy(lib, directory, file=None, stamp=True):
+    """A library built before into `directory`, stamped with the current sources' fingerprint (or not stamped)"""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / (file or lib.files[0])).write_bytes(b"lib")
+    if stamp:
+        lib.stamp_path(directory).write_text(lib.fingerprint() + "\n")
+    return directory / (file or lib.files[0])
+
+
 class TestExtensionBuild:
     """What setup.py gets: no building, no linking against the vendor library"""
 
@@ -91,16 +100,14 @@ class TestLoadOrder:
 
     def test_then_the_package_cache_without_rebuilding(self, lib, cache, loaded, no_system_library, monkeypatch):
         pkg, _ = cache
-        pkg.mkdir(parents=True)
-        (pkg / lib.files[0]).write_bytes(b"lib")
+        cached_copy(lib, pkg)
         monkeypatch.setattr(lib, "build", lambda: pytest.fail("must not rebuild a cached library"))
-        assert "cached" in lib.load()
+        assert lib.load(build=True).startswith("cached")
         assert loaded == [str(pkg / lib.files[0])]
 
     def test_then_the_user_cache(self, lib, cache, loaded, no_system_library):
         _, user = cache
-        user.mkdir(parents=True)
-        (user / lib.files[-1]).write_bytes(b"lib")
+        cached_copy(lib, user, lib.files[-1])
         lib.load()
         assert loaded == [str(user / lib.files[-1])]
 
@@ -133,9 +140,78 @@ class TestLoadOrder:
     def test_where_it_is_is_known(self, lib, cache, no_system_library):
         pkg, _ = cache
         assert lib.locate() is None and not lib.available()
-        pkg.mkdir(parents=True)
-        (pkg / lib.files[0]).write_bytes(b"lib")
+        cached_copy(lib, pkg)
         assert lib.locate() == ("cached", str(pkg / lib.files[0])) and lib.available()
+
+
+class TestStaleCache:
+    """A cached library remembers what it was built from; built from other sources, it is rebuilt (when allowed)"""
+
+    def test_a_build_stamps_the_sources_it_was_built_from(self, lib, cache, monkeypatch):
+        pkg, _ = cache
+        monkeypatch.setattr(utils.shutil, "which", lambda n: "/usr/bin/" + n)
+        def check_call(cmd, **kw):
+            if "--build" in cmd:
+                (Path(cmd[2]) / lib.files[0]).write_bytes(b"lib")
+        monkeypatch.setattr(utils.subprocess, "check_call", check_call)
+        built = lib.build()
+        assert lib.stamp_path(pkg).read_text().strip() == lib.fingerprint()
+        assert not lib.is_stale(built)
+
+    def test_the_fingerprint_covers_the_snapshot_and_pysdrlibs_own_sources(self, lib):
+        inputs = lib.stamp_inputs()
+        assert any(p.name == "CMakeLists.txt" for p in inputs)
+        assert any(p.name == "PROVENANCE" for p in inputs), "the vendored snapshot's PROVENANCE names its upstream commit"
+        assert all((utils.PATH_MOD / p) in inputs for p in lib.inputs)
+        assert all(p.is_file() for p in inputs)
+
+    def test_changing_an_input_changes_the_fingerprint(self, lib, tmp_path, monkeypatch):
+        shim = tmp_path / "shim.cpp"
+        shim.write_text("int a;")
+        monkeypatch.setattr(lib, "inputs", (*lib.inputs, shim))   # absolute: PATH_MOD / abs is abs
+        before = lib.fingerprint()
+        shim.write_text("int b;")
+        assert lib.fingerprint() != before
+
+    def test_unstamped_or_mismatched_copies_are_stale(self, lib, cache, no_system_library):
+        pkg, _ = cache
+        path = cached_copy(lib, pkg, stamp=False)   # built before stamps existed
+        assert lib.is_stale(path) and lib.locate() == ("stale", str(path)) and lib.available()
+        lib.stamp_path(pkg).write_text("0123456789abcdef\n")
+        assert lib.is_stale(path)
+
+    def test_a_stale_copy_is_rebuilt_when_building_is_allowed(self, lib, cache, loaded, no_system_library, monkeypatch):
+        pkg, _ = cache
+        cached_copy(lib, pkg, stamp=False)
+        monkeypatch.setattr(lib, "build", lambda: Path("/fresh") / lib.files[0])
+        assert lib.load(build=True).startswith("built")
+        assert loaded == [str(Path("/fresh") / lib.files[0])]
+
+    def test_otherwise_it_is_used_with_a_warning_saying_how_to_rebuild(self, lib, cache, loaded, no_system_library, monkeypatch):
+        pkg, _ = cache
+        cached_copy(lib, pkg, stamp=False)
+        monkeypatch.delenv("PYSDRLIB_BUILD", raising=False)
+        monkeypatch.setattr(lib, "build", lambda: pytest.fail("importing must not build"))
+        with pytest.warns(UserWarning, match=rf"pysdrlib build {lib.driver} --force"):
+            assert lib.load().startswith("stale")
+        assert loaded == [str(pkg / lib.files[0])]
+
+    def test_the_build_command_rebuilds_a_stale_library(self, spec, lib, cache, no_system_library, monkeypatch, capsys):
+        from pysdrlib._ext import build
+        pkg, _ = cache
+        cached_copy(lib, pkg, stamp=False)
+        built = []
+        monkeypatch.setattr(lib, "build", lambda: built.append(1) or pkg / lib.files[0])
+        monkeypatch.setattr(build, "libraries", lambda: {spec.name: lib})
+        assert build.run(build.add_arguments(_subparsers()).parse_args([spec.name])) == 0
+        assert built == [1]
+        build.status({spec.name: lib})
+        assert "stale" in capsys.readouterr().out
+
+
+def _subparsers():
+    import argparse
+    return argparse.ArgumentParser().add_subparsers()
 
     def test_every_library_names_its_driver(self, lib, spec):
         assert lib.driver == spec.name

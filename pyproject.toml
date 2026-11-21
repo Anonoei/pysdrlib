@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pysdrlib"
-version = "0.4.4"
+version = "0.4.6"
 description = "wrapper for hardware SDRs"
 readme = "README.md"
 license-files = ["LICENSE"]
@@ -31,8 +31,8 @@ keywords = ["anonoei", "sdr"]
 dependencies = ["numpy"]
 
 [project.optional-dependencies]
-remote = ["pyzmq"]
-dev = ["setuptools", "pyzmq", "twine", "build", "pybind11", "bumpver", "pytest", "pdoc3", "matplotlib", "pybind11-stubgen"]
+remote = ["pyzmq", "zeroconf"]
+dev = ["setuptools", "pyzmq", "zeroconf", "twine", "build", "pybind11", "bumpver", "pytest", "pdoc3", "matplotlib", "pybind11-stubgen"]
 
 [project.scripts]
 pysdrlib = "pysdrlib.cli:main"
@@ -46,7 +46,7 @@ Source = "https://github.com/anonoei/pysdrlib"
 
 
 [tool.bumpver]
-current_version = "0.4.4"
+current_version = "0.4.6"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message = "bump version {old_version} -> {new_version}"
 tag_message = "{new_version}"

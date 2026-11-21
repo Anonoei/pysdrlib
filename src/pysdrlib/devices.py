@@ -266,7 +266,7 @@ def find(driver: Optional[str] = None, build=False, virtual=False, addresses=Non
             _log.debug("find: %s: %s", name, exc)
     return found
 
-def connect(address: str, device: Optional[str] = None, *, claim=False, reuse=False, **kwargs) -> Device:
+def connect(address: Optional[str] = None, device: Optional[str] = None, *, claim=False, reuse=False, **kwargs) -> Device:
     """An opened device hosted by a `pysdrlib server` at `address` (see `pysdrlib.remote`): on this machine, where it is shared
     through shared memory, or on another. It has the API of any other device.
 
@@ -289,15 +289,27 @@ def connect(address: str, device: Optional[str] = None, *, claim=False, reuse=Fa
     `freq`, `rate`, `bandwidth`, `channels`, `tx`: no radio that cannot meet `need` is used (`err.NoDevice` says why each
     was left out), and of the rest the one nearest `want` is.
     Raises `err.NoDevice`, naming what the server has, for a device it neither hosts nor can open.
+
+    address None: find the servers announcing themselves on the local network (`pysdrlib.remote.discover`, which needs
+    zeroconf) and use the one with the best radio for the request, by the same rules a server picks among its own:
+
+        sdr = pysdrlib.connect(need={"freq": 433e6}, want={"rate": 10e6}, program="pyspecan")   # wherever it fits best
+        sdr = pysdrlib.connect(device="<driver>")      # a server that has one attached
+        sdr.address                                     # the server it is on
+
+    A radio attached comes before one a client left open, and a server on this machine before another; a server that
+    fails to open it is passed over for the next. `discover_timeout` (default 2) is how many seconds to listen for servers.
     """
     try:
         from .remote import Client, RemoteDevice
     except ImportError as exc:
         raise ImportError("connecting to a server needs pyzmq: pip install pysdrlib[remote]") from exc
+    if address is None:
+        return _connect_anywhere(device, claim, reuse, **kwargs)
     with Client(address, kwargs.get("timeout", 5.0)) as client:
         hosted, types = client.list(), client.types()
     ids = {d["id"]: d for d in hosted}
-    choosing = any(kwargs.get(k) is not None for k in ("serial", "label", "need", "want"))
+    choosing = any(kwargs.get(k) is not None for k in ("serial", "label", "need", "want", "pick"))
     if device is None or (choosing and device not in ids):
         if device is not None and device not in types:
             raise err.NoDevice(f"{address} cannot open a device of type {device!r} (types: {', '.join(types) or 'none'})")
@@ -323,6 +335,34 @@ def connect(address: str, device: Optional[str] = None, *, claim=False, reuse=Fa
     dev = RemoteDevice(address, device, **kwargs)
     dev.open()
     return dev
+
+def _connect_anywhere(device, claim, reuse, discover_timeout=2.0, **kwargs) -> Device:
+    """`connect` with no address: the best server on the local network for the request"""
+    from .remote import discovery
+    servers = discovery.discover(discover_timeout)
+    if not servers:
+        raise err.NoDevice("no pysdrlib server announces itself on this network: start one with --advertise, or give its address")
+    choices, hosting, reasons = discovery.rank(servers, device, kwargs.get("serial"), kwargs.get("label"), kwargs.get("need"),
+                                               kwargs.get("want"), kwargs.get("timeout", 5.0))
+    if hosting:
+        if len(hosting) > 1:
+            raise err.NoDevice(f"{device!r} is hosted by several servers, give the address of one: "
+                               + ", ".join(f"{s['address']} ({s['name']})" for s in hosting))
+        return connect(hosting[0]["address"], device, claim=claim, reuse=reuse, **kwargs)
+    for server in choices:      # each fitting radio of every server, best first
+        best = server["candidate"]
+        # Open the radio that was ranked, and no other: if it was taken since, the server must not open its next best in
+        # its place (another server's radio may be better than that), so it says Busy and the next radio here is tried.
+        pick = {"pick": best["key"]} if best is not None and best.get("key") else {}
+        try:
+            dev = connect(server["address"], device, claim=claim, reuse=reuse, **kwargs, **pick)
+        except (err._Error, TimeoutError, OSError) as e:
+            what = f"{best['label']} " if best is not None else ""
+            reasons.append(f"{server['address']} ({server['name']}): {what}{type(e).__name__}: {e}")
+            continue
+        _log.info("connected to %s on %s (%s)", dev.id, server["address"], server["name"])
+        return dev
+    raise err.NoDevice(f"no server on this network has a radio for the request: {' | '.join(reasons)}")
 
 def open(what, serial=None, **open_args) -> Device:
     """An opened device: from a DeviceInfo (see `find`), or a driver name (`serial` picks the unit)"""

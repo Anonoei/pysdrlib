@@ -34,9 +34,18 @@ class RX888(NativeDevice):
 
     def _open(self):
         try:
-            return lib.extio.open()
+            device = lib.extio.open()
         except lib.err.NOT_FOUND as exc:
             raise err.NoDevice("No RX888 found, or no permission to access it (check your udev rules)") from exc
+        # The radio comes up with no input selected and its ADC idle: until it is tuned it streams nothing at all. Put the
+        # rate and frequency it reports (get_rx_*) on it now, so a stream started without tuning first gets those.
+        try:
+            device.set_sample_rate(float(self.CAPS.default_rate))
+            device.set_freq(int(self.CAPS.default_freq))
+        except BaseException:
+            device.close()
+            raise
+        return device
 
     def _set_rx_sample_rate(self, Fs, channel=0):
         actual = self.device.set_sample_rate(Fs)

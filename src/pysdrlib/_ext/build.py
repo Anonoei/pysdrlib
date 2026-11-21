@@ -2,7 +2,7 @@
 
     pysdrlib build                  # which drivers have their library, and which need one built
     pysdrlib build uhd              # build UHD's (a few minutes)
-    pysdrlib build --all            # every library that is missing
+    pysdrlib build --all            # every library that is missing, or stale (built from older sources)
     pysdrlib build uhd --force      # build it again, even where one is installed or built before
 
 Drivers need their vendor's library (libhackrf, libuhd...). Use the one you installed, or build the copy that comes with
@@ -37,7 +37,7 @@ def add_arguments(sub):
     parser = sub.add_parser("build", help="build the vendor libraries drivers need (importing a driver does not)",
                             description=__doc__.split("\n\n")[0])
     parser.add_argument("drivers", nargs="*", metavar="DRIVER", help="drivers to build the library of (none: show where each stands)")
-    parser.add_argument("--all", action="store_true", help="build every library that is missing")
+    parser.add_argument("--all", action="store_true", help="build every library that is missing or stale")
     parser.add_argument("--force", action="store_true", help="build even if the library is installed or was built before")
     return parser
 
@@ -56,7 +56,7 @@ def run(args) -> int:
     for driver in targets:
         lib = libs[driver]
         have = lib.locate()
-        if have and not args.force:
+        if have and have[0] != "stale" and not args.force:
             print(f"{driver}: already available ({have[0]}: {have[1]})")
             continue
         print(f"{driver}: building {lib.name}" + (f" ({lib.note})" if lib.note else "") + " ...", flush=True)
@@ -78,6 +78,6 @@ def status(libs) -> int:
     width = max(map(len, libs))
     for driver, lib in libs.items():
         have = lib.locate()
-        where = f"{have[0]}: {have[1]}" if have else f"missing: run `pysdrlib build {driver}`" + (f" ({lib.note})" if lib.note else "")
+        where = f"{have[0]}: {have[1]}" + (f" (built from older sources: run `pysdrlib build {driver}`)" if have and have[0] == "stale" else "") if have else f"missing: run `pysdrlib build {driver}`" + (f" ({lib.note})" if lib.note else "")
         print(f"{driver:<{width}}  {lib.name:<10} {where}")
     return 0

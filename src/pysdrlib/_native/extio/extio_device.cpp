@@ -83,7 +83,10 @@ void ExtIODevice::rx_trampoline(void* context, const float* data, uint32_t lengt
 }
 
 void ExtIODevice::start_rx() {
-    require()->Start(rate_index_);   // stops a running stream first
+    RadioHandlerClass* h = require();
+    // Until the first tuning picks an input (HF or VHF), the ADC is idle: the stream would start and deliver nothing
+    if (h->GetmodeRF() == NOMODE) throw HardwareError(EXTIO_ERROR_INVALID_PARAM, "Tune the RX888 (set_freq) before start_rx");
+    h->Start(rate_index_);   // stops a running stream first
     streaming_ = true;
 }
 

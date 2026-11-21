@@ -38,8 +38,10 @@ POLL_MS = 100
 SHM_SECONDS = 0.25      # a shared-memory ring holds this much of the stream at the device's highest rate
 IDLE_SLEEP = 0.002   # a pause after an error, so a failing device is not retried in a tight loop
 BATCH_SECONDS = 0.002   # the stream is published in blocks of about this long (the latency a client sees, and no less)
-CLOSE_WAIT = 5.0        # how long a close request waits for the device before replying anyway
 MIN_BATCH = 1024        # ... but not smaller than this many samples
+# The C2 thread answers everyone, so it never waits long on one device (a wedged radio can block a call for a minute):
+CLOSE_WAIT = 1.0        # how long a close request waits for the device before replying anyway (well inside client timeouts)
+STATUS_WAIT = 0.1       # how long `list` waits for a busy device before showing its last known status
 MAX_WAIT = 0.01         # a block that has not filled by then is published as it is
 
 def _program(name):
@@ -74,6 +76,8 @@ class DeviceWorker:
         self.device = device
         self.log = logger.new(f"remote.worker.{dev_id}")
         self.lock = threading.RLock()           # serializes calls into the device
+        self._owner_lock = threading.Lock()     # guards who controls it (never held while calling the device)
+        self._last_status = None                # what `status` last saw, shown while the device is busy
         self.token = None                       # controller token, None if uncontrolled
         self.last_seen = time.monotonic()
         self.streaming = threading.Event()
@@ -116,7 +120,7 @@ class DeviceWorker:
     # --- ownership --- #
     def claim(self, program=None) -> str:
         """Make a new controller token the owner. Raises `err.Busy` if the device already has a controller"""
-        with self.lock:
+        with self._owner_lock:
             if self.token is not None:
                 raise err.Busy(f"{self.id} already has a controller" + (f" ({self.program})" if self.program else ""))
             self.program = program
@@ -132,11 +136,22 @@ class DeviceWorker:
         """Note that the controller is still there (renews its lease)"""
         self.last_seen = time.monotonic()
 
-    def release(self):
-        """Drop the controller; stop streaming since nobody is left to manage it"""
-        with self.lock:
+    def release(self, wait=True):
+        """Drop the controller; stop streaming since nobody is left to manage it.
+        wait=False: stop it in the background, so a radio slow to stop holds up nobody (the C2 thread answers everyone).
+        A controller that claims the radio before that happens keeps its stream."""
+        with self._owner_lock:
             self.token = None
             self.program = self.need = self.want = None
+        if wait:
+            self._stop_streams()
+        else:
+            threading.Thread(target=self._stop_streams, args=(True,), name=f"pysdrlib-{self.id}-release", daemon=True).start()
+
+    def _stop_streams(self, unless_claimed=False):
+        with self.lock:
+            if unless_claimed and self.token is not None:
+                return
             self.streaming.clear()
             for flag, stop in (("rx", self.device.stop_rx), ("tx", self.device.stop_tx)):
                 if self.device.state.get(flag):
@@ -179,14 +194,21 @@ class DeviceWorker:
         }
 
     def status(self):
-        """What `list` shows clients: id, type, name, state, frequency, sample rate, wire format and whether it is controlled"""
-        with self.lock:
-            return {
+        """What `list` shows clients: id, type, name, state, frequency, sample rate, wire format and whether it is controlled.
+        While a call into the device is under way (a slow stop_rx...), the last status seen, with `busy` set"""
+        owner = {"controlled": self.token is not None, "program": self.program, "need": self.need, "want": self.want}
+        if not self.lock.acquire(timeout=STATUS_WAIT):
+            last = self._last_status or {   # never seen yet: what can be read without the device (its cached settings)
+                "id": self.id, "type": self.type, "name": type(self.device).NAME, "state": dict(self.device.state),
+                "cf": self.device.get_rx_freq(), "Fs": self.device.get_rx_sample_rate(), "serial": None,
+                "wire": protocol.wire_name(self.wire), "rx_channels": [0], "tx_channels": [0], "chains": []}
+            return {**last, **owner, "busy": True}
+        try:
+            self._last_status = {
                 "id": self.id, "type": self.type, "name": type(self.device).NAME,
                 "state": dict(self.device.state),
                 "cf": self.device.get_rx_freq(), "Fs": self.device.get_rx_sample_rate(),
-                "controlled": self.token is not None,
-                "program": self.program, "need": self.need, "want": self.want,
+                **owner,
                 "serial": self.serial(),
                 "wire": protocol.wire_name(self.wire),
                 "rx_channels": list(getattr(self.device, "rx_channels", (0,))),
@@ -194,6 +216,9 @@ class DeviceWorker:
                 "chains": [{"direction": c.direction, "port": c.port, "name": c.name, "lo": c.lo, "invert": c.invert,
                             "antenna": c.describe()} for c in self.device.caps.chains],
             }
+            return dict(self._last_status)
+        finally:
+            self.lock.release()
 
     # --- control socket --- #
     def _control_loop(self):
@@ -443,10 +468,10 @@ class RelayWorker(DeviceWorker):
     def _rate(self):
         return self.upstream._Fs or 1e6
 
-    def release(self):
+    def release(self, wait=True):
         if self.upstream.token:   # we control the far device, so a local controller leaving stops it as it would anywhere
-            return super().release()
-        with self.lock:
+            return super().release(wait)
+        with self._owner_lock:
             self.token = None   # a viewer relay can't stop the far device
             self.program = self.need = self.want = None
 
@@ -484,7 +509,7 @@ class RelayWorker(DeviceWorker):
 
 class Server:
     def __init__(self, bind="tcp://127.0.0.1:5555", port_range=None, devices=None, lease=15.0, wire="native", shm=True,
-                 shm_samples=None, scan_interval=0.0, frontends=None):
+                 shm_samples=None, scan_interval=0.0, frontends=None, advertise=False, name=None, kind="server"):
         """
         bind: C2 endpoint, tcp://host:port (port 0 or * picks one; see `endpoint`) or ipc://path.
         port_range: (low, high) for the per-device tcp ports; default lets the OS pick.
@@ -495,6 +520,9 @@ class Server:
         shm_samples: samples a shared-memory ring holds (default: a quarter second at the device's top rate).
         scan_interval: seconds between looks at which radios are attached, logging the ones that appear or vanish (0 = never).
         frontends: what sits between each radio and the air (a `frontends.Frontends`, or the path of its TOML file).
+        advertise: announce the server on the local network while it serves, for `discovery.discover` (needs zeroconf, and a
+            bind other clients can reach such as tcp://0.0.0.0:5555). name: the name it announces (default: the host name).
+        kind: what it announces itself as, "server" or "relay".
         """
         self.log = logger.new("remote.server")
         self.scheme, self._host, self._port = _parse_bind(bind)
@@ -518,6 +546,15 @@ class Server:
         self._attached = None       # {key: DeviceInfo} at the last scan
         self._scan_lock = threading.Lock()   # one look at the USB bus at a time
         self._bind_c2(bind)
+        self._advertiser = None
+        if advertise:
+            from .discovery import Advertiser
+            try:
+                self._advertiser = Advertiser(self.endpoint, name=name, kind=kind)
+            except BaseException:
+                self._c2.close(0)
+                self._ctx.term()
+                raise
 
     # --- sockets --- #
     def _socket(self, kind):
@@ -552,6 +589,7 @@ class Server:
         if self._thread is None:
             self._thread = threading.Thread(target=self._run, name="pysdrlib-c2", daemon=True)
             self._thread.start()
+        self._advertise()
         if self.scan_interval > 0 and self._scan_thread is None:
             self._scan_thread = threading.Thread(target=self._scan_loop, name="pysdrlib-scan", daemon=True)
             self._scan_thread.start()
@@ -563,6 +601,7 @@ class Server:
             self._scan_thread = threading.Thread(target=self._scan_loop, name="pysdrlib-scan", daemon=True)
             self._scan_thread.start()
         try:
+            self._advertise()
             self._run()
         except KeyboardInterrupt:
             pass
@@ -572,6 +611,11 @@ class Server:
     def stop(self):
         """Stop serving and close every hosted device"""
         self._stop.set()
+        if self._advertiser is not None:
+            try:
+                self._advertiser.stop()
+            except Exception:
+                self.log.exception("withdrawing the announcement failed")
         if self._thread is not None:
             self._thread.join()
             self._thread = None
@@ -584,6 +628,15 @@ class Server:
             self._c2.close(0)
             self._c2 = None
             self._ctx.term()
+
+    def _advertise(self):
+        if self._advertiser is not None and not self._stop.is_set():
+            self._advertiser.start()
+
+    @property
+    def advertised_name(self):
+        """The name the server announces on the network (None when not advertising)"""
+        return self._advertiser.name if self._advertiser is not None else None
 
     def __enter__(self):
         return self.start()
@@ -654,7 +707,7 @@ class Server:
         for w in list(self.workers.values()):
             if w.token is not None and now - w.last_seen > self.lease:
                 self.log.warning("%s: controller lease expired after %.0f s of silence", w.id, now - w.last_seen)
-                w.release()
+                w.release(wait=False)
 
     # --- C2 ops --- #
     def types(self):
@@ -783,21 +836,55 @@ class Server:
         found.sort(key=lambda f: f[:3])
         return [(f[3], f[4], f[5]) for f in found]
 
+    def _pick_key(self, kind, target):
+        """A candidate's `key`: names that radio to `open_matching(pick=...)`"""
+        if kind == "hosted":
+            return f"hosted:{target.id}"
+        return "unit:" + "|".join(str(part) for part in self._key(target))
+
+    def candidates(self, dtype=None, serial=None, label=None, need=None, want=None):
+        """`choose` for a client that has not decided which server to use: the radios that fit the request, best first, as
+        dicts of `kind` ("unit" attached, "hosted" open and uncontrolled), `driver`, `label`, `serial`, `id` (a hosted one's),
+        `rank` (`choose.rank`, comparable between servers), `granted` and `key` (give it to `open_matching` as `pick` to open
+        that radio and no other). Opens nothing; raises `err.NoDevice` like `choose`"""
+        need, want = choose.normalize(need, "need"), choose.normalize(want, "want")
+        wish = {**need, **want}
+        out = []
+        for kind, target, caps in self.choose(dtype, serial, label, need, want):
+            if kind == "hosted":
+                info = {"driver": target.type, "label": type(target.device).NAME, "serial": target.serial(), "id": target.id}
+            else:
+                info = {"driver": target.driver, "label": target.label, "serial": target.serial, "id": None}
+            out.append({"kind": kind, **info, "key": self._pick_key(kind, target), "rank": list(choose.rank(caps, wish)),
+                        "granted": choose.granted(caps, wish) if caps is not None else None})
+        return out
+
     def _give_back(self, kind, worker):
         """Let go of a radio `open_matching` took but cannot use: a hosted one is released, one it opened is closed"""
         if kind == "hosted":
-            worker.release()
+            worker.release(wait=False)
         else:
             self.workers.pop(worker.id, None)
             worker.close()
 
     def open_matching(self, dtype=None, serial=None, label=None, need=None, want=None, program=None, init_args=(),
-                      init_kwargs=None, wire=None):
+                      init_kwargs=None, wire=None, pick=None):
         """Open (or take over, if it is hosted and nobody controls it) the best radio for the request (see `choose`).
+        pick: the `key` of one of `candidates`: open that radio or none, `err.Busy` if it no longer fits the request or is
+        no longer free (a client that compared servers by `candidates` then tries its next best, which may be elsewhere).
         -> (worker, token, granted) where `granted` is what the radio can do nearest to `want` (and `need`)"""
         need, want = choose.normalize(need, "need"), choose.normalize(want, "want")
         last = None
-        candidates = self.choose(dtype, serial, label, need, want)
+        try:
+            candidates = self.choose(dtype, serial, label, need, want)
+        except err.NoDevice as e:
+            if pick is None:
+                raise
+            raise err.Busy(f"the radio picked is no longer free for the request: {e}") from e
+        if pick is not None:
+            candidates = [c for c in candidates if self._pick_key(c[0], c[1]) == pick]
+            if not candidates:
+                raise err.Busy("the radio picked has been taken or has gone since it was offered")
         wish = {**need, **want}
         for i, (kind, target, caps) in enumerate(candidates):
             try:
@@ -883,13 +970,16 @@ class Server:
         if op == "list":
             return {"types": self.types(), "devices": [w.status() for w in self.workers.values()],
                     "available": self.available()}
+        if op == "choose":
+            return {"candidates": self.candidates(msg.get("type"), msg.get("serial"), msg.get("label"), msg.get("need"),
+                                                  msg.get("want"))}
         if op == "open":
             program = _program(msg.get("program"))
             granted = None
-            if any(msg.get(k) is not None for k in ("serial", "label", "need", "want")) or msg.get("type") is None:
+            if any(msg.get(k) is not None for k in ("serial", "label", "need", "want", "pick")) or msg.get("type") is None:
                 worker, token, granted = self.open_matching(
                     msg.get("type"), msg.get("serial"), msg.get("label"), msg.get("need"), msg.get("want"), program,
-                    msg.get("init_args", []), msg.get("init_kwargs"), msg.get("wire"))
+                    msg.get("init_args", []), msg.get("init_kwargs"), msg.get("wire"), pick=msg.get("pick"))
                 self.log.info("%s: %s opened by %s", worker.id, worker.capabilities.get("name"), program or "a client")
             else:
                 worker, token = self.open_device(
@@ -910,7 +1000,7 @@ class Server:
         if op == "release":
             worker = self._controller(msg)
             self.log.info("%s: released by its controller", worker.id)
-            worker.release()
+            worker.release(wait=False)
             return None
         if op == "ping":
             self._controller(msg)
