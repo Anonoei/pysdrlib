@@ -736,6 +736,7 @@ _LOCAL = frozenset({"open", "close", "get_samples", "read", "read_into", "stream
                     "flush", "write", "get_tx_stats", "get_caps", "settings", "clock_sources",
                     "rx_gain_stages", "tx_gain_stages", "rx_gain_modes", "tx_gain_modes", "rx_antennas", "tx_antennas"})
 for _name, _fn in list(vars(Device).items()):
-    if not _name.startswith("_") and inspect.isfunction(_fn) and _name not in _LOCAL and _name not in vars(RemoteDevice):
+    if not _name.startswith("_") and inspect.isfunction(_fn) and not inspect.isgeneratorfunction(_fn) \
+            and _name not in _LOCAL and _name not in vars(RemoteDevice):   # (a generator, `sweep`, reads: it runs here)
         setattr(RemoteDevice, _name, _forwarder(_name))
 del _name, _fn

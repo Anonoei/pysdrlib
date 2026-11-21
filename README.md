@@ -25,8 +25,8 @@ For a more robust C implementation with far more hardware, use [SoapySDR](https:
 | [TCP IQ stream](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/tcpiq) | `tcpiq` | Receive raw I/Q over TCP, as the client (`host=`, `port=`) or the server (`listen=True`); not listed by `find()` |
 | [BladeRF](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/bladerf) | `bladerf` | Planned |
 
-Also: `sim`, a simulated radio that needs no hardware, and [`File`](#sample-files), which reads recordings the way a
-device reads samples.
+Also: `sim`, a simulated radio that needs no hardware, and `file`, which plays a recording back as a radio
+(see [Sample files](#sample-files)).
 
 ## Usage
 
@@ -61,6 +61,9 @@ with sdr.stream(65536, meta=True) as s:  # starts receiving, stops on exit
     for x, m in s: ...
 
 sdr.set_rx_freq(162.4e6, flush=True)     # the next read is all at the new frequency (settling skipped)
+
+for freq, x in sdr.sweep(88e6, 108e6, 2e6, 65536):   # each step's samples, after its retune
+    ...
 ```
 `sdr.on_drop` decides what lost samples do: `"warn"` (default), `"raise"`, `"ignore"` or a function.
 
@@ -123,9 +126,15 @@ with File("capture.cfile", "cf32") as f:     # cf32: two float32 per sample, a G
         ...
 with FileSink("out.cs16", "ci16", clip=True) as out:    # ci16: two int16 per sample
     out.write(samples)
+
+with FileSink("capture.sigmf", "ci16", hw=sdr.NAME) as out, sdr.stream(65536, meta=True) as s:   # SigMF
+    for x, m in s:
+        out.write(x, meta=m)           # the rate, frequency, retunes and lost samples go into capture.sigmf-meta
+
+sdr = pysdrlib.open("file", path="capture.sigmf", loop=True)   # a recording, received like a radio
 ```
-See the [file README](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/file) for the details: partial blocks,
-seeking, appending and clipping.
+See the [file README](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/file) for the details: SigMF, replay,
+partial blocks, seeking, appending and clipping.
 
 ### Drivers from outside pysdrlib
 A new radio, or a stream from some other source, needs no change to pysdrlib. Register a `Device` subclass in your program,

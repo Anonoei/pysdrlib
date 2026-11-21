@@ -308,9 +308,9 @@ class DeviceWorker:
                 batch = min(protocol.MAX_BLOCK_SAMPLES, max(MIN_BATCH, int(BATCH_SECONDS * self._rate())))
                 self.device.wait_available(MAX_WAIT, channels[0], batch)
                 with self.lock:   # a change (set_rx_freq...) lands entirely before or after: its event precedes its samples
-                    self._take_changes()
-                    changes, self._changes = self._changes, []
                     reads = [(ch, *self.device.read_available(ch)) for ch in channels]
+                    self._take_changes()   # after reading: a change the device made itself, inside what was read, too
+                    changes, self._changes = self._changes, []
                 self._publish_changes(changes)
                 for ch, samples, index in reads:
                     if len(samples):

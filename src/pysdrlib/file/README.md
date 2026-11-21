@@ -7,13 +7,16 @@ Read sample files like a device, and write them from one. Both use the formats i
 | --- | --- |
 | `File(path, fmt)` | Reads samples from a file, forward or back, in blocks |
 | `FileSink(path, fmt)` | Writes samples to a file |
+| `pysdrlib.open("file", path=...)` | Plays a recording back as a receiving device (`Replay`) |
+
+Any of them can be a [SigMF](https://sigmf.org) recording: `name.sigmf-data` with `name.sigmf-meta` beside it.
 
 Format names follow SigMF: the number is the bits of one value (I or Q), so a GNU Radio `.cfile` (two float32) is
 `cf32`, an RTL-SDR `.cu8` is `cui8`, and `ci16` is two int16. Before pysdrlib 0.5 the number was the bits of the whole
 sample (`cf64` was two float32): check old code. See [the format reference](https://anonoei.github.io/pysdrlib/base/formats.html).
 
-`File` is a `pysdrlib.Device`-shaped source: it has `get_samples()`, so code that processes a device's samples can be
-pointed at a recording. Neither class scales: integer formats are read and written as stored, not divided by full
+`File` has `get_samples()`, so code that processes a device's samples can be pointed at a recording (for the whole
+`Device` interface, replay it: see below). Neither class scales: integer formats are read and written as stored, not divided by full
 scale.
 
 ## Reading
@@ -58,6 +61,45 @@ print(out.count, out.clipped)
 - A value outside the format's range (including NaN or infinity in an integer format) raises `ValueError`; nothing
   wraps. With `clip=True` values saturate instead (each I/Q component on its own), NaN is stored as 0, and one warning,
   "N samples clipped", is logged when the sink closes. `FileSink.clipped` holds the running count.
+
+## SigMF
+
+```python
+with FileSink("capture.sigmf", "ci16", rate=2e6, freq=100e6, hw="HackRF One") as out:
+    out.write(samples)                  # or out.write(x, meta=m) with a device's RxMeta: see below
+    out.retune(101e6)                   # what follows is at 101 MHz (a new capture)
+
+f = File("capture.sigmf")               # or "capture", "capture.sigmf-meta", "capture.sigmf-data"
+f.fmt, f.rate, f.freq                   # from the metadata; f.meta.captures, f.meta.freq_at(sample), f.meta.raw
+```
+
+- A path ending in `.sigmf` (or `.sigmf-data`/`.sigmf-meta`) makes `FileSink` write SigMF; `sigmf=True` does it for any
+  name. The `.sigmf-meta` file is written when the sink opens, and brought up to date by `flush()` and `close()`.
+- `write(x, meta=m)` with the `RxMeta` of `sdr.read(..., meta=True)` records the stream as the device saw it: the
+  sample rate and frequency (when not given), a capture at every retune, and an annotation wherever samples were lost or
+  skipped by a flush.
+- `File` takes the format from the metadata (a `fmt` given wins), and has `rate`, `freq` and `meta` (a `sigmf.Meta`).
+- Datatypes: every format with a SigMF name (`Formats.cf32.sigmf == "cf32_le"`; `Formats.get("cu8")` works too).
+  Not supported: big-endian, multi-channel recordings, and formats SigMF has no name for (4-bit, one's complement,
+  float16). Appending to a SigMF recording isn't supported.
+
+## Replay
+
+```python
+sdr = pysdrlib.open("file", path="capture.sigmf")                       # SigMF: format, rate and frequency
+sdr = pysdrlib.open("file", path="capture.cfile", fmt="cf32", rate=2e6, freq=100e6, loop=True)
+sdr.initialize()                        # the recording's rate and frequency
+with sdr.stream(65536, meta=True) as s:
+    for x, m in s: ...                  # as from a radio: m.index, m.freq, m.events...
+```
+
+- Samples are delivered in blocks on a thread, paced to the sample rate; `realtime=False` delivers them as fast as they
+  are read (nothing is dropped: playback waits for the reader).
+- The frequency follows the recording: each SigMF capture is a retune, an `Event` in `RxMeta`. `set_rx_freq` only
+  relabels the stream, and the sample rate is fixed at the recording's.
+- At the end it starts again with `loop=True`; otherwise delivery stops, `sdr.eof` is True, and `read` times out.
+- `sdr.seek(sample)`, `sdr.position` and `sdr.length` move around the recording.
+- A server hosts it like any radio: `pysdrlib.device("remote", address, "file").open(path=..., loop=True)`.
 
 ## Errors
 

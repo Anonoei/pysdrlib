@@ -519,6 +519,14 @@ class TestGenericControlsRemotely:
         assert m2.freq == 102e6 and not m2.events and m2.dropped == 0
         assert m2.index >= m.index + 200_000
 
+    def test_sweep_runs_on_the_client(self, dev):
+        dev.initialize(cf=100e6, Fs=1e6)
+        steps = list(dev.sweep(100e6, 103e6, 1e6, 2000, timeout=5, meta=True))
+        assert [f for f, _, _ in steps] == [100e6, 101e6, 102e6, 103e6]
+        assert all(m.freq == f and not m.events and len(x) == 2000 for f, x, m in steps)
+        assert all(b.index > a.index for (_, _, a), (_, _, b) in zip(steps, steps[1:]))
+        assert not dev.state["rx"]
+
     def test_a_new_stream_forgets_the_last_ones_flush(self, dev):
         dev.initialize(cf=100e6, Fs=1e6)
         dev.start_rx()
@@ -722,3 +730,25 @@ class TestOverload:
                 assert time.monotonic() - t0 < 2.0
             finally:
                 dev.close()
+
+def test_a_recording_is_served_like_a_radio(tmp_path):
+    """pysdrlib.open("file", ...) on the server: its captures reach the client as retunes"""
+    path = tmp_path / "rec.sigmf"
+    with pysdrlib.FileSink(path, "cf32", rate=1e6, freq=100e6) as out:
+        out.write(np.full(20_000, 0.25, np.complex64))
+        out.retune(101e6)
+        out.write(np.full(20_000, 0.5, np.complex64))
+    with Server("tcp://127.0.0.1:0", devices=["file"], lease=0) as s:
+        d = pysdrlib.device("remote", s.endpoint, "file")
+        d.open(path=str(path), loop=True)
+        try:
+            d.initialize()
+            assert d.get_rx_freq() == 100e6 and d.get_rx_sample_rate() == 1e6
+            d.start_rx()
+            x, m = d.read(30_000, timeout=5, meta=True)
+            d.stop_rx()
+        finally:
+            d.close()
+    assert m.index == 0 and m.freq == 100e6
+    assert [(e.offset, e.value) for e in m.events] == [(20_000, 101e6)]
+    assert np.allclose(x[:20_000], 0.25) and np.allclose(x[20_000:], 0.5)

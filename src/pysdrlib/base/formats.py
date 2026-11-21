@@ -207,7 +207,33 @@ class Formats(Enum):
         """Names of every format (without the aliases)"""
         return [fmt.name for fmt in cls]
 
+    @property
+    def sigmf(self):
+        """The SigMF `core:datatype` of this format ("cf32_le", "ci8", "cu8"...), or None where SigMF has none (4-bit,
+        one's complement, float16)"""
+        return _TO_SIGMF.get(self.name)
+
     @classmethod
-    def get(cls, name: str):
-        """The format called `name`, e.g. `Formats.get("cf32")`; the same as `Formats[name]`"""
-        return cls[name]
+    def get(cls, name):
+        """The format called `name`: one of `ls()` or an alias (`Formats.get("cf32")`, the same as `Formats["cf32"]`), or
+        a SigMF datatype ("cf32_le", "ci16_le", "cu8"). A member is returned as it is. Raises KeyError for an unknown
+        name"""
+        if isinstance(name, cls):
+            return name
+        if name in cls.__members__:
+            return cls[name]
+        if name in _FROM_SIGMF:
+            return cls[_FROM_SIGMF[name]]
+        if isinstance(name, str) and name.endswith("_be"):
+            raise KeyError(f"{name!r}: big-endian files are not supported (only little-endian, '_le')")
+        raise KeyError(f"unknown format {name!r}: one of {', '.join(cls.ls())}, or a SigMF datatype "
+                         f"({', '.join(sorted(_FROM_SIGMF))})")
+
+# SigMF `core:datatype` of each format SigMF can describe (little-endian; 8-bit types have no byte order)
+_TO_SIGMF = {
+    "cf32": "cf32_le", "cf64": "cf64_le", "ci8t": "ci8", "ci16t": "ci16_le", "ci32t": "ci32_le",
+    "cui8": "cu8", "cui16": "cu16_le",
+    "f32": "rf32_le", "f64": "rf64_le", "i8t": "ri8", "i16t": "ri16_le", "i32t": "ri32_le",
+    "ui8": "ru8", "ui16": "ru16_le", "ui32": "ru32_le",
+}
+_FROM_SIGMF = {v: k for k, v in _TO_SIGMF.items()} | {"cu16": "cui16"}

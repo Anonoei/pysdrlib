@@ -210,7 +210,8 @@ class Device:
         _OPEN.discard(self)
 
     def __enter__(self):
-        self.open()
+        if not self.state["open"]:   # `with pysdrlib.open(...) as sdr` is open already
+            self.open()
         return self
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
@@ -718,6 +719,31 @@ class Device:
 
         flush: when already receiving, discard what was queued before the stream starts"""
         return RxStream(self, count, timeout, meta, channel, flush)
+    def sweep(self, start, stop, step, count, timeout=None, meta=False, channel=0, repeat=False):
+        """Step the receiver from `start` to `stop` (inclusive) by `step` Hz, yielding (frequency, samples) with `count`
+        samples received at each, all after its retune and settling (`set_rx_freq(..., flush=True)`):
+
+            for freq, x in sdr.sweep(88e6, 108e6, sdr.get_rx_sample_rate(), 65536): ...
+
+        Starts receiving if it wasn't, and stops it again when the sweep ends (or the loop breaks). repeat: sweep again
+        and again, until the loop breaks. meta: yield (frequency, samples, RxMeta). The frequency is the one tuned"""
+        if step == 0 or (stop - start) * step < 0:
+            raise ValueError(f"step {step} doesn't go from {start} to {stop}")
+        freqs = start + step * np.arange(int(np.floor((stop - start) / step + 1e-9)) + 1)
+        started = not self.state["rx"]
+        if started:
+            self.start_rx()
+        try:
+            while True:
+                for f in freqs:
+                    tuned = self.set_rx_freq(float(f), channel=channel, flush=True)
+                    x, m = self.read(count, timeout=timeout, meta=True, channel=channel)
+                    yield (tuned, x, m) if meta else (tuned, x)
+                if not repeat:
+                    break
+        finally:
+            if started and self.state["rx"]:
+                self.stop_rx()
     def read_available(self, channel=0, count=None):
         """What is queued for a channel now (up to `count`), without waiting: (samples, index of the first). Stops at a
         gap, so the samples are contiguous; the next call's index shows the jump. For relaying a stream (the remote
