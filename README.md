@@ -118,10 +118,10 @@ rate requires, raise a `pysdrlib.warn.Dropped` warning. Anything still buffered 
 ### Sample files
 ```python
 from pysdrlib import File, FileSink
-with File("capture.cfile", "cf64") as f:     # cf64: two float32 per sample, a GNU Radio .cfile
+with File("capture.cfile", "cf32") as f:     # cf32: two float32 per sample, a GNU Radio .cfile
     for block in f.forward(8192, partial=True):
         ...
-with FileSink("out.cs16", "ci32t", clip=True) as out:
+with FileSink("out.cs16", "ci16", clip=True) as out:    # ci16: two int16 per sample
     out.write(samples)
 ```
 See the [file README](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/file) for the details: partial blocks,

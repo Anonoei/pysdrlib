@@ -13,11 +13,11 @@ from . import err
 class File:
     """Read samples from a file like a device: `File(path, fmt)`, then `next`, `forward`, `seek`...
 
-    `fmt` names one of `pysdrlib.Formats` (e.g. `"cf64"`, `"ci16t"`; see `pysdrlib.base.formats`). Samples are returned as stored,
+    `fmt` names one of `pysdrlib.Formats` (e.g. `"cf32"`, `"ci8"`; see `pysdrlib.base.formats`). Samples are returned as stored,
     unless `scale=True`: then complex64 (or float32) with full scale at +-1, like a device's (see `Formats.scale`).
     Usable as a context manager, which opens and closes it:
 
-        with File("capture.cfile", "cf64") as f:      # cf64: two float32 per sample
+        with File("capture.cfile", "cf32") as f:      # cf32: two float32 per sample
             for block in f.forward(8192, partial=True):
                 ...
     """

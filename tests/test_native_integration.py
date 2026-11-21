@@ -46,7 +46,7 @@ def sdr(spec):
 
 class TestFile:
     def test_a_capture_reads_back_exactly(self, sdr, spec, tmp_path):
-        """What get_samples returns, written as a capture (cf64: two float32, i.e. complex64), is what File reads"""
+        """What get_samples returns, written as a capture (cf32: two float32, i.e. complex64), is what File reads"""
         sdr.start_rx()
         data, _ = spec.raw()
         for _ in range(40):
@@ -54,12 +54,12 @@ class TestFile:
         captured = sdr.get_samples()
         assert captured.dtype == np.complex64 and len(captured) == 40 * len(SAMPLES)
 
-        path = tmp_path / "capture.cf64"
+        path = tmp_path / "capture.cf32"
         with open(path, "wb") as f:
-            Formats.cf64.write(f, captured)
+            Formats.cf32.write(f, captured)
         capture = File()
         capture.set_path(path)
-        capture.set_fmt("cf64")
+        capture.set_fmt("cf32")
         capture.open()
         try:
             np.testing.assert_array_equal(capture.next(len(captured)), captured)
@@ -70,12 +70,12 @@ class TestFile:
         sdr.start_rx()
         sdr.device.feed(spec.raw()[0] * 100)
         captured = sdr.get_samples()
-        path = tmp_path / "capture.cf64"
+        path = tmp_path / "capture.cf32"
         with open(path, "wb") as f:
-            Formats.cf64.write(f, captured)
+            Formats.cf32.write(f, captured)
         capture = File()
         capture.set_path(path)
-        capture.set_fmt("cf64")
+        capture.set_fmt("cf32")
         capture.open()
         blocks = list(capture.forward(40))
         capture.close()

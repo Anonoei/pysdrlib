@@ -366,15 +366,15 @@ def _(quick):
 
 
 # ------------------------------------------------------------------ benchmarks: file / format IO
-_FORMATS_READ = ["i8t", "i16t", "f32", "i4t", "i8o", "i16o", "ci8t", "ci16t", "cf64"]
-_FORMATS_WRITE = ["i8t", "ci16t", "cf64", "i4t"]
+_FORMATS_READ = ["i8t", "i16t", "f32", "i4t", "i8o", "i16o", "ci4t", "ci8t", "cf32"]
+_FORMATS_WRITE = ["i8t", "ci8t", "cf32", "i4t"]
 M = 1 << 20
 
 
 def _values(fmt):
     rng = np.random.default_rng(2)
     if fmt.is_complex:
-        lim = {"ci8t": 7, "ci16t": 127}.get(fmt.name, 1.0)
+        lim = {"ci4t": 7, "ci8t": 127}.get(fmt.name, 1.0)
         return lim * (rng.uniform(-1, 1, M) + 1j * rng.uniform(-1, 1, M))
     if fmt.name.startswith("f"):
         return rng.standard_normal(M)

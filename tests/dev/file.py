@@ -3,7 +3,7 @@ from pysdrlib import File
 def main():
     dev = File()
     dev.set_path("data/fm_rds_250k_1Msamples.iq")
-    dev.set_fmt("cf64")
+    dev.set_fmt("cf32")
     # dev.set_rx_sample_rate(250_000)
     dev.open()
 

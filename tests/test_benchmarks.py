@@ -59,8 +59,8 @@ def test_overhead_vs_floor(results, name, limit):
     ("convert.float32", 10),
     ("formats.read.i8o", 20),      # was 2.6x before the one's-complement fast path
     ("formats.read.i16o", 20),
-    ("formats.read.ci8t", 5),
-    ("formats.read.ci16t", 10),
+    ("formats.read.ci4t", 5),
+    ("formats.read.ci8t", 10),
 ])
 def test_realtime_headroom(results, name, limit):
     assert results[name]["realtime_x"] > limit, suite.format_row(name, results[name])
