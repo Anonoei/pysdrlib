@@ -24,6 +24,7 @@ A device that lacks a control raises `err.NotSupported`. Values out of range are
 `err.InvalidValue` with `strict = True`.
 """
 import atexit
+import functools
 import itertools
 import time
 import weakref
@@ -1141,55 +1142,8 @@ class Device:
         A tie goes to the stage nearer the antenna (the first listed), which keeps the noise figure down"""
         d = direction.lower()
         stages = self.caps.gains[d]
-        reserve = {n for n in type(self).GAIN_RESERVE.get(d, ()) if n in stages}
-        names = list(stages)
-        options = [self._stage_values(stages[n]) for n in names]
-        if np.prod([len(o) for o in options], dtype=float) > 1e6:
-            raise NotImplementedError(f"{type(self).NAME}: too many gain combinations to search; split it in the driver")
-        by_db = type(self).GAIN_BALANCE == "db"
-
-        def load(n, v):
-            span = stages[n].max - stages[n].min
-            return v - stages[n].min if by_db else ((v - stages[n].min) / span if span else 0.0)
-
-        def best_of(combos):
-            best, best_key = None, None
-            for combo in combos:
-                total_db = sum(combo)
-                used = [load(n, v) for n, v in zip(names, combo) if n not in reserve]
-                key = (round(abs(total_db - total), 9), total_db > total,
-                       sum(v - stages[n].min for n, v in zip(names, combo) if n in reserve),
-                       (max(used) - min(used)) if used else 0.0,
-                       tuple(-v for v in combo))   # a tie: gain nearer the antenna (stages are listed in signal order)
-                if best_key is None or key < best_key:
-                    best, best_key = combo, key
-            return best, best_key
-
-        if reserve:   # first without the reserve stages
-            held = [o if n not in reserve else (stages[n].min,) for n, o in zip(names, options)]
-            combo, key = best_of(itertools.product(*held))
-            steps = [self._resolution(stages[n]) for n in names if n not in reserve]
-            if combo is not None and key[0] <= (min(steps) if steps else 0):
-                return dict(zip(names, combo))
-        combo, _ = best_of(itertools.product(*options))
-        return dict(zip(names, combo))
-
-    @classmethod
-    def _resolution(cls, spec):
-        """The finest change a stage can make"""
-        values = sorted(set(cls._stage_values(spec)))
-        gaps = [b - a for a, b in zip(values, values[1:])]
-        return min(gaps) if gaps else 0
-
-    @staticmethod
-    def _stage_values(spec):
-        """The gains a stage can be set to: its table, its steps, or (continuous) whole dB"""
-        if spec.values:
-            return tuple(spec.values)
-        step = spec.step or 1
-        if all(isinstance(v, int) for v in (spec.min, spec.max, step)):
-            return tuple(range(spec.min, spec.max + 1, step))
-        return tuple(np.arange(spec.min, spec.max + step / 2, step).tolist())
+        reserve = frozenset(n for n in type(self).GAIN_RESERVE.get(d, ()) if n in stages)
+        return dict(_split(tuple(stages.items()), reserve, type(self).GAIN_BALANCE == "db", total, type(self).NAME))
 
     def _set_bias_t(self, bias):
         raise NotImplementedError()
@@ -1218,3 +1172,55 @@ class Device:
         """Raise if transmitting has failed"""
     def _tx_stats(self, slot=0):
         raise err.NotSupported(f"{type(self).NAME} has no transmit statistics")
+
+
+# --- the gain split (Device._split_gain), cached: a device's stages are fixed, and a GUI's gain slider asks again and again
+@functools.lru_cache(maxsize=1024)
+def _split(stages, reserve, by_db, total, name):
+    """{stage: gain} sharing `total` between `stages` ((name, GainStage) pairs, in signal order); see `_split_gain`"""
+    names = [n for n, _ in stages]
+    spec = dict(stages)
+    options = [_stage_values(spec[n]) for n in names]
+    if np.prod([len(o) for o in options], dtype=float) > 1e6:
+        raise NotImplementedError(f"{name}: too many gain combinations to search; split it in the driver")
+
+    def load(n, v):
+        span = spec[n].max - spec[n].min
+        return v - spec[n].min if by_db else ((v - spec[n].min) / span if span else 0.0)
+
+    def best_of(combos):
+        best, best_key = None, None
+        for combo in combos:
+            total_db = sum(combo)
+            used = [load(n, v) for n, v in zip(names, combo) if n not in reserve]
+            key = (round(abs(total_db - total), 9), total_db > total,
+                   sum(v - spec[n].min for n, v in zip(names, combo) if n in reserve),
+                   (max(used) - min(used)) if used else 0.0,
+                   tuple(-v for v in combo))   # a tie: gain nearer the antenna (stages are listed in signal order)
+            if best_key is None or key < best_key:
+                best, best_key = combo, key
+        return best, best_key
+
+    if reserve:   # first without the reserve stages
+        held = [o if n not in reserve else (spec[n].min,) for n, o in zip(names, options)]
+        combo, key = best_of(itertools.product(*held))
+        steps = [_resolution(spec[n]) for n in names if n not in reserve]
+        if combo is not None and key[0] <= (min(steps) if steps else 0):
+            return tuple(zip(names, combo))
+    combo, _ = best_of(itertools.product(*options))
+    return tuple(zip(names, combo))
+
+def _resolution(spec):
+    """The finest change a stage can make"""
+    values = sorted(set(_stage_values(spec)))
+    gaps = [b - a for a, b in zip(values, values[1:])]
+    return min(gaps) if gaps else 0
+
+def _stage_values(spec):
+    """The gains a stage can be set to: its table, its steps, or (continuous) whole dB"""
+    if spec.values:
+        return tuple(spec.values)
+    step = spec.step or 1
+    if all(isinstance(v, int) for v in (spec.min, spec.max, step)):
+        return tuple(range(spec.min, spec.max + 1, step))
+    return tuple(np.arange(spec.min, spec.max + step / 2, step).tolist())
