@@ -51,12 +51,11 @@ from ..base import convert
 
 COMPLEX64_LE = np.dtype("<c8")
 
-VERSION = 3
+VERSION = 4   # 4: stream events (FLAG_EVENT, "stream" in replies). Server and client must agree (checked at `hello`)
 
 # version, format kind, bits, storage, flags (FLAG_*), channel, seq, timestamp (server time.time()), nsamples, index
-# (stream index of the first sample). Version 2 (older servers) had no index and a reserved byte for the channel.
+# (stream index of the first sample; NO_INDEX on the TX stream, which needs none)
 HEADER = struct.Struct("<6BQdIQ")
-HEADER_V2 = struct.Struct("<6BQdI")
 NO_INDEX = (1 << 64) - 1
 KINDS = ("int", "uint", "float")
 FLAG_PACKED = 1
@@ -200,22 +199,16 @@ def unpack_event(payload) -> dict:
     """The `change` an event message carries"""
     return unpack(bytes(payload))
 
-def unpack_block(header: bytes, payload) -> tuple[int, float, np.ndarray]:
-    """-> (seq, timestamp, complex64 samples). See unpack_block_ex for the channel and index"""
-    seq, timestamp, samples, _, _ = unpack_block_ex(header, payload)
-    return seq, timestamp, samples
-
-def unpack_block_ex(header: bytes, payload):
+def unpack_block(header: bytes, payload):
     """-> (seq, timestamp, complex64 samples, channel, index of the first sample or None)"""
-    if len(header) == HEADER.size:
-        version, kind, bits, storage, flags, channel, seq, timestamp, n, index = HEADER.unpack(header)
-    elif len(header) == HEADER_V2.size:
-        version, kind, bits, storage, flags, channel, seq, timestamp, n = HEADER_V2.unpack(header)
-        index = NO_INDEX
-    else:
+    if len(header) != HEADER.size:
         raise err.ProtocolError("bad block header")
-    if version not in (2, VERSION) or kind >= len(KINDS):
-        raise err.ProtocolError(f"unsupported block (version {version}, format kind {kind})")
+    version, kind, bits, storage, flags, channel, seq, timestamp, n, index = HEADER.unpack(header)
+    if version != VERSION:
+        raise err.ProtocolError(f"a block of protocol {version}; this pysdrlib speaks {VERSION}: run the same "
+                                "pysdrlib version on the server and the client")
+    if kind >= len(KINDS):
+        raise err.ProtocolError(f"unsupported block (format kind {kind})")
     try:
         fmt = convert.SampleFormat(KINDS[kind], bits, storage, bool(flags & FLAG_PACKED),
                                    ">" if flags & FLAG_BIG_ENDIAN else "<")
@@ -231,4 +224,4 @@ def unpack_block_ex(header: bytes, payload):
 
 def is_readonly(method: str) -> bool:
     """Methods a viewer (no controller token) may call"""
-    return method.startswith("get_")
+    return method.startswith(("get_", "split_"))

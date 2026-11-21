@@ -36,7 +36,7 @@ class TestProtocol:
     def test_block_roundtrip(self):
         x = (np.arange(10) + 1j * np.arange(10)).astype(np.complex64)
         header, payload = protocol.pack_block(7, 1.5, x)
-        seq, ts, y = protocol.unpack_block(header, memoryview(payload).cast("B"))
+        seq, ts, y, _, _ = protocol.unpack_block(header, memoryview(payload).cast("B"))
         assert seq == 7 and ts == 1.5 and y.dtype == np.complex64 and np.array_equal(x, y)
 
     @pytest.mark.parametrize("name", list(protocol.WIRE_FORMATS))
@@ -45,7 +45,7 @@ class TestProtocol:
         rng = np.random.default_rng(0)
         x = (rng.uniform(-0.9, 0.9, 1000) + 1j * rng.uniform(-0.9, 0.9, 1000)).astype(np.complex64)
         header, payload = protocol.pack_block(3, 0.0, x, fmt)
-        seq, _, y = protocol.unpack_block(header, memoryview(payload).cast("B"))
+        seq, _, y, _, _ = protocol.unpack_block(header, memoryview(payload).cast("B"))
         assert seq == 3 and y.dtype == np.complex64 and y.shape == x.shape
         assert np.max(np.abs(x - y)) <= 1.5 / fmt.full_scale if fmt.kind != "float" else np.array_equal(x, y)
         assert memoryview(payload).nbytes == 1000 * fmt.bytes_per_sample
@@ -533,6 +533,15 @@ class TestGenericControlsRemotely:
             dev.stop_rx()
         assert m.index == 0 and m.discarded == 0 and m.freq == 101e6
 
+    def test_every_device_method_reaches_the_hosted_driver(self, dev):
+        # the gain split is the hosted driver's (its GAIN_RESERVE / GAIN_BALANCE), not RemoteDevice's defaults
+        local = pysdrlib.device("sim")
+        local.open()
+        try:
+            assert dev.split_rx_gain_db(30) == local.split_rx_gain_db(30)
+        finally:
+            local.close()
+
     def test_reading_is_not_a_remote_call(self, dev):
         for name in ("read", "read_into", "stream", "flush"):
             assert name not in dev.capabilities["methods"]
@@ -683,13 +692,15 @@ class TestTransmitRemotely:
             dev.start_tx()
 
 
-def test_blocks_carry_the_channel_and_index_and_older_ones_still_read():
+def test_blocks_carry_the_channel_and_index_and_other_versions_are_refused():
     header, payload = protocol.pack_block(7, 1.5, np.ones(4, np.complex64), channel=1, index=1234)
-    seq, t, x, channel, index = protocol.unpack_block_ex(header, payload)
+    seq, t, x, channel, index = protocol.unpack_block(header, payload)
     assert (seq, channel, index, len(x)) == (7, 1, 1234, 4)
-    old = protocol.HEADER_V2.pack(2, 2, 32, 32, 0, 0, 3, 0.0, 4)   # a version 2 server's block
-    seq, _, x, channel, index = protocol.unpack_block_ex(old, payload)
-    assert (seq, channel, index, len(x)) == (3, 0, None, 4)
+    old = protocol.HEADER.pack(protocol.VERSION - 1, 2, 32, 32, 0, 0, 3, 0.0, 4, 0)
+    with pytest.raises(err.ProtocolError, match="same pysdrlib version"):
+        protocol.unpack_block(old, payload)
+    with pytest.raises(err.ProtocolError):
+        protocol.unpack_block(header[:-8], payload)   # the shorter header of protocol 2
 
 
 class TestOverload:

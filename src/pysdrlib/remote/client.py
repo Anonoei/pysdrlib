@@ -14,6 +14,7 @@ method of the hosted device (e.g. its per-stage gain setters) is reachable by na
 """
 import collections
 import functools
+import inspect
 import socket
 import threading
 import time
@@ -89,14 +90,21 @@ class _Channel:
         self.sock.close(0)
 
 
+def _hello(c2, address):
+    """The server's `hello` (its protocol version, lease, device types); `err.ProtocolError` unless it speaks ours"""
+    info = c2.request("hello")
+    if info.get("version") != protocol.VERSION:
+        raise err.ProtocolError(f"the server at {address} speaks protocol {info.get('version')}, this pysdrlib "
+                                f"{protocol.VERSION}: run the same pysdrlib version on both")
+    return info
+
+
 class Client:
     """Talks to a server's C2 socket: discovery. Use `RemoteDevice` to work with a device."""
     def __init__(self, address: str, timeout=DEFAULT_TIMEOUT):
         self.address = address
         self._c2 = _Channel(address, timeout)
-        self.info = self._c2.request("hello")
-        if self.info.get("version") != protocol.VERSION:
-            raise err.ProtocolError(f"server speaks protocol {self.info.get('version')}, this is {protocol.VERSION}")
+        self.info = _hello(self._c2, address)
 
     def types(self):
         """Device types the server can open"""
@@ -188,6 +196,7 @@ class RemoteDevice(Device):
         self._rx_lock = threading.RLock()   # guards the receive state below (see `_rx_synced`)
         self._shm_mode = False      # samples come from shared memory (see `_subscribe`)
         self._rings = {}            # channel -> shm.ShmReader of the stream's ring
+        self._retired = collections.deque(maxlen=32)   # names of the rings closed (an old stream's)
         self._pos = {}              # channel -> stream index of the next sample to read from its ring
         self._from_start = False    # this client started the stream: read its rings from their first sample
         self._host = _host_of(address)
@@ -228,6 +237,7 @@ class RemoteDevice(Device):
             return
         self._c2 = _Channel(self.address, self.timeout)
         try:
+            lease = _hello(self._c2, self.address)["lease"]
             if self.id is None:
                 res = self._c2.request("open", type=self.type, args=list(args), kwargs=kwargs,
                                        init_args=self._init[0], init_kwargs=self._init[1], wire=self._wire,
@@ -236,12 +246,10 @@ class RemoteDevice(Device):
                 self.id = res["device"]
                 self.type = res.get("type", self.type)
                 self.granted = res.get("granted")
-                lease = res["lease"]
             else:
                 if args or kwargs:
                     raise ValueError("an attached device is already open; open() takes no arguments")
                 res = self._c2.request("attach", device=self.id, program=self.program)
-                lease = self._c2.request("hello")["lease"]
             self._endpoints = res["endpoints"]
             self._connect(res["endpoints"])
             self.capabilities = self._ctrl.request("capabilities")
@@ -299,6 +307,7 @@ class RemoteDevice(Device):
 
     def _close_rings(self):
         for reader in self._rings.values():
+            self._retired.append(reader.name)   # a notice of it still on its way must not bring it back
             reader.close()
         self._rings.clear()
         self._pos.clear()
@@ -414,8 +423,8 @@ class RemoteDevice(Device):
         self._cf = status["cf"]
         self._Fs = status["Fs"]
         self.wire = status["wire"]
-        self._rx_channels = tuple(status.get("rx_channels", (0,)))   # older servers: channel 0
-        self._tx_channels = tuple(status.get("tx_channels", (0,)))
+        self._rx_channels = tuple(status["rx_channels"])
+        self._tx_channels = tuple(status["tx_channels"])
         return status
 
     def set_wire(self, fmt="native"):
@@ -467,16 +476,8 @@ class RemoteDevice(Device):
     def caps(self):
         """The hosted device's capabilities (fetched once per connection)"""
         if self.__dict__.get("_remote_caps") is None:
-            try:
-                self._remote_caps = _caps.from_json(self._call("get_caps"))
-            except AttributeError as exc:   # inside a property it would read as "no attribute 'caps'"
-                raise err.NotSupported(f"the server at {self.address} runs a pysdrlib without capabilities "
-                                       f"(update it): {exc}") from None
+            self._remote_caps = _caps.from_json(self._call("get_caps"))
         return self._remote_caps
-
-    def set_setting(self, name, value, channel=0):
-        """Apply one of the hosted device's `settings()`"""
-        return self._call("set_setting", name, value, channel)
 
     # --- samples --- #
     # The server publishes every channel it streams in blocks tagged with the channel and the index of their first
@@ -498,12 +499,10 @@ class RemoteDevice(Device):
             if self._shm_mode:
                 self._notice(header.bytes, payload.buffer)
                 continue
-            seq, _, samples, channel, index = protocol.unpack_block_ex(header.bytes, payload.buffer)
+            seq, _, samples, channel, index = protocol.unpack_block(header.bytes, payload.buffer)
             if self._last_seq is not None and seq > self._last_seq + 1:
                 self.dropped_blocks += seq - self._last_seq - 1
             self._last_seq = seq
-            if index is None:   # an older server: count them here
-                index = self._rx_last.get(channel, 0)
             if index < self._rx_last.get(channel, 0):   # the indices went back: someone restarted the stream
                 self._stream_restarted()
             if index > self._rx_last.get(channel, index):   # blocks the socket dropped on the way
@@ -550,6 +549,8 @@ class RemoteDevice(Device):
             return
         if not name:
             return self._use_sockets("the server could not make a shared-memory segment")
+        if name in self._retired:   # sent before the stream it belongs to was stopped
+            return
         try:
             new = shm.ShmReader(name)
         except (FileNotFoundError, ValueError, OSError) as exc:
@@ -729,17 +730,12 @@ def _forwarder(name):
     method.__doc__ = getattr(Device, name).__doc__
     return method
 
-# Everything Device implements locally (against CAPS a remote device doesn't have) runs on the server instead
-for _name in ("initialize", "start_rx", "stop_rx", "start_tx", "stop_tx", "set_rx_sample_rate", "set_tx_sample_rate",
-              "set_rx_freq", "set_tx_freq", "set_rx_gain", "set_tx_gain", "set_rx_gain_db", "set_tx_gain_db", "set_bias_t"):
-    setattr(RemoteDevice, _name, _forwarder(_name))
-for _name in ("set_rx_gain_mode", "set_tx_gain_mode", "set_rx_bandwidth", "set_tx_bandwidth", "set_rx_antenna", "set_tx_antenna",
-              "set_clock_source", "set_freq_correction",
-              "get_rx_gain", "get_tx_gain", "get_rx_gain_db", "get_tx_gain_db", "get_rx_gains_db", "get_tx_gains_db",
-              "get_rx_gain_mode", "get_tx_gain_mode", "get_rx_bandwidth", "get_tx_bandwidth", "get_rx_antenna", "get_tx_antenna",
-              "get_clock_source", "get_setting", "get_rx_inverted",
-              "get_freq_correction"):
-    setattr(RemoteDevice, _name, _forwarder(_name))
-for _name in ("get_rx_sample_rate", "get_tx_sample_rate", "get_rx_freq", "get_tx_freq"):
-    setattr(RemoteDevice, _name, _forwarder(_name))
-del _name
+# Device's public methods run on the server (against the hosted driver: its caps, gain split, state), except those that
+# read samples, which come over the stream, and those that only read `caps` (fetched once per connection)
+_LOCAL = frozenset({"open", "close", "get_samples", "read", "read_into", "stream", "read_available", "wait_available",
+                    "flush", "write", "get_tx_stats", "get_caps", "settings", "clock_sources",
+                    "rx_gain_stages", "tx_gain_stages", "rx_gain_modes", "tx_gain_modes", "rx_antennas", "tx_antennas"})
+for _name, _fn in list(vars(Device).items()):
+    if not _name.startswith("_") and inspect.isfunction(_fn) and _name not in _LOCAL and _name not in vars(RemoteDevice):
+        setattr(RemoteDevice, _name, _forwarder(_name))
+del _name, _fn

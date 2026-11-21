@@ -56,6 +56,14 @@ def collect(dev, blocks, count=4096):
     return got
 
 
+def catch_up(ctl, viewers, count=4096):
+    """Viewers read from where they joined (their subscription takes a moment to reach the server), the controller from
+    the stream's start: bring the controller up to them, so all of them read the same stretch"""
+    start = max(v.read(count, timeout=5, meta=True)[1].index for v in viewers)
+    while ctl.read(count, timeout=5, meta=True)[1].index + count < start:
+        pass
+
+
 class TestTransport:
     def test_a_local_client_uses_shared_memory(self, server):
         dev = open_sim(server)
@@ -139,7 +147,7 @@ class TestSharing:
             ctl.start_rx()
             a, b = view(server, ctl.id), view(server, ctl.id)
             assert a._shm_mode and b._shm_mode
-            time.sleep(0.05)
+            catch_up(ctl, (a, b))
             got_ctl, got_a, got_b = collect(ctl, 30), collect(a, 10), collect(b, 20)
             assert len(server.workers[ctl.id]._rings) == 1                  # one copy, three readers
             assert server.workers[ctl.id]._subs[b"shm:" + ctl.id.encode()] == 3

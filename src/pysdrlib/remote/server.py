@@ -428,7 +428,7 @@ class DeviceWorker:
                     self.log.warning("TX blocks from something other than the controller are dropped")
                 continue
             try:
-                _, _, samples, channel, _ = protocol.unpack_block_ex(header.bytes, payload.buffer)
+                _, _, samples, channel, _ = protocol.unpack_block(header.bytes, payload.buffer)
                 if not self.device.state.get("tx"):
                     self.tx_refused += 1
                     continue
