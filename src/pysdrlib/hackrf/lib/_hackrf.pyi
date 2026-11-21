@@ -83,9 +83,9 @@ class device:
         """
         A closed device; use the module's open() to get an open one.
         """
-    def _dispatch_rx(self, arg0: collections.abc.Buffer) -> int:
+    def _dispatch_rx(self, data: collections.abc.Buffer, valid: typing.Any = None, slot: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
         ...
-    def _simulate_rx(self, arg0: bytes, arg1: typing.SupportsInt | typing.SupportsIndex, arg2: typing.SupportsInt | typing.SupportsIndex) -> int:
+    def _skip_rx(self, samples: typing.SupportsInt | typing.SupportsIndex, slot: typing.SupportsInt | typing.SupportsIndex = 0) -> None:
         ...
     def board_id_read(self) -> int:
         ...
@@ -98,8 +98,6 @@ class device:
     def is_transmitting(self) -> bool:
         ...
     def read_rx(self, count: typing.Any = None, slot: typing.SupportsInt | typing.SupportsIndex = 0) -> numpy.typing.NDArray[numpy.complex64]:
-        ...
-    def read_rx_indexed(self, count: typing.SupportsInt | typing.SupportsIndex, slot: typing.SupportsInt | typing.SupportsIndex = 0) -> tuple[numpy.typing.NDArray[numpy.complex64], int]:
         ...
     def read_rx_into(self, out: typing.Annotated[numpy.typing.ArrayLike, numpy.complex64], timeout: typing.SupportsFloat | typing.SupportsIndex, slot: typing.SupportsInt | typing.SupportsIndex = 0) -> tuple[int, int, int, int, int, int, float]:
         ...
@@ -129,8 +127,6 @@ class device:
         """
         Queue up to `samples` complex samples (the oldest are dropped past that) in each of `slots` queues (one per channel of a multi-channel stream); discards pending ones.
         """
-    def set_rx_callback(self, arg0: collections.abc.Callable) -> None:
-        ...
     def set_rx_if_gain(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
         ...
     def set_rx_rf_gain(self, arg0: bool) -> None:
@@ -173,9 +169,6 @@ class device:
         """
     @property
     def is_open(self) -> bool:
-        ...
-    @property
-    def rx_available(self) -> int:
         ...
     @property
     def rx_slots(self) -> int:

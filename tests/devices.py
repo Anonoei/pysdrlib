@@ -96,7 +96,6 @@ class FakeDevice:
     """
     def __init__(self, returns, fmt=None):
         self.calls = []
-        self.rx_callback = None
         self._returns = returns
         self.format = fmt
         self.clock = time.monotonic        # a test may replace it, with the watchdog's
@@ -118,10 +117,6 @@ class FakeDevice:
             return result(*args) if callable(result) else result
         return call
 
-    def set_rx_callback(self, fn):
-        self.rx_callback = fn
-        self.calls.append(("set_rx_callback",))
-
     # --- the buffered receive path --- #
     def set_rx_buffer(self, samples, slots=1):
         self.calls.append(("set_rx_buffer", samples) if slots == 1 else ("set_rx_buffer", samples, slots))
@@ -135,9 +130,6 @@ class FakeDevice:
 
     def read_rx(self, count=None, slot=0):
         return self._rings[slot].read(count)
-
-    def read_rx_indexed(self, count, slot=0):
-        return self._rings[slot].read_indexed(count)
 
     def wait_rx(self, samples, timeout, slot=0):
         return self._rings[slot].wait(samples, timeout)

@@ -17,18 +17,20 @@
 #include <map>
 #include <memory>
 #include <string>
-#include <thread>
 #include <vector>
 
-#include "hardware_numpy.hpp"
 #include "hardware_wrapper.hpp"
 
 namespace hw {
 
 namespace py = pybind11;
 
-// A device garbage-collected while streaming has to join the driver's streaming thread in close(),
-// and that thread may be waiting for the GIL inside the Python callback. Release it first.
+inline const char* kind_name(SampleKind k) {
+    return k == SampleKind::Int ? "int" : k == SampleKind::UInt ? "uint" : "float";
+}
+
+// A device garbage-collected while open closes it, which joins the driver's threads and can take seconds (a USRP):
+// without the GIL, so the rest of the program carries on meanwhile.
 template <typename Device>
 class GilSafe : public Device {
 public:
@@ -38,15 +40,6 @@ public:
             try { this->close(); } catch (...) {}
         }
     }
-};
-
-// Dropping the Python callback needs the GIL, which the destructor path may not hold.
-struct PyCallback {
-    explicit PyCallback(py::function fn) : fn_(new py::function(std::move(fn)), [](py::function* p) {
-        py::gil_scoped_acquire gil;
-        delete p;
-    }) {}
-    std::shared_ptr<py::function> fn_;
 };
 
 // One row of a driver's error table: the vendor library's numeric `code`, the name of the Python class it becomes
@@ -112,9 +105,8 @@ std::unique_ptr<Device> open_device(OpenFn&& open) {
     return d;
 }
 
-// The class with the interface of HardwareDevice. The callback gets (array of the device's raw samples
-// in its native dtype, valid_bytes, buffer_bytes); returning non-zero asks the driver to stop streaming
-// (for drivers that can), None means 0, and raising stops and reports the exception as unraisable.
+// The class with the interface of HardwareDevice: the receive queues (filled by the driver's thread, converted to
+// complex64, no Python involved), streaming, and the counters the stream watchdog reads.
 template <typename Device>
 py::class_<Device> bind_device(py::module_& m, const char* name) {
     const auto nogil = py::call_guard<py::gil_scoped_release>();
@@ -125,20 +117,6 @@ py::class_<Device> bind_device(py::module_& m, const char* name) {
         .def("close", &Device::close, nogil)
         .def_property_readonly("is_open", &Device::is_open)
 
-        .def("set_rx_callback", [](Device& d, py::function fn) {
-            PyCallback holder(std::move(fn));
-            const SampleFormat format = d.rx_sample_format();
-            d.set_rx_callback([holder, format](const void* data, size_t valid, size_t buflen) -> int {
-                py::gil_scoped_acquire gil;
-                try {
-                    py::object r = (*holder.fn_)(make_rx_array(format, data, valid), valid, buflen);
-                    return r.is_none() ? 0 : r.cast<int>();
-                } catch (py::error_already_set& e) {
-                    e.discard_as_unraisable("pysdrlib rx_callback");
-                    return -1;
-                }
-            });
-        })
         .def("start_rx", &Device::start_rx, nogil)
         .def("stop_rx", &Device::stop_rx, nogil)
         .def("is_streaming", &Device::is_streaming)
@@ -155,9 +133,8 @@ py::class_<Device> bind_device(py::module_& m, const char* name) {
              "channel of a multi-channel stream); discards pending ones.")
         .def_property_readonly("rx_slots", &Device::rx_slots)
         .def("reset_rx_stats", [](Device& d) { d.reset_rx_stats(); })
-        .def_property_readonly("rx_available", [](const Device& d) { return d.rx_available(); })
         .def("read_rx", [](Device& d, py::object count, size_t slot) {
-            // Oldest pending samples first (all if `count` is None); removes what it returns
+            // Oldest pending samples first (all if `count` is None); removes what it returns. Never spans a gap
             size_t want = d.rx_available(slot);
             if (!count.is_none()) want = std::min(want, count.cast<size_t>());
             py::array_t<cfloat> out(want);
@@ -171,27 +148,11 @@ py::class_<Device> bind_device(py::module_& m, const char* name) {
             if (got) std::memcpy(trimmed.mutable_data(), out.data(), got * sizeof(cfloat));
             return trimmed;
         }, py::arg("count") = py::none(), py::arg("slot") = 0)
-        .def("read_rx_indexed", [](Device& d, size_t count, size_t slot) {
-            // (samples, index of the first): up to `count` of the oldest pending samples. A jump in the index from
-            // the end of the previous read is the number of samples dropped in between.
-            py::array_t<cfloat> out(count);
-            size_t got = 0;
-            uint64_t first = 0;
-            {
-                py::gil_scoped_release release;
-                got = d.read_rx(out.mutable_data(), count, &first, slot);
-            }
-            if (got != count) {
-                py::array_t<cfloat> trimmed(got);
-                if (got) std::memcpy(trimmed.mutable_data(), out.data(), got * sizeof(cfloat));
-                return py::make_tuple(trimmed, first);
-            }
-            return py::make_tuple(out, first);
-        }, py::arg("count"), py::arg("slot") = 0)
         .def("read_rx_into", [](Device& d, py::array_t<cfloat, py::array::c_style> out, double timeout, size_t slot) {
             // The whole of a read in one call, GIL released: wait up to `timeout` seconds for len(out) samples (or all the
             // queue holds), move up to that many into `out` (no copy in between; a read never spans a gap), and read the
-            // counters. Returns (count, index of the first sample, then rx_counters()'s five).
+            // counters. Returns (count, index of the first sample, then rx_counters()'s five). A jump in the index from
+            // the end of the previous read is the number of samples dropped in between.
             py::buffer_info info = out.request(true);
             const size_t want = static_cast<size_t>(info.size);
             cfloat* dst = static_cast<cfloat*>(info.ptr);
@@ -233,25 +194,20 @@ py::class_<Device> bind_device(py::module_& m, const char* name) {
             return out;
         }, py::arg("slot") = 0)
 
-        // Test/bench hook: hand `data` to the receive path on the calling thread
-        .def("_dispatch_rx", [](Device& d, py::buffer data) {
+        // Test/bench hook: hand `data` (its first `valid` bytes, default all) to the receive path of `slot`, as a
+        // driver's streaming thread does with each transfer. Returns what the driver gets back: 0, or -1 (no queue:
+        // stop streaming)
+        .def("_dispatch_rx", [](Device& d, py::buffer data, py::object valid, size_t slot) {
             py::buffer_info info = data.request();
             const size_t bytes = static_cast<size_t>(info.size * info.itemsize);
+            const size_t n = valid.is_none() ? bytes : valid.cast<size_t>();
+            if (n > bytes) throw py::value_error("valid is longer than data");
             py::gil_scoped_release release;
-            return d.dispatch_rx(info.ptr, bytes, bytes);
-        })
-
-        // Test hook: run `data` through the same path a driver's streaming thread uses (callback marshalling
-        // from a native thread, GIL handling), without hardware. Returns what the callback asked for.
-        .def("_simulate_rx", [](Device& d, py::bytes data, size_t valid, size_t buflen) {
-            std::string buf = data;
-            if (valid > buf.size()) throw py::value_error("valid is longer than data");
-            int result = 0;
-            py::gil_scoped_release release;
-            std::thread t([&] { result = d.dispatch_rx(buf.data(), valid, buflen); });
-            t.join();
-            return result;
-        });
+            return d.dispatch_rx(info.ptr, n, slot);
+        }, py::arg("data"), py::arg("valid") = py::none(), py::arg("slot") = 0)
+        // Test hook: `samples` lost before the queue, as a driver reports a hardware overflow (readers see the gap)
+        .def("_skip_rx", [](Device& d, size_t samples, size_t slot) { d.skip_rx(samples, slot); },
+             py::arg("samples"), py::arg("slot") = 0);
 }
 
 // The transmit side every transmitting device shares (HardwareDevice's queues): bind it to a class from bind_device

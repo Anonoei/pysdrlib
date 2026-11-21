@@ -53,12 +53,12 @@ class TestHardware:
         d.close()
 
     def stream(self, dev, seconds=0.4):
-        got = []
-        dev.set_rx_callback(lambda a, v, n: got.append(a))
+        """complex64 samples received for `seconds`, through the extension's own queue"""
+        dev.set_rx_buffer(1 << 23)
         dev.start_rx()
         time.sleep(seconds)
         dev.stop_rx()
-        return got
+        return dev.read_rx()
 
     def test_info(self, dev):
         assert dev.tuner != "unknown" and dev.gains()
@@ -77,9 +77,9 @@ class TestHardware:
     def test_stream_is_uint8_pairs(self, dev):
         dev.set_freq(100_000_000)
         dev.set_sample_rate(2_400_000)
-        got = self.stream(dev)
-        assert got, "no data within the capture window"
-        assert all(a.dtype == np.uint8 and len(a) % 2 == 0 for a in got)
+        x = self.stream(dev)
+        assert x.size, "no data within the capture window"
+        assert x.dtype == np.complex64
         assert not dev.is_streaming()
 
     def test_stream_runs_at_the_requested_rate(self, dev):
@@ -88,12 +88,12 @@ class TestHardware:
         start = time.perf_counter()
         got = self.stream(dev, 0.5)
         elapsed = time.perf_counter() - start
-        samples = sum(len(a) // 2 for a in got)
+        samples = len(got)
         assert 0.5 * 2.4e6 * 0.5 < samples < 1.5 * 2.4e6 * elapsed
 
     def test_restart_and_reopen(self, dev):
         dev.set_sample_rate(2_400_000)
-        assert self.stream(dev, 0.2) and self.stream(dev, 0.2)
+        assert self.stream(dev, 0.2).size and self.stream(dev, 0.2).size
         dev.close()
         d = rtl.open()
         d.close()

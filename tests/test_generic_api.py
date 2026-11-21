@@ -337,7 +337,7 @@ def test_read_reports_samples_lost_before_the_queue():
     s.start_rx()
     try:
         s.read(1000, timeout=2)
-        s.buffer.skip(777)                       # as a driver does when the hardware overflowed
+        s.device._skip_rx(777)                      # as a driver does when the hardware overflowed
         _, m = s.read(200_000, timeout=2, meta=True)
     finally:
         s.stop_rx()

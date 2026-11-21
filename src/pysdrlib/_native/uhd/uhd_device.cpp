@@ -85,7 +85,6 @@ void UHDDevice::close() {
     stop_rx();
     ushim* s = handle_;
     handle_ = nullptr;
-    rx_callback_ = nullptr;   // no thread can call it now
     ushim_close(s);
 }
 
@@ -193,7 +192,7 @@ void UHDDevice::rx_loop(size_t max_samps) {
         if (!got) return true;
         account(got);
         for (size_t k = 0; k < n; k++)
-            if (dispatch_rx(bufs[k].data(), got * 4, bufs[k].size() * sizeof(int16_t), k) != 0) return false;
+            if (dispatch_rx(bufs[k].data(), got * 4, k) != 0) return false;
         return true;
     };
     std::chrono::steady_clock::time_point drain_until{};

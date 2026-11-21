@@ -263,7 +263,7 @@ def pybind_extension(device: str, header_dir, header, extra_sources=(), include_
         sources=[f"{src}/{device}_pybind.cpp", f"{src}/{device}_device.cpp", *(f"{src}/{f}" for f in extra_sources)],
         include_dirs=[*([header_dir] if vendor else []), *include_dirs, shared, src],
         depends=[f"{src}/{device}_device.hpp", *([f"{header_dir}/{header}"] if vendor else []),
-                 f"{shared}/hardware_wrapper.hpp", f"{shared}/hardware_numpy.hpp", f"{shared}/hardware_pybind.hpp",
+                 f"{shared}/hardware_wrapper.hpp", f"{shared}/hardware_pybind.hpp",
                  f"{shared}/hardware_format.hpp", f"{shared}/hardware_convert.hpp", f"{shared}/hardware_rx.hpp",
                  f"{shared}/hardware_ring.hpp", f"{shared}/hardware_tx.hpp"],
         libraries=list(libraries),
@@ -278,7 +278,7 @@ def pybind_extension(device: str, header_dir, header, extra_sources=(), include_
 
 def samples_extension():
     """The pybind11 Extension for `pysdrlib.base.lib._samples` (setup.py): the sample conversion and ring
-    that pysdrlib.base.convert and pysdrlib.base.buffer call. It depends on no vendor library, so unlike the
+    that pysdrlib.base.convert and pysdrlib.base.buffer call, and the hardware-less device pysdrlib.sim streams through. It depends on no vendor library, so unlike the
     devices' it is always built and always works."""
     from pybind11.setup_helpers import Pybind11Extension
 
@@ -288,7 +288,8 @@ def samples_extension():
         sources=[f"{src}/samples_pybind.cpp"],
         include_dirs=[shared],
         depends=[f"{shared}/hardware_format.hpp", f"{shared}/hardware_convert.hpp", f"{shared}/hardware_ring.hpp",
-                 f"{shared}/hardware_shm.hpp"],
+                 f"{shared}/hardware_shm.hpp", f"{shared}/hardware_wrapper.hpp", f"{shared}/hardware_pybind.hpp",
+                 f"{shared}/hardware_rx.hpp", f"{shared}/hardware_tx.hpp"],
         extra_compile_args=FP_FLAGS,
         cxx_std=17,
     )

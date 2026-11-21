@@ -117,11 +117,10 @@ class TestCaps:
 
 class TestRx:
     def test_start_queues_in_the_driver_before_streaming(self, sdr):
-        """Samples are converted and queued by the extension's own thread, never by a Python callback"""
+        """Samples are converted and queued by the extension's own thread""" 
         sdr.start_rx()
         names = sdr.device.names()
         assert sdr.state["rx"] and names.index("set_rx_buffer") < names.index("reset_rx_stats") < names.index("start_rx")
-        assert sdr.device.rx_callback is None and "set_rx_callback" not in names
         sdr.stop_rx()
         assert not sdr.state["rx"] and "stop_rx" in sdr.device.names()
 

@@ -61,12 +61,12 @@ class TestHardware:
         d.close()
 
     def stream(self, dev, seconds=0.4):
-        got = []
-        dev.set_rx_callback(lambda a, v, n: got.append(a))
+        """complex64 samples received for `seconds`, through the extension's own queue"""
+        dev.set_rx_buffer(1 << 23)
         dev.start_rx()
         time.sleep(seconds)
         dev.stop_rx()
-        return got
+        return dev.read_rx()
 
     def test_info(self, dev):
         assert "RX888" in dev.name and dev.firmware > 0
@@ -111,9 +111,9 @@ class TestHardware:
     def test_stream_is_complex_float(self, dev):
         dev.set_freq(VHF)
         dev.set_sample_rate(2e6)
-        got = self.stream(dev)
-        assert got, "no data within the capture window"
-        assert all(a.dtype == np.float32 and len(a) % 2 == 0 and np.isfinite(a).all() for a in got)
+        x = self.stream(dev)
+        assert x.size, "no data within the capture window"
+        assert x.dtype == np.complex64 and np.isfinite(x).all()
 
     def test_stream_runs_at_the_requested_rate(self, dev):
         dev.set_freq(HF)
@@ -121,7 +121,7 @@ class TestHardware:
         start = time.perf_counter()
         got = self.stream(dev, 0.3)
         elapsed = time.perf_counter() - start
-        samples = sum(len(a) // 2 for a in got)
+        samples = len(got)
         assert 0.5 * 8e6 * 0.3 < samples < 1.5 * 8e6 * elapsed
 
     def test_vhf_antenna_has_signal(self, dev):
@@ -130,7 +130,7 @@ class TestHardware:
         dev.set_sample_rate(2e6)
         dev.set_rx_rf_gain(25.0)
         dev.set_rx_if_gain(25.0)
-        iq = np.concatenate(self.stream(dev, 0.5)).view(np.complex64)
+        iq = self.stream(dev, 0.5)
         n = 4096
         psd = np.mean(np.abs(np.fft.fft(iq[: len(iq) // n * n].reshape(-1, n) * np.blackman(n), axis=1)) ** 2, axis=0)
         assert 10 * np.log10(psd.max() / np.median(psd)) > 15

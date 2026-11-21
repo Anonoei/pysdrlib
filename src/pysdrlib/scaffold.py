@@ -329,7 +329,7 @@ uint32_t @NAME@_device_count();
 CPP = '''#include "@NAME@_device.hpp"
 
 // Where the vendor's streaming thread hands over a buffer, call
-//     dispatch_rx(data, valid_bytes, buffer_bytes);
+//     dispatch_rx(data, valid_bytes);
 // It converts to complex64 and queues on that thread, with no Python involved; a non-zero return asks you to stop.
 // Report samples the hardware says it lost with skip_rx(count), so readers see the gap.
 // See _native/rtl_sdr/ (a callback driver) and _native/uhd/ (a polled one) for the whole of it.
@@ -362,9 +362,8 @@ void @CLASS@Device::open_by_serial(const std::string& serial) {
 
 void @CLASS@Device::close() {
     if (!handle_) return;
-    // TODO: stop the stream (join its thread) first, then drop rx_callback_, then close the handle
+    // TODO: stop the stream (join its thread) first, then close the handle
     handle_ = nullptr;
-    rx_callback_ = nullptr;
 }
 
 void @CLASS@Device::start_rx() { require(); /* TODO: start the stream; running_ = true */ }

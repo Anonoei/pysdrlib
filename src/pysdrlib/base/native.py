@@ -1,3 +1,5 @@
+import numpy as np
+
 from .. import err, warn
 from .device import Device
 from .watchdog import StreamStats, Watchdog
@@ -87,8 +89,9 @@ class NativeDevice(Device):
         self._check_stream(have_samples=ready > 0)
         return ready
     def _rx_read(self, count, slot=0):
-        x, first = self.device.read_rx_indexed(int(count), slot)
-        return x, self._rx_base + first
+        out = np.empty(int(count), dtype=np.complex64)
+        n, first = self._rx_read_into(out, 0.0, slot)
+        return out[:n], first
     def _rx_read_into(self, out, timeout, slot=0):
         # one native call: wait, read straight into `out`, and the counters the watchdog needs
         n, first, *counters = self.device.read_rx_into(out, float(timeout), slot)

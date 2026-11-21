@@ -230,7 +230,6 @@ void TcpIqDevice::close() {
     if (c->listener != NO_SOCKET) sock_close(c->listener);
     delete c;
     streaming_ = false;
-    rx_callback_ = nullptr;   // only safe to drop once no thread can call it
     std::lock_guard<std::mutex> plock(peer_mutex_);
     peer_.clear();
 }
@@ -282,7 +281,7 @@ void TcpIqDevice::receive(size_t got) {
     const size_t total = carry_ + got;
     const size_t whole = total - total % bps;
     if (whole && streaming_) {
-        if (dispatch_rx(buf_.data(), whole, whole) != 0) streaming_ = false;   // the callback asked to stop
+        if (dispatch_rx(buf_.data(), whole) != 0) streaming_ = false;   // no queue to take it
     }
     carry_ = total - whole;
     if (carry_) std::memmove(buf_.data(), buf_.data() + whole, carry_);

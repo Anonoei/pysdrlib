@@ -39,7 +39,7 @@ def test_every_module_has_a_stub_listing_what_it_has(built):
     for name, obj in vars(built).items():
         if name.startswith("__") or name in ("err",) or inspect.ismodule(obj):
             continue
-        assert name in names or name in ("_dispatch_rx", "_simulate_rx"), f"{built.__name__}.{name} is not in {path.name}"
+        assert name in names or name in ("_dispatch_rx", "_skip_rx"), f"{built.__name__}.{name} is not in {path.name}"
         if inspect.isclass(obj) and name in classes:
             for member in vars(obj):
                 if not member.startswith(("__", "_pybind11")):

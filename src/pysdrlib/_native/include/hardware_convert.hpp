@@ -2,8 +2,7 @@
 
 // Raw samples <-> complex64, for every layout a SampleFormat can describe. This is the one implementation
 // of the conversion: the devices' receive path (hardware_rx.hpp) and pysdrlib.base.convert both use it.
-// This is where the per-width types live, like hardware_numpy.hpp does for numpy dtypes; nothing else
-// generic names them.
+// This is where the per-width types live; nothing else generic names them.
 //
 //     decode_samples(fmt, raw, count, out)    raw -> complex64 in [-1, 1]
 //     encode_samples(fmt, in, count, raw)     complex64 in [-1, 1] -> raw, rounded to nearest and clamped

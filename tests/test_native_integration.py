@@ -1,6 +1,6 @@
 """The native receive path (driver thread -> C++ queue -> get_samples) together with the rest of pysdrlib:
 the File reader and the remote server/client. Each device in tests/devices.py runs against the real
-extension's queue, fed through its `_simulate_rx` hook, so no hardware is needed (the `hardware` test
+extension's queue, fed through its `_dispatch_rx` hook, so no hardware is needed (the `hardware` test
 streams a real device through a server).
 """
 import threading
@@ -20,16 +20,16 @@ from devices import SAMPLES, FakeDevice, fake_lib
 class Queue:
     """The extension's device with its USB side stubbed out. The receive path (`set_rx_buffer`, `read_rx`,
     `rx_stats`...) is the extension's own: conversion, queue and counters in C++. `feed` plays the driver
-    delivering a transfer, on a native thread. Tuning, gain and streaming calls go to a fake driver."""
-    RECEIVE_PATH = ("set_rx_buffer", "reset_rx_stats", "read_rx", "read_rx_indexed", "wait_rx", "rx_stats", "rx_available",
-                    "rx_slots", "read_rx_into", "rx_counters")
+    delivering a transfer, as its streaming thread does. Tuning, gain and streaming calls go to a fake driver."""
+    RECEIVE_PATH = ("set_rx_buffer", "reset_rx_stats", "read_rx", "wait_rx", "rx_stats", "rx_slots", "read_rx_into",
+                    "rx_counters")
 
     def __init__(self, spec):
         self._native = spec.native.device()
         self._fake = FakeDevice(spec.fake_returns, spec.device_class.SAMPLE_FORMAT)
 
     def feed(self, raw):
-        self._native._simulate_rx(raw, len(raw), len(raw))
+        self._native._dispatch_rx(raw)
 
     def __getattr__(self, name):
         return getattr(self._native if name in self.RECEIVE_PATH else self._fake, name)

@@ -196,7 +196,7 @@ def check_package(name) -> list:
     folder = Path(module.__file__).parent
     if not (folder / "README.md").is_file():
         add(WARNING, "has no README.md (what it is, its specs, what to install)")
-    if issubclass(device, NativeDevice):
+    if issubclass(device, NativeDevice) and name != "sim":   # sim streams through pysdrlib's own NullDevice
         if importlib.util.find_spec(f"pysdrlib._ext.{name}") is None:
             add(ERROR, f"has no _ext/{name}.py (how its vendor library is found or built, and its extension)")
         else:

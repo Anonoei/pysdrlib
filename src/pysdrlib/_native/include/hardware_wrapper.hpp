@@ -6,7 +6,6 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
-#include <functional>
 #include <stdexcept>
 #include <string>
 
@@ -30,10 +29,6 @@ private:
 template <typename HandleT>
 class HardwareDevice {
 public:
-    // Called from the driver's streaming thread with the device's raw bytes, laid out as
-    // `rx_sample_format()` describes. Lengths are in bytes. Return 0 to keep streaming.
-    using RxCallbackFn = std::function<int(const void* data, size_t valid_bytes, size_t buffer_bytes)>;
-
     HardwareDevice() = default;
     HardwareDevice(const HardwareDevice&) = delete;
     HardwareDevice& operator=(const HardwareDevice&) = delete;
@@ -42,16 +37,11 @@ public:
     virtual void close() = 0;
     bool is_open() const { return handle_ != nullptr; }
 
-    // Layout of the raw receive stream (what the RxCallbackFn data contains)
+    // Layout of the raw receive stream (what the driver hands `dispatch_rx`)
     virtual SampleFormat rx_sample_format() const = 0;
 
-    // Raw tap: set a callback before start_rx() to receive the device's bytes yourself. It is dropped by
-    // close(). With a callback set, the buffered path below is not used.
-    void set_rx_callback(RxCallbackFn callback) { rx_callback_ = std::move(callback); }
-
-    // Buffered receive (the default way to read a device): with no callback set, each transfer is
-    // converted to complex64 and queued on the streaming thread, without Python. `samples` is how many the
-    // queue holds before it drops the oldest.
+    // Receive: each transfer is converted to complex64 and queued on the streaming thread, without Python.
+    // `samples` is how many the queue holds before it drops the oldest.
     //
     // A device streaming several channels at once queues each in its own slot (slot k: the k-th channel of the
     // stream); everything else uses slot 0.
@@ -89,11 +79,9 @@ public:
     virtual std::string tx_error() const { return ""; }              // non-empty if the transmit stream died under us
     virtual uint64_t tx_async_errors() const { return 0; }           // transmit problems the hardware reported
 
-    // What a driver's streaming thread calls with each buffer: hands it to the callback if there is one,
-    // else queues it (see set_rx_buffer), else returns -1 (stop streaming). Public so tests can drive the
-    // real path without hardware.
-    int dispatch_rx(const void* data, size_t valid_bytes, size_t buffer_bytes, size_t slot = 0) const {
-        if (slot == 0 && rx_callback_) return rx_callback_(data, valid_bytes, buffer_bytes);
+    // What a driver's streaming thread calls with each buffer: queues it (see set_rx_buffer), or returns -1 (stop
+    // streaming) when there is no queue. Public so tests can drive the real path without hardware.
+    int dispatch_rx(const void* data, size_t valid_bytes, size_t slot = 0) const {
         if (slot < MAX_RX_SLOTS && rx_[slot].enabled()) {
             rx_[slot].push(data, valid_bytes);
             return 0;
@@ -110,8 +98,6 @@ protected:
     virtual HardwareError not_open_error() const = 0;
 
     HandleT handle_ = nullptr;
-    // Only safe to drop once no streaming thread can call it, i.e. after the driver has stopped
-    RxCallbackFn rx_callback_;
     mutable std::array<hw::RxPipeline, MAX_RX_SLOTS> rx_;
     std::array<hw::TxQueue, MAX_TX_SLOTS> tx_;
     size_t rx_slots_ = 1;

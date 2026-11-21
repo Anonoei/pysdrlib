@@ -1,8 +1,9 @@
 """Simulated device.
 
-A real, generic `Device` with no hardware. A "streaming thread" delivers raw int8 I/Q blocks
-through the same path a driver uses (callback -> conversion -> RotatingBuffer -> get_samples),
-so it can stand in for hardware in tests and benchmarks of pysdrlib's own layers.
+A real `NativeDevice` with no hardware. A "streaming thread" hands raw int8 I/Q blocks to a compiled device with no
+hardware behind it (`NullDevice`), which converts and queues them as a driver's own thread does, so everything from
+there (the queue, the stream watchdog, drop reporting, `read`) is what a radio runs: it can stand in for hardware in
+tests and benchmarks of pysdrlib's own layers.
 
     sdr = pysdrlib.device("sim")
     sdr.open(); sdr.initialize(cf=100e6, Fs=10e6)
@@ -13,18 +14,15 @@ use any `convert.SampleFormat` (8-bit, 12-bit, packed, float...) to emulate diff
 """
 import threading
 import time
-from types import SimpleNamespace
 
 import numpy as np
 
-from ..base.buffer import RotatingBuffer
 from ..base import convert
 from ..base.caps import Capabilities, GainStage, Range
-from ..base.device import Device
+from ..base.lib import samples as _samples
+from ..base.native import NativeDevice
 
-MAX_BUFFER_SAMPLES = 2**24
-
-class Sim(Device):
+class Sim(NativeDevice):
     NAME = "Simulated"
     CAPS = Capabilities(
         driver="",
@@ -35,7 +33,9 @@ class Sim(Device):
     CAN_TRANSMIT = False
     DUPLEX = False
 
+    SAMPLE_FORMAT = convert.INT8   # the default; `sample_format=` gives an instance its own
     BLOCK_SAMPLES = 131072  # samples per delivery: one HackRF USB transfer (256 KiB)
+    MAX_BUFFER_SAMPLES = 2**24
 
     def __init__(self, realtime=True, block_samples=BLOCK_SAMPLES, tone=None, sample_format=convert.INT8, channels=1,
                  transmit=False):
@@ -54,8 +54,6 @@ class Sim(Device):
         self.SAMPLE_FORMAT = sample_format
         self.realtime = realtime
         self.block_samples = int(block_samples)
-        self.buffer = RotatingBuffer()
-        self.buffers = [self.buffer]   # one per channel of the stream (slot)
         self.blocks = 0         # blocks delivered since start_rx / reset_stats
         self.max_lag = 0.0      # worst seconds the producer ran behind real time
         self._tone = tone
@@ -85,12 +83,13 @@ class Sim(Device):
     def reset_stats(self):
         self.blocks = 0
         self.max_lag = 0.0
-        self.buffer.clear_dropped()
+        self._dropped_reported = 0
+        self.device.reset_rx_stats()
 
     @property
     def dropped(self):
         """Samples discarded because the consumer fell behind"""
-        return self.buffer.dropped
+        return self.device.rx_stats()["dropped"]
 
     # --- driver-style plumbing --- #
     def _make_block(self):
@@ -103,15 +102,10 @@ class Sim(Device):
                       for ch in range(self.channels)]
         self._raw = self._raws[0]
 
-    def _rx_callback(self, buffer, valid_length, buffer_length):
-        """Same shape as a driver's callback (see hackrf.rx_callback)"""
-        self.buffer.update(self.SAMPLE_FORMAT.to_complex64(buffer, valid_length))
-        return 0
-
     def _deliver(self):
-        self._rx_callback(self._raws[self._rx_channels[0]], self._raw.nbytes, self._raw.nbytes)
-        for slot, ch in enumerate(self._rx_channels[1:], 1):
-            self.buffers[slot].update(self.SAMPLE_FORMAT.to_complex64(self._raws[ch], self._raw.nbytes))
+        """What a driver's streaming thread does with a transfer: every channel's block, each to its slot"""
+        for slot, ch in enumerate(self._rx_channels):
+            self.device._dispatch_rx(self._raws[ch], None, slot)
         self.blocks += 1
 
     def _run(self):
@@ -129,14 +123,19 @@ class Sim(Device):
                 time.sleep(0)  # let the consumer thread run
 
     def _open(self, *args, **kwargs):
-        return SimpleNamespace(name="sim")
+        dev = _samples.NullDevice()
+        fmt = self.SAMPLE_FORMAT
+        dev.set_format(fmt.kind, fmt.bits, fmt.storage, fmt.packed)
+        self.device = dev
+        self._rate_changed()   # a queue from the start, for pump()
+        return dev
     def _close(self):
         if self.state["rx"]:
             self.stop_rx()
-        self.device = None
+        self.device.close()
 
     def _start_rx(self):
-        self._resize_buffer()
+        super()._start_rx()
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="pysdrlib-sim", daemon=True)
         self._thread.start()
@@ -145,18 +144,7 @@ class Sim(Device):
         if self._thread is not None:
             self._thread.join()
             self._thread = None
-    def _get_samples(self):
-        return self.buffer.samples
-
-    # the generic read path (Device.read) on the ring the "driver" fills
-    def _rx_wait(self, count, timeout, slot=0):
-        return self.buffers[slot].wait(int(count), float(timeout))
-    def _rx_read(self, count, slot=0):
-        return self.buffers[slot].read_indexed(int(count))
-    def _rx_position(self, slot=0):
-        return self.buffers[slot].total, self.buffers[slot].age
-    def _rx_flush(self, slot=0):
-        return len(self.buffers[slot].read())
+        super()._stop_rx()
 
     def _capabilities(self, caps):
         caps.channels = {"rx": self.channels, "tx": self.channels if self.transmit else 0}
@@ -164,11 +152,16 @@ class Sim(Device):
     def _set_rx_channels(self, channels):
         if self.state["rx"]:
             raise RuntimeError("stop_rx() before changing the channels")
-        self.buffers = [self.buffer] + [RotatingBuffer() for _ in channels[1:]]
     def _set_tx_channels(self, channels):
         pass
 
     # the transmit side: a sink that keeps what was written
+    def _start_tx(self):
+        pass
+    def _stop_tx(self):
+        pass
+    def _tx_check(self):
+        pass
     def _tx_write(self, samples, timeout, slot=0):
         self.transmitted[self._tx_channels[slot]].append(np.array(samples, dtype=np.complex64))
         return len(samples)
@@ -176,14 +169,10 @@ class Sim(Device):
         written = sum(len(x) for x in self.transmitted[self._tx_channels[slot]])
         return {"written": written, "sent": written, "underruns": 0, "pending": 0}
 
-    def _resize_buffer(self):
-        for buffer in self.buffers:
-            buffer.reset(min(int(0.5 * self._Fs), MAX_BUFFER_SAMPLES))
-
     def _set_rx_sample_rate(self, Fs, channel=0):
         self._make_block()
         if not self.state["rx"]:
-            self._resize_buffer()
+            self._rate_changed()
     def _set_rx_freq(self, freq, channel=0):
         pass
 
