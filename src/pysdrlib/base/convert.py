@@ -100,3 +100,24 @@ INT16 = SampleFormat("int", 16, 16)
 INT12 = SampleFormat("int", 12, 16)                  # 12-bit values in 16-bit words
 INT12_PACKED = SampleFormat("int", 12, 12, packed=True)  # I and Q in 3 bytes
 FLOAT32 = SampleFormat("float", 32, 32)
+
+_NAMES = {"ci8": INT8, "cu8": UINT8, "cui8": UINT8, "ci16": INT16, "cf32": FLOAT32,
+          "cu16": SampleFormat("uint", 16, 16), "cui16": SampleFormat("uint", 16, 16),
+          "ci32": SampleFormat("int", 32, 32), "cf64": SampleFormat("float", 64, 64)}
+
+def sample_format(fmt) -> SampleFormat:
+    """A `SampleFormat` from itself or a SigMF-style name: "cf32" (GNU Radio complex64), "ci16", "ci8", "cu8"/"cui8"
+    (RTL-SDR), "cu16", "ci32", "cf64". Two's complement may be spelled out ("ci16t"), and "_le"/"_be" picks the byte
+    order (default little-endian)."""
+    if isinstance(fmt, SampleFormat):
+        return fmt
+    name = str(fmt).lower()
+    order = "<"
+    if name.endswith(("_le", "_be")):
+        name, order = name[:-3], "<" if name.endswith("_le") else ">"
+    if name.startswith("ci") and name.endswith("t"):
+        name = name[:-1]
+    if name not in _NAMES:
+        raise ValueError(f"unknown sample format {fmt!r}: one of {', '.join(sorted(_NAMES))} or a SampleFormat")
+    f = _NAMES[name]
+    return f if order == "<" else SampleFormat(f.kind, f.bits, f.storage, f.packed, order)

@@ -199,3 +199,19 @@ class TestRoundTrip:
 
     def test_accepts_complex128(self):
         assert convert.INT16.from_complex64(np.array([0.5 + 0.5j])).dtype == np.int16
+
+class TestNames:
+    def test_sigmf_names(self):
+        assert convert.sample_format("cf32") is convert.FLOAT32
+        assert convert.sample_format("ci16") is convert.INT16
+        assert convert.sample_format("ci16t") is convert.INT16
+        assert convert.sample_format("CU8") is convert.UINT8
+        assert convert.sample_format("ci8_le") is convert.INT8
+        assert convert.sample_format("ci16_be") == SampleFormat("int", 16, 16, byteorder=">")
+        assert convert.sample_format("cf64").dtype == np.float64
+        assert convert.sample_format(convert.INT12) is convert.INT12
+
+    def test_unknown_names_are_refused(self):
+        for bad in ("cf16", "ci4", "i16", "complex64"):
+            with pytest.raises(ValueError, match="unknown sample format"):
+                convert.sample_format(bad)

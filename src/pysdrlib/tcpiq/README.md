@@ -33,8 +33,9 @@ the `Dropped` warning). There is no stall watchdog, because the sender decides w
 
 ## Specs
 - Frequency and sample rate: whatever the source sends. `cf` and `Fs` are what you declare it to be.
-- Samples: any `pysdrlib.base.convert` layout, e.g. `TcpIq(sample_format=convert.INT16)` (default: float32 I, Q, which is
-  GNU Radio's `complex64`). The stream is little-endian unless the format says otherwise. A sample split across two
+- Samples: `open(..., sample_format=...)` with a SigMF-style name (`"cf32"`, the default: float32 I, Q, GNU Radio's
+  `complex64`; `"ci16"`, `"ci8"`, `"cu8"` for `rtl_tcp`-style unsigned bytes, `"cu16"`, `"ci32"`, `"cf64"`, optionally
+  with `_be`) or any `pysdrlib.base.convert.SampleFormat`. The stream is little-endian unless the format says otherwise. A sample split across two
   reads is put back together.
 - Gain: none (`rx_gain_stages()` is empty).
 

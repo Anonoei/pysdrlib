@@ -24,19 +24,16 @@ class TcpIq(NativeDevice):
     DUPLEX = False
     STALL_TIMEOUT = None          # the sender sets the pace, and a server may have no client yet
     MAX_BUFFER_SAMPLES = 2**24    # the rate is only declared: don't let it size a huge queue
-    SAMPLE_FORMAT = convert.FLOAT32   # the default; each instance has the one it was made with
+    SAMPLE_FORMAT = convert.FLOAT32   # the default; `open(sample_format=...)` gives an instance its own
 
     device: lib.tcpiq.device   # the extension's device (None until `open`)
 
-    def __init__(self, sample_format=convert.FLOAT32):
-        """sample_format: layout of what the other end sends (a `pysdrlib.base.convert.SampleFormat`)"""
-        super().__init__()
-        self.SAMPLE_FORMAT = sample_format
-
-    def _open(self, host=None, port=1234, timeout=5.0, listen=False):
+    def _open(self, host=None, port=1234, timeout=5.0, listen=False, sample_format=convert.FLOAT32):
         """host, port: the server to connect to; or, with `listen`, the address to listen on (host default: every
-        interface; port 0: any free one, see `port`). timeout: seconds to connect"""
-        f = self.SAMPLE_FORMAT
+        interface; port 0: any free one, see `port`). timeout: seconds to connect.
+        sample_format: layout of what the other end sends, a `convert.SampleFormat` or a name ("cf32", "ci16",
+        "cu8", ... see `convert.sample_format`)"""
+        f = self.SAMPLE_FORMAT = convert.sample_format(sample_format)
         layout = (f.kind, f.bits, f.storage, f.packed, f.byteorder == ">")
         if listen:
             host = "0.0.0.0" if host is None else host

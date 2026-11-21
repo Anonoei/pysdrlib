@@ -81,18 +81,21 @@ class TestClient:
             sdr.stop_rx()
         assert y.dtype == np.complex64 and np.array_equal(y, x[:65536])
 
-    def test_other_sample_formats_and_split_samples(self, server):
+    @pytest.mark.parametrize("name", ["ci16", "ci8", "cu8", "cu16", "ci32", "cf64", "ci16_be"])
+    def test_other_sample_formats_and_split_samples(self, server, name):
+        fmt = convert.sample_format(name)
         x = (0.5 * tone(40_000)).astype(np.complex64)
-        raw = convert.INT16.from_complex64(x).tobytes()
-        server["payload"] = raw[:1001]   # ends mid-sample on purpose: whole samples only reach the ring
-        sdr = TcpIq(sample_format=convert.INT16)
-        sdr.open(host="127.0.0.1", port=server["port"])
+        raw = fmt.from_complex64(x).tobytes()
+        cut = 250 * fmt.bytes_per_sample + 1
+        server["payload"] = raw[:cut]   # ends mid-sample on purpose: whole samples only reach the ring
+        sdr = pysdrlib.open("tcpiq", host="127.0.0.1", port=server["port"], sample_format=name)
+        assert sdr.SAMPLE_FORMAT == fmt
         sdr.initialize(cf=1e6, Fs=1e6)
         sdr.start_rx()
         y = sdr.read(250, timeout=2.0)
         sdr.stop_rx()
         sdr.close()
-        assert len(y) == 250 and np.allclose(y, x[:250], atol=2 / 32768)
+        assert len(y) == 250 and np.allclose(y, x[:250], atol=2 / fmt.full_scale + 1e-6)
 
     def test_end_of_stream_is_noticed(self, server):
         server["payload"] = tone(1000).tobytes()
