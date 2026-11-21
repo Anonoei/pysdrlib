@@ -31,6 +31,13 @@ block published: 3 frames like a block, with FLAG_SHM in the header (channel, in
 the name of the segment as the payload (empty: the server could not make one, so use the other topic). The server
 encodes and sends full blocks only while someone subscribes to the device id.
 
+Changes to the stream (a retune, a new gain, a flush) go to both topics as *events*: FLAG_EVENT in the header and a
+JSON payload `{"seq": n, "events": [[index, kind, value, channel], ...], "discard": index}`, published before any
+sample from after the change. The reply to the call that made the change carries it too (`"stream"`), so the caller
+has it before its next read. A client applies each `seq` once, as a local device would, so `read(meta=True)` reports
+retunes inside a block and `set_rx_freq(..., flush=True)` skips what came before. Blocks and notices are numbered
+separately, each from 0.
+
 Endpoints handed out by the server may contain `{host}`, which the client replaces with the host
 it used to reach the C2 socket (so a server bound to 0.0.0.0 doesn't need to know its own address).
 """
@@ -55,6 +62,7 @@ KINDS = ("int", "uint", "float")
 FLAG_PACKED = 1
 FLAG_BIG_ENDIAN = 2
 FLAG_SHM = 4
+FLAG_EVENT = 8
 SHM_PREFIX = b"shm:"
 
 # Names accepted wherever a wire format is chosen. "native" is resolved per device (see `resolve_wire`).
@@ -107,9 +115,13 @@ def unpack(data: bytes) -> dict:
         raise err.ProtocolError("message must be an object")
     return msg
 
-def ok(req_id, result=None) -> bytes:
-    """A success reply to request `req_id`"""
-    return pack({"id": req_id, "ok": True, "result": result})
+def ok(req_id, result=None, stream=None) -> bytes:
+    """A success reply to request `req_id`. stream: the `change` the request made to the receive stream, if any (the
+    caller applies it before its next read, rather than wait for it on the stream)"""
+    msg = {"id": req_id, "ok": True, "result": result}
+    if stream is not None:
+        msg["stream"] = stream
+    return pack(msg)
 
 def fail(req_id, exc: BaseException) -> bytes:
     """An error reply to request `req_id`; the client re-raises it as the same pysdrlib error type"""
@@ -167,6 +179,26 @@ def unpack_notice(header: bytes, payload):
     if version != VERSION or not flags & FLAG_SHM:
         raise err.ProtocolError("not a shared-memory notice")
     return seq, timestamp, channel, index, count, bytes(payload).decode()
+
+def change(seq: int, events, discard: int) -> dict:
+    """A change to the receive stream (see the module docs): `events` are (index, kind, value, channel) as `Device`
+    records them, `discard` the stream index before which samples are settling or flushed, `seq` numbers the changes of
+    a device (a client applies each once: it may get one both in a reply and on the stream)"""
+    return {"seq": int(seq), "events": [list(e) for e in events], "discard": int(discard)}
+
+def pack_event(timestamp: float, change: dict):
+    """-> (header bytes, payload bytes): a `change` on the RX stream. Sent on both topics, ahead of any sample published
+    after it"""
+    return HEADER.pack(VERSION, KINDS.index("float"), 32, 32, FLAG_EVENT, 0, change["seq"], timestamp, 0,
+                       change["discard"]), pack(change)
+
+def is_event(header: bytes) -> bool:
+    """Whether a message on the RX stream is an event (`pack_event`) rather than samples or a notice"""
+    return len(header) == HEADER.size and bool(header[4] & FLAG_EVENT)
+
+def unpack_event(payload) -> dict:
+    """The `change` an event message carries"""
+    return unpack(bytes(payload))
 
 def unpack_block(header: bytes, payload) -> tuple[int, float, np.ndarray]:
     """-> (seq, timestamp, complex64 samples). See unpack_block_ex for the channel and index"""

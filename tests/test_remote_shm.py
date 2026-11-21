@@ -75,6 +75,33 @@ class TestTransport:
         finally:
             dev.close()
 
+    @pytest.mark.parametrize("transport", ["shm", "zmq"])
+    def test_a_flush_and_retune_reach_controller_and_viewer(self, server, transport):
+        dev = open_sim(server, transport=transport)
+        try:
+            dev.initialize(cf=100e6, Fs=10e6)
+            dev.start_rx()
+            watcher = view(server, dev.id, transport=transport)
+            try:
+                dev.read(8192, timeout=5)
+                watcher.read(8192, timeout=5)
+                dev.set_rx_freq(103e6, flush=True)
+                _, m = dev.read(4096, timeout=5, meta=True)
+                seen = []   # the viewer reads on (it may be behind) until its blocks are at the new frequency
+                for _ in range(200):
+                    _, w = watcher.read(4096, timeout=5, meta=True)
+                    seen.append(w)
+                    if w.freq == 103e6:
+                        break
+            finally:
+                watcher.close()
+        finally:
+            dev.close()
+        assert m.freq == 103e6 and not m.events and m.discarded > 0
+        assert seen[-1].freq == 103e6
+        # until then its blocks were at the old frequency; the flush skipped the settling there too
+        assert all(w.freq == 100e6 for w in seen[:-1]) and seen[-1].index >= m.index - m.discarded
+
     def test_a_bad_transport_is_refused(self, server):
         with pytest.raises(ValueError):
             pysdrlib.device("remote", server.endpoint, "sim", transport="carrier pigeon")

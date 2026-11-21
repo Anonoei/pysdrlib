@@ -65,6 +65,10 @@ class _Channel:
         self._lock = threading.Lock()
 
     def request(self, op, **fields):
+        return self.exchange(op, **fields).get("result")
+
+    def exchange(self, op, **fields) -> dict:
+        """`request`, returning the whole reply (its `result`, and the `stream` change a call made)"""
         with self._lock:
             self._id += 1
             req_id = self._id
@@ -79,7 +83,7 @@ class _Channel:
                     break
         if not msg.get("ok"):
             protocol.raise_error(msg.get("error", {}))
-        return msg.get("result")
+        return msg
 
     def close(self):
         self.sock.close(0)
@@ -192,6 +196,7 @@ class RemoteDevice(Device):
         self._sub = None
         self._last_seq = None
         self._bufs = {}             # channel -> deque of [index of first sample, samples] received, not yet read
+        self._changes_seen = set()  # `seq` of the stream changes applied (see `_apply_change`)
         self._rx_last = {}          # channel -> index after the last sample received
         self._rx_time = None        # time.monotonic() of the last block
         self._tx = None             # PUSH socket for TX blocks (the controller's)
@@ -388,7 +393,11 @@ class RemoteDevice(Device):
         self._ensure_open(method)
         if method == "start_rx":   # what is still queued belongs to the last stream
             self._drop_received()
-        result = self._ctrl.request("call", method=method, args=list(args), kwargs=kwargs, token=self.token)
+        reply = self._ctrl.exchange("call", method=method, args=list(args), kwargs=kwargs, token=self.token)
+        result = reply.get("result")
+        if reply.get("stream"):   # what the call changed in the stream: known before the next read
+            with self._rx_lock:
+                self._apply_change(reply["stream"])
         if method in ("set_rx_freq", "get_rx_freq"):
             self._cf = result
         elif method in ("set_rx_sample_rate", "get_rx_sample_rate"):
@@ -483,6 +492,9 @@ class RemoteDevice(Device):
                 break
             wait = 0
             _, header, payload = self._sub.recv_multipart(copy=False)
+            if protocol.is_event(header.bytes):
+                self._apply_change(protocol.unpack_event(payload.buffer))
+                continue
             if self._shm_mode:
                 self._notice(header.bytes, payload.buffer)
                 continue
@@ -492,11 +504,42 @@ class RemoteDevice(Device):
             self._last_seq = seq
             if index is None:   # an older server: count them here
                 index = self._rx_last.get(channel, 0)
+            if index < self._rx_last.get(channel, 0):   # the indices went back: someone restarted the stream
+                self._stream_restarted()
             if index > self._rx_last.get(channel, index):   # blocks the socket dropped on the way
                 self._lost[channel] = self._lost.get(channel, 0) + index - self._rx_last[channel]
             self._bufs.setdefault(channel, collections.deque()).append([index, samples])
             self._rx_last[channel] = index + len(samples)
             self._rx_time = time.monotonic()
+
+    def _apply_change(self, change):
+        """A change to the stream on the server (retunes, gains, a flush; see `protocol.change`): recorded as
+        `Device._note` records a local device's, so `read` reports it in RxMeta and skips what a flush discarded. Each
+        once: the caller gets its own both in the reply and on the stream"""
+        seq = change.get("seq")
+        if seq in self._changes_seen:
+            return
+        if len(self._changes_seen) > 4096:
+            self._changes_seen.clear()
+        self._changes_seen.add(seq)
+        for index, kind, value, ch in change.get("events", ()):
+            self._seed_now(kind, (ch,))
+            self._rx_events.append((int(index), kind, value, ch))
+        self._rx_discard = max(self._rx_discard, int(change.get("discard", 0)))
+
+    def _seed_now(self, kind, channels):
+        """Before a change of `kind` is recorded: what was in effect until then (the blocks before it are labelled
+        with that, not with the new value)"""
+        before = {"freq": self._cf, "rate": self._Fs}.get(kind)
+        if before is not None:
+            for ch in channels:
+                self._rx_now.setdefault((kind, ch), before)
+
+    def _stream_restarted(self):
+        """A new stream (indices from 0 again): the last one's positions, flush point and changes are void"""
+        self._rx_next, self._rx_now, self._rx_events, self._rx_discard = {}, {}, [], 0
+        self._rx_last.clear()
+        self._lost.clear()
 
     def _notice(self, header, payload):
         """A block was written to a ring: attach to the ring if it is a new one, and note when it arrived"""
@@ -512,7 +555,10 @@ class RemoteDevice(Device):
         except (FileNotFoundError, ValueError, OSError) as exc:
             return self._use_sockets(f"{name} can't be attached: {exc}")
         # A new stream is read from its first sample; one already running, from this block on
-        fresh = self._from_start or (reader is not None and reader.stream_id != new.stream_id)
+        restarted = reader is not None and reader.stream_id != new.stream_id
+        fresh = self._from_start or restarted
+        if restarted:
+            self._stream_restarted()
         if reader is not None:
             reader.close()
         self._rings[channel], self._pos[channel] = new, 0 if fresh else index
@@ -528,8 +574,7 @@ class RemoteDevice(Device):
         if self._sub is not None:
             self._pull(0)
         self._bufs.clear()
-        self._rx_last.clear()
-        self._lost.clear()
+        self._stream_restarted()
         self._close_rings()   # the old stream's; the new one has rings of its own
         self._from_start = self.is_controller
 
@@ -550,6 +595,7 @@ class RemoteDevice(Device):
             return super()._rx_read_into(out, timeout, slot)
         channel = self._rx_channels[slot]
         deadline = time.monotonic() + timeout
+        self._pull(0)   # changes (events) already sent apply to what is read now
         while True:
             reader = self._rings.get(channel)
             if reader is not None:

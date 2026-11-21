@@ -16,6 +16,7 @@ the socket. One on this machine can take them from shared memory instead (see `s
 of each block however many clients there are: it keeps a ring per streaming channel and tells subscribers when it has
 written. The server only does the work of a way someone is using.
 """
+import contextlib
 import hmac
 import os
 import secrets
@@ -82,7 +83,12 @@ class DeviceWorker:
         self.last_seen = time.monotonic()
         self.streaming = threading.Event()
         self._stop = threading.Event()
-        self._seq = 0
+        self._seq = 0                           # numbers the blocks sent (a client sees a gap as blocks lost) ...
+        self._notice_seq = 0                    # ... and, apart, the shared-memory notices
+        self._sent_discard = 0                  # the device's flush point last sent to clients (see `_take_changes`)
+        self._change_seq = 0                    # numbers the stream changes
+        self._changes = []                      # ... taken from the device, not yet published (guarded by `lock`)
+        self._reply_stream = None               # the change the request being answered made (control thread only)
         self.wire = protocol.resolve_wire(wire, device)    # format RX blocks are published in
 
         self.shm_enabled = bool(shm)            # offer clients on this machine the samples in shared memory
@@ -230,7 +236,9 @@ class DeviceWorker:
             try:
                 msg = protocol.unpack(data)
                 req_id = msg.get("id")
-                reply = protocol.ok(req_id, self._handle(msg))
+                self._reply_stream = None
+                result = self._handle(msg)
+                reply = protocol.ok(req_id, result, self._reply_stream)
             except Exception as e:
                 if not isinstance(e, (err._Error, ValueError, TypeError, AttributeError, NotImplementedError)):
                     self.log.exception("control request failed")
@@ -270,8 +278,10 @@ class DeviceWorker:
                     self.log.info("%s: %s", self.id, method)
                 if method == "start_rx":
                     self._stream_gen += 1   # a new stream: indices start again, and the rings with them
+                    self._sent_discard = 0   # ... and the device's flush point
                 return result
             finally:
+                self._reply_stream = self._take_changes()   # the caller gets its change in the reply, the rest on the stream
                 if self.device.state.get("rx"):
                     self.streaming.set()
                 else:
@@ -297,8 +307,12 @@ class DeviceWorker:
                 # costs several times the CPU of publishing a couple of milliseconds at once
                 batch = min(protocol.MAX_BLOCK_SAMPLES, max(MIN_BATCH, int(BATCH_SECONDS * self._rate())))
                 self.device.wait_available(MAX_WAIT, channels[0], batch)
-                for ch in channels:
-                    samples, index = self.device.read_available(ch)
+                with self.lock:   # a change (set_rx_freq...) lands entirely before or after: its event precedes its samples
+                    self._take_changes()
+                    changes, self._changes = self._changes, []
+                    reads = [(ch, *self.device.read_available(ch)) for ch in channels]
+                self._publish_changes(changes)
+                for ch, samples, index in reads:
                     if len(samples):
                         self._publish(ch, samples, index)
                 if broken:
@@ -329,6 +343,30 @@ class DeviceWorker:
                 topic = bytes(msg[1:])
                 self._subs[topic] = max(0, self._subs.get(topic, 0) + (1 if msg[0] == 1 else -1))
 
+    def _take_changes(self):
+        """The stream changes the device recorded since the last look (`Device._note`: retunes, gains, flushes), as a
+        `protocol.change` queued for the pump to publish (None: none). Taken from the device, since the server reads it
+        with `read_available`, which never reports them. Call with `lock` held"""
+        dev = self.device
+        with getattr(dev, "_rx_lock", contextlib.nullcontext()):   # a relay's upstream adds them on its own reads
+            events, discard = getattr(dev, "_rx_events", None), getattr(dev, "_rx_discard", 0)
+            if events is None or (not events and discard == self._sent_discard):
+                return None
+            dev._rx_events = []
+        self._sent_discard = discard
+        self._change_seq += 1
+        change = protocol.change(self._change_seq, events, discard)
+        self._changes.append(change)
+        return change
+
+    def _publish_changes(self, changes):
+        """Changes to both topics (pump thread only: it alone sends on the RX socket)"""
+        for change in changes:
+            header, payload = protocol.pack_event(time.time(), change)
+            for topic in (self._topic, self._shm_topic):
+                if self._subs.get(topic):
+                    self.rx.send_multipart([topic, header, payload])
+
     def _publish(self, ch, samples, index):
         """One read of a channel, to whoever wants it: into shared memory (and a notice, for clients on this machine), as
         blocks over the socket (for the rest)"""
@@ -340,8 +378,8 @@ class DeviceWorker:
             ring = self._ring(ch) if self.shm_enabled else None
             if ring is not None:
                 ring.publish(samples, index)
-            header, payload = protocol.pack_notice(self._seq, now, ch, index, len(samples), ring.name if ring else "")
-            self._seq += 1
+            header, payload = protocol.pack_notice(self._notice_seq, now, ch, index, len(samples), ring.name if ring else "")
+            self._notice_seq += 1
             self.rx.send_multipart([self._shm_topic, header, payload])
         if self._subs.get(self._topic):
             for i in range(0, len(samples), protocol.MAX_BLOCK_SAMPLES):

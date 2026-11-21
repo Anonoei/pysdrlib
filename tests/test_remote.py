@@ -58,6 +58,12 @@ class TestProtocol:
             header, payload = protocol.pack_block(0, 0.0, x, fmt)
             assert np.array_equal(protocol.unpack_block(header, memoryview(payload).cast("B"))[2], x), fmt
 
+    def test_event_roundtrip(self):
+        change = protocol.change(4, [(1000, "freq", 101e6, 0)], 1500)
+        header, payload = protocol.pack_event(2.0, change)
+        assert protocol.is_event(header) and protocol.unpack_event(payload) == change
+        assert not protocol.is_event(protocol.pack_block(0, 0.0, np.zeros(4, np.complex64))[0])
+
     def test_unknown_wire_format(self):
         with pytest.raises(ValueError, match="unknown wire format"):
             protocol.wire_format("int3")
@@ -495,6 +501,37 @@ class TestGenericControlsRemotely:
         finally:
             dev.stop_rx()
         assert (a.index, b.index) == (0, 1000) and a.freq == 100e6
+
+    def test_retune_is_marked_and_flush_skips_the_old_samples(self, dev):
+        # as on a local device (test_generic_api): the server's changes reach the client in the stream
+        dev.initialize(cf=100e6, Fs=1e6)
+        dev.start_rx()
+        try:
+            dev.read(1000, timeout=5)
+            dev.set_rx_freq(101e6)
+            _, m = dev.read(200_000, timeout=5, meta=True)
+            dev.set_rx_freq(102e6, flush=True)
+            _, m2 = dev.read(1000, timeout=5, meta=True)
+        finally:
+            dev.stop_rx()
+        changes = [e for e in m.events if e.kind == "freq"]
+        assert (changes and changes[0].value == 101e6 and m.freq == 100e6) or m.freq == 101e6
+        assert m2.freq == 102e6 and not m2.events and m2.dropped == 0
+        assert m2.index >= m.index + 200_000
+
+    def test_a_new_stream_forgets_the_last_ones_flush(self, dev):
+        dev.initialize(cf=100e6, Fs=1e6)
+        dev.start_rx()
+        dev.read(50_000, timeout=5)
+        dev.set_rx_freq(101e6, flush=True)
+        dev.read(1000, timeout=5)
+        dev.stop_rx()
+        dev.start_rx()
+        try:
+            _, m = dev.read(1000, timeout=5, meta=True)
+        finally:
+            dev.stop_rx()
+        assert m.index == 0 and m.discarded == 0 and m.freq == 101e6
 
     def test_reading_is_not_a_remote_call(self, dev):
         for name in ("read", "read_into", "stream", "flush"):

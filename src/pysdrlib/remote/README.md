@@ -29,7 +29,8 @@ sdr.close()                                                    # also closes the
 ```
 `sdr.caps` comes from the hosted device, and every control (`set_rx_gain`, `set_bandwidth`, `set_setting`, a driver's own
 setters such as `set_rx_lna_gain`...) is forwarded to it. Channels, transmit, `read(meta=True)` gaps and `stream()` work
-as they do locally.
+as they do locally, and so do retunes: `m.events` marks a change inside a block, `m.freq` is the frequency the block was
+received at, and `set_rx_freq(f, flush=True)` skips what came before (viewers see the controller's changes the same way).
 
 ## Finding servers
 
