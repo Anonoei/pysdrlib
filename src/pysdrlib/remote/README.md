@@ -226,7 +226,7 @@ So a relay costs a little for one program, and pays for itself from two or three
 ## Command line
 
 ```
-pysdrlib server [--bind ENDPOINT] [--port-range LOW-HIGH] [--devices a,b] [--open TYPE]... [--frontends FILE] [--wire FMT] [--lease S] [--no-shm] [--advertise [--advertise-name NAME]] [-v]
+pysdrlib server [--bind ENDPOINT] [--port-range LOW-HIGH] [--devices a,b] [--open TYPE[:KEY=VALUE,...]]... [--frontends FILE] [--wire FMT] [--lease S] [--no-shm] [--advertise [--advertise-name NAME]] [--stats-interval S] [-v]
 pysdrlib relay ADDRESS (DEVICE | --open TYPE) [--bind ENDPOINT] [--control auto|yes|no] [--name ID] [--timeout S] [--lease S] [--no-shm] [--advertise [--advertise-name NAME]] [-v]
 pysdrlib client ADDRESS [--timeout S] COMMAND
 pysdrlib discover [--timeout S] [--list] [--all-versions]
@@ -235,8 +235,9 @@ pysdrlib discover [--timeout S] [--list] [--all-versions]
 | Client command | What it does |
 | --- | --- |
 | `list` | Device types the server allows and the devices it hosts |
+| `stats [DEVICE] [--json]` | What each hosted device has published, to how many subscribers, and what was lost (see *Monitoring*) |
 | `info DEVICE` | A hosted device's capabilities, as JSON |
-| `rx TYPE -o FILE [-f FORMAT] [--sigmf] (-n SAMPLES \| -t SECONDS)` | Open a device, configure it (`--freq`, `--rate`, `--rx-gain`, `--set KEY=VALUE`) and record |
+| `rx TYPE -o FILE [-f FORMAT] [--sigmf] (-n SAMPLES \| -t SECONDS)` | Open a device (`--arg KEY=VALUE` for its `open()`), configure it (`--freq`, `--rate`, `--rx-gain`, `--set KEY=VALUE`) and record |
 | `watch DEVICE -o FILE (-n \| -t)` | Record from an already hosted device without controlling it |
 | `set DEVICE KEY=VALUE...` | Change settings on a hosted device (takes control briefly) |
 | `tx TYPE -i FILE` | Open a device, configure it (`--freq`, `--rate`, `--tx-gain`, `--set`) and transmit; `--loop` repeats |
@@ -245,10 +246,31 @@ Recordings are raw `complex64` (GNU Radio `.cfile`) unless `-f FORMAT` picks ano
 `pysdrlib.Formats`; integer formats saturate at full scale). An output ending in `.sigmf`, or `--sigmf`, records
 [SigMF](https://sigmf.org): `NAME.sigmf-data` and `NAME.sigmf-meta`, with the sample rate, frequency, every retune and
 where samples were lost. Transmit files are raw `complex64`. Numbers accept scientific notation (`100e6`).
-`--port-range` limits the ports the per-device sockets use, which is what you open in a firewall. `python -m pysdrlib`
+`--arg KEY=VALUE` (client) and `--open TYPE:KEY=VALUE,...` (server) pass arguments to the device's `open()`: a recording
+to serve (`--open file:path=cap.sigmf,loop=true`), a TCP stream's address (`--arg host=10.0.0.5 --arg sample_format=cu8`).
+Values are numbers, `true`/`false`, `none`, or text. `--port-range` limits the ports the per-device sockets use, which is what you open in a firewall. `python -m pysdrlib`
 is the same as the `pysdrlib` command.
 
 Transmitting is a real RF emission: start with `--tx-gain 0`, into a load or an antenna you are licensed to use.
+
+## Monitoring
+
+Each hosted device counts what passes through it. `pysdrlib client ADDRESS stats` shows it, and `Client.metrics()`
+returns it (`--json` prints the same dict):
+
+- `rx`: samples published, blocks and bytes sent on the socket (in the wire format), shared-memory notices, and how
+  many clients subscribe over the socket and over shared memory.
+- `device`: the radio's own stream counts while it receives: samples delivered, `dropped` (the server fell behind),
+  `missing` (the radio didn't deliver at its rate), stalls.
+- `tx`: samples and blocks transmitted, blocks `refused` (not from the controller, or not transmitting), and the
+  device's transmit stats.
+- `control`: calls answered and failed. A relay adds `upstream.dropped_blocks`: blocks lost between the far server and
+  the relay.
+
+So lost samples can be placed: `dropped_blocks` on a client (the network or a slow client), `device.dropped` (the
+server's host), `device.missing` (the radio or its USB link). `pysdrlib server` and `pysdrlib relay` also log a line per
+streaming device every `--stats-interval` seconds (default 60; 0 turns it off): the rate published, subscribers, and
+what the device dropped or missed since the last line.
 
 ## Security
 

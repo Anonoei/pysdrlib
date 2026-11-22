@@ -103,6 +103,9 @@ class DeviceWorker:
         self._shm_topic = protocol.SHM_PREFIX + self._topic
 
         self.tx_refused = 0                     # TX blocks dropped: not from the controller, or not transmitting
+        self.hosted_at = time.monotonic()
+        self.counters = dict.fromkeys(          # what passed through, since hosted (see `metrics`)
+            ("rx_samples", "rx_blocks", "rx_bytes", "shm_notices", "tx_samples", "tx_blocks", "calls", "errors"), 0)
         self.ctrl = server._socket(zmq.ROUTER)
         self.rx = server._socket(zmq.XPUB)      # a PUB that also says who subscribed to what
         self.rx.setsockopt(zmq.XPUB_VERBOSER, 1)
@@ -226,6 +229,36 @@ class DeviceWorker:
         finally:
             self.lock.release()
 
+    def metrics(self):
+        """What has passed through since the device was hosted: samples published (to how many subscribers, over the
+        socket and in shared memory), what the device itself dropped or missed, what was transmitted, control calls.
+        For a dashboard, or to tell a network problem (dropped_blocks on a client) from a radio's (device.dropped)"""
+        c = dict(self.counters)
+        device = None
+        if self.lock.acquire(timeout=STATUS_WAIT):   # the device's own counts, between calls into it
+            try:
+                if self.device.state.get("rx") and hasattr(self.device, "stats"):
+                    st = self.device.stats
+                    device = {"samples": st.samples, "dropped": st.dropped, "missing": st.missing, "stalls": st.stalls}
+                tx = self.device.get_tx_stats() if self.device.state.get("tx") else None
+            except Exception as e:   # a failing device: the counters still help
+                device, tx = {"error": str(e)}, None
+            finally:
+                self.lock.release()
+        else:
+            tx = None
+        return {
+            "id": self.id, "type": self.type, "uptime": time.monotonic() - self.hosted_at,
+            "streaming": self.streaming.is_set(), "controlled": self.token is not None, "program": self.program,
+            "rx": {"samples": c["rx_samples"], "blocks": c["rx_blocks"], "bytes": c["rx_bytes"],
+                   "shm_notices": c["shm_notices"], "wire": protocol.wire_name(self.wire),
+                   "socket_subscribers": self._subs.get(self._topic, 0),
+                   "shm_subscribers": self._subs.get(self._shm_topic, 0)},
+            "device": device,
+            "tx": {"samples": c["tx_samples"], "blocks": c["tx_blocks"], "refused": self.tx_refused, "device": tx},
+            "control": {"calls": c["calls"], "errors": c["errors"]},
+        }
+
     # --- control socket --- #
     def _control_loop(self):
         while not self._stop.is_set():
@@ -242,7 +275,9 @@ class DeviceWorker:
             except Exception as e:
                 if not isinstance(e, (err._Error, ValueError, TypeError, AttributeError, NotImplementedError)):
                     self.log.exception("control request failed")
+                self.counters["errors"] += 1
                 reply = protocol.fail(req_id, e)
+            self.counters["calls"] += 1
             self.ctrl.send_multipart([ident, reply])
 
     def _handle(self, msg):
@@ -255,6 +290,8 @@ class DeviceWorker:
             return self.capabilities
         if op == "status":
             return self.status()
+        if op == "metrics":
+            return self.metrics()
         if op == "call":
             return self._call(msg, controller)
         if op == "set_wire":
@@ -374,18 +411,22 @@ class DeviceWorker:
         if index < self._ends.get(ch, 0):   # the indices went back: the stream was restarted (not by one of our own clients)
             self._stream_gen += 1
         self._ends[ch] = index + len(samples)
+        self.counters["rx_samples"] += len(samples)
         if self._subs.get(self._shm_topic):
             ring = self._ring(ch) if self.shm_enabled else None
             if ring is not None:
                 ring.publish(samples, index)
             header, payload = protocol.pack_notice(self._notice_seq, now, ch, index, len(samples), ring.name if ring else "")
             self._notice_seq += 1
+            self.counters["shm_notices"] += 1
             self.rx.send_multipart([self._shm_topic, header, payload])
         if self._subs.get(self._topic):
             for i in range(0, len(samples), protocol.MAX_BLOCK_SAMPLES):
                 header, payload = protocol.pack_block(
                     self._seq, now, samples[i:i + protocol.MAX_BLOCK_SAMPLES], self.wire, channel=ch, index=index + i)
                 self._seq += 1
+                self.counters["rx_blocks"] += 1
+                self.counters["rx_bytes"] += len(header) + payload.nbytes
                 self.rx.send_multipart([self._topic, header, payload], copy=False)
 
     def _ring(self, ch):
@@ -433,6 +474,8 @@ class DeviceWorker:
                     self.tx_refused += 1
                     continue
                 self.device.write(samples, channel=channel)
+                self.counters["tx_blocks"] += 1
+                self.counters["tx_samples"] += samples.shape[-1]
             except Exception:
                 if not self._stop.is_set():
                     self.log.exception("transmitting failed")
@@ -495,6 +538,12 @@ class RelayWorker(DeviceWorker):
                     relay={"address": self.upstream.address, "device": self.upstream.id})
         return caps
 
+    def metrics(self):
+        m = super().metrics()
+        m["upstream"] = {"address": self.upstream.address, "id": self.upstream.id,
+                         "dropped_blocks": self.upstream.dropped_blocks}   # lost between the far server and here
+        return m
+
     def status(self):
         """The far device's state as this relay last heard it (every forwarded call, and the watcher, refresh it)"""
         up = self.upstream
@@ -547,7 +596,8 @@ class RelayWorker(DeviceWorker):
 
 class Server:
     def __init__(self, bind="tcp://127.0.0.1:5555", port_range=None, devices=None, lease=15.0, wire="native", shm=True,
-                 shm_samples=None, scan_interval=0.0, frontends=None, advertise=False, name=None, kind="server"):
+                 shm_samples=None, scan_interval=0.0, frontends=None, advertise=False, name=None, kind="server",
+                 stats_interval=0.0):
         """
         bind: C2 endpoint, tcp://host:port (port 0 or * picks one; see `endpoint`) or ipc://path.
         port_range: (low, high) for the per-device tcp ports; default lets the OS pick.
@@ -561,6 +611,8 @@ class Server:
         advertise: announce the server on the local network while it serves, for `discovery.discover` (needs zeroconf, and a
             bind other clients can reach such as tcp://0.0.0.0:5555). name: the name it announces (default: the host name).
         kind: what it announces itself as, "server" or "relay".
+        stats_interval: seconds between log lines saying what each streaming device published, to how many subscribers,
+            and what it dropped (0 = never). `metrics()` (the "metrics" request, `pysdrlib client ADDRESS stats`) has it all.
         """
         self.log = logger.new("remote.server")
         self.scheme, self._host, self._port = _parse_bind(bind)
@@ -574,6 +626,10 @@ class Server:
         self.shm_samples = shm_samples
         self.endpoint = None        # actual C2 endpoint once bound
         self.workers: dict[str, DeviceWorker] = {}
+        self.started = time.monotonic()
+        self.stats_interval = float(stats_interval)
+        self._stats_at = time.monotonic()
+        self._stats_last = {}       # dev id -> the metrics the last stats line was worked out from
         self._counts: dict[str, int] = {}
         self._ctx = zmq.Context()
         self._c2 = None
@@ -697,6 +753,32 @@ class Server:
                     reply = protocol.fail(req_id, e)
                 self._c2.send_multipart([ident, reply])
             self._expire_leases()
+            if self.stats_interval > 0 and time.monotonic() - self._stats_at >= self.stats_interval:
+                self._log_stats()
+
+    def metrics(self, device=None):
+        """{"uptime", "devices": {id: DeviceWorker.metrics()}}: what every hosted device (or just `device`) has passed"""
+        workers = [self._worker({"device": device})] if device is not None else list(self.workers.values())
+        return {"uptime": time.monotonic() - self.started, "devices": {w.id: w.metrics() for w in workers}}
+
+    def _log_stats(self):
+        """One line per streaming device: the rate published since the last line, subscribers, what was lost"""
+        now = time.monotonic()
+        elapsed, self._stats_at = now - self._stats_at, now
+        last, self._stats_last = self._stats_last, {}
+        for w in list(self.workers.values()):
+            m = self._stats_last[w.id] = w.metrics()
+            if not m["streaming"]:
+                continue
+            before = last.get(w.id, {"rx": {"samples": 0, "bytes": 0}, "device": None})
+            rate = (m["rx"]["samples"] - before["rx"]["samples"]) / elapsed
+            mbit = (m["rx"]["bytes"] - before["rx"]["bytes"]) * 8 / elapsed / 1e6
+            dev, old = m["device"] or {}, before["device"] or {}
+            lost = {k: dev.get(k, 0) - old.get(k, 0) for k in ("dropped", "missing")}
+            self.log.info("%s: %.2f MS/s published (%.1f Mbit/s on the socket) to %d socket + %d shm subscriber(s); "
+                          "device dropped %d, missed %d%s", w.id, rate / 1e6, mbit, m["rx"]["socket_subscribers"],
+                          m["rx"]["shm_subscribers"], max(0, lost["dropped"]), max(0, lost["missing"]),
+                          f"; {m['tx']['refused']} TX blocks refused" if m["tx"]["refused"] else "")
 
     # --- attached radios --- #
     @staticmethod
@@ -1005,6 +1087,8 @@ class Server:
         op = msg.get("op")
         if op == "hello":
             return {"version": protocol.VERSION, "lease": self.lease, "types": self.types()}
+        if op == "metrics":
+            return self.metrics(msg.get("device"))
         if op == "list":
             return {"types": self.types(), "devices": [w.status() for w in self.workers.values()],
                     "available": self.available()}

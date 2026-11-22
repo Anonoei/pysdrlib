@@ -119,6 +119,10 @@ class Client:
         `hosted` (the id of the device that has it open, or None)"""
         return self._c2.request("list").get("available", [])
 
+    def metrics(self, device=None):
+        """What the server's devices (or the one with id `device`) have passed since hosted: see `Server.metrics`"""
+        return self._c2.request("metrics", device=device)
+
     def candidates(self, device=None, serial=None, label=None, need=None, want=None):
         """The server's radios that fit the request, best first, without opening any (see `Server.candidates`); raises
         `err.NoDevice` saying why when none do"""

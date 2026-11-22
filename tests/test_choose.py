@@ -113,7 +113,7 @@ def test_strings_from_a_command_line_are_understood():
 def test_the_cli_parses_a_span_and_a_flag():
     from pysdrlib.remote import cli
     assert cli._need("freq=430e6:440e6") == ("freq", [430e6, 440e6])
-    assert cli._need("tx=true") == ("tx", "true")
+    assert cli._need("tx=true") == ("tx", True)   # a flag is a bool (choose.normalize takes either)
     assert choose.normalize(dict([cli._need("freq=430e6:440e6"), cli._need("tx=true")])) == {"freq": [430e6, 440e6], "tx": True}
 
 

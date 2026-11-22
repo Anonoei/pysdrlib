@@ -415,6 +415,65 @@ class TestCli:
         with pytest.raises(SystemExit, match="unknown format"):
             cli(["client", server.endpoint, "rx", "sim", "-n", "10", "-f", "cx99", "-o", str(raw)])
 
+    def test_open_arguments(self, tmp_path, capsys):
+        """--arg (client) and --open TYPE:KEY=VALUE (server) reach the device's open(): here a recording"""
+        from pysdrlib.remote import cli as rcli
+        assert rcli._open_spec("file:path=/x/cap.sigmf, loop=true,rate=2e6") == \
+            ("file", {"path": "/x/cap.sigmf", "loop": True, "rate": 2e6})
+        assert rcli._open_spec("sim") == ("sim", {})
+        rec = tmp_path / "rec.sigmf"
+        with pysdrlib.FileSink(rec, "cf32", rate=1e6, freq=144e6) as out:
+            out.write(np.full(10_000, 0.5, np.complex64))
+        with Server("tcp://127.0.0.1:0", devices=["file"], lease=0) as s:
+            out = tmp_path / "copy.sigmf"
+            cli(["client", s.endpoint, "rx", "file", "--arg", f"path={rec}", "--arg", "loop=true", "-n", "25000",
+                 "-o", str(out)])
+            assert "cf=144,000,000" in capsys.readouterr().out
+            f = pysdrlib.File(out)
+            assert f.max_samp == 25_000 and f.freq == 144e6 and f.rate == 1e6
+            dtype, kwargs = rcli._open_spec(f"file:path={rec},loop=false")
+            worker, _ = s.open_device(dtype, kwargs=kwargs)
+            assert worker.device.loop is False and worker.device.length == 10_000
+
+    def test_stats(self, server, capsys):
+        dev = pysdrlib.device("remote", server.endpoint, "sim", transport="zmq", program="stats test")
+        dev.open()
+        try:
+            dev.initialize(cf=100e6, Fs=1e6)
+            dev.start_rx()
+            dev.read(50_000, timeout=5)
+            with Client(server.endpoint) as c:
+                m = c.metrics()["devices"][dev.id]
+                assert c.metrics(dev.id)["devices"].keys() == {dev.id}
+            assert m["streaming"] and m["controlled"] and m["program"] == "stats test"
+            assert m["rx"]["samples"] >= 50_000 and m["rx"]["bytes"] > 50_000 * 2 and m["rx"]["socket_subscribers"] == 1
+            assert m["device"]["samples"] >= m["rx"]["samples"] and m["device"]["dropped"] == 0
+            assert m["control"]["calls"] >= 3 and m["control"]["errors"] == 0
+            cli(["client", server.endpoint, "stats"])
+            out = capsys.readouterr().out
+            assert f"{dev.id} (sim, controlled by stats test, streaming" in out and "subscribers: 1 socket" in out
+            cli(["client", server.endpoint, "stats", dev.id, "--json"])
+            assert '"rx_samples"' not in capsys.readouterr().out   # the shaped metrics, not the raw counters
+            dev.stop_rx()
+        finally:
+            dev.close()
+        with pytest.raises(SystemExit, match="no hosted device"):
+            cli(["client", server.endpoint, "stats", "sim-99"])
+
+    def test_the_server_logs_stats(self, caplog):
+        import logging
+        with Server("tcp://127.0.0.1:0", devices=["sim"], lease=0, stats_interval=0.2) as s:
+            dev = pysdrlib.device("remote", s.endpoint, "sim")
+            dev.open()
+            dev.initialize(cf=100e6, Fs=1e6)
+            dev.start_rx()
+            with caplog.at_level(logging.INFO, logger="pysdrlib.remote.server"):
+                t = time.monotonic()
+                while time.monotonic() - t < 0.6:
+                    dev.read(10_000, timeout=5)
+            dev.close()
+        assert any("MS/s published" in r.getMessage() and "shm subscriber" in r.getMessage() for r in caplog.records)
+
     def test_errors_are_one_line(self, server):
         with pytest.raises(SystemExit, match="no hosted device"):
             cli(["client", server.endpoint, "info", "sim-42"])
