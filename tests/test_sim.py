@@ -503,3 +503,53 @@ class TestLost:
         with pytest.raises(err.StreamStalled) as e:
             live.read(4096, timeout=2.0)
         assert not isinstance(e.value, err.Lost)
+
+
+class TestFindGain:
+    """find_gain on a sim whose signal scales with gain (gain_ref) and clips at full scale"""
+
+    def make(self, **kwargs):
+        dev = Sim(realtime=True, block_samples=4096, tones=[(125_000, -20)], gain_ref=32, **kwargs)
+        dev.open()
+        dev.initialize(cf=100e6, Fs=1e6)
+        return dev
+
+    @staticmethod
+    def clip_db(level_db, ref=32):
+        """total gain at which a tone at `level_db` dBFS (at `ref` dB of gain) reaches full scale in I or Q (0 dBFS)"""
+        return ref - level_db
+
+    def test_finds_the_highest_gain_that_does_not_clip(self):
+        dev = self.make()
+        span = dev.caps.gain_range("rx")
+        f = dev.find_gain(count=8192, resolution=0.005)
+        limit = (self.clip_db(-20) - span.lo) / (span.hi - span.lo)   # 52 dB
+        assert f == dev.get_rx_gain() and limit - 0.03 <= f <= limit + 0.005
+        assert not dev.state["rx"]   # stopped again
+        dev.start_rx()
+        x = dev.read(8192, timeout=1.0)
+        assert 0.7 < np.abs(x.real).max() < 0.98   # within a gain step or two of full scale
+        dev.close()
+
+    def test_headroom(self):
+        dev = self.make()
+        dev.find_gain(count=8192)
+        top = dev.get_rx_gain_db()
+        dev.find_gain(count=8192, headroom_db=6)
+        assert dev.get_rx_gain_db() == pytest.approx(top - 6, abs=1.5)
+        dev.close()
+
+    def test_weak_signal_gets_full_gain(self):
+        dev = Sim(realtime=True, block_samples=4096, tones=[(125_000, -110)], gain_ref=32)
+        dev.open()
+        dev.initialize(cf=100e6, Fs=1e6)
+        assert dev.find_gain(count=4096) == 1.0
+        dev.close()
+
+    def test_two_channels_each_their_own(self):
+        dev = self.make(channels=2, channel_db=[0, -10])   # channel 1 is 10 dB weaker: 10 dB more gain
+        found = dev.find_gain(channel=[0, 1], count=8192, resolution=0.005)
+        span = dev.caps.gain_range("rx")
+        assert (found[1] - found[0]) * (span.hi - span.lo) == pytest.approx(10, abs=2)
+        assert dev.get_rx_gain(channel=1) == found[1]
+        dev.close()

@@ -49,7 +49,8 @@ class Sim(NativeDevice):
     MAX_BUFFER_SAMPLES = 2**24
 
     def __init__(self, realtime=True, block_samples=BLOCK_SAMPLES, tone=None, sample_format=convert.INT8, channels=1,
-                 transmit=False, *, tones=None, noise=None, bursts=None, gain_ref=None, retune_delay=0.0, seed=None):
+                 transmit=False, *, tones=None, noise=None, bursts=None, gain_ref=None, retune_delay=0.0, seed=None,
+                 channel_db=None):
         """
         realtime: pace delivery to the sample rate. False delivers as fast as the host allows.
         block_samples: complex samples per callback.
@@ -65,6 +66,7 @@ class Sim(NativeDevice):
             ADC clips at full scale. None: the gain doesn't change the signal
         retune_delay: seconds of samples after `set_rx_freq` before the new frequency shows in the signal
         seed: of the noise and burst symbols
+        channel_db: dB added to the built signal of each channel (a list, one per channel): channels of different strength
         """
         self.channels = int(channels)
         self.transmit = bool(transmit)
@@ -80,7 +82,8 @@ class Sim(NativeDevice):
         self._thread = None
         self._stamp = False     # stamp the next block with the time (RxMeta.hw_time)
         self._stop = threading.Event()
-        self._gain = {n.lower(): s.default for n, s in self.CAPS.gains["rx"].items()}
+        self._gains = [{n.lower(): s.default for n, s in self.CAPS.gains["rx"].items()} for _ in range(self.channels)]
+        self.channel_db = list(channel_db) if channel_db is not None else [0.0] * self.channels
         self.tones = [self._part(t) for t in (tones or ())]
         self.noise = noise
         self.bursts = [self._part(b) for b in (bursts or ())]
@@ -166,7 +169,8 @@ class Sim(NativeDevice):
 
     @property
     def _synthetic(self):
-        return bool(self.tones or self.bursts or self.noise is not None or self.gain_ref is not None)
+        return bool(self.tones or self.bursts or self.noise is not None or self.gain_ref is not None
+                    or any(self.channel_db))
 
     def _center(self, index):
         """The frequency the signal is at, at sample `index` (a delayed retune switches there)"""
@@ -178,8 +182,21 @@ class Sim(NativeDevice):
     def _offset(self, part, cf):
         return part["offset"] if "offset" in part else part["freq"] - cf
 
+    @property
+    def _gain(self):   # channel 0's stages
+        return self._gains[0]
+
+    def _received(self, x, ch):
+        """Channel `ch`'s samples of the built signal `x`: turned by ch*90 degrees, scaled by its gain, clipped as an ADC
+        would"""
+        scale = 10 ** (self.channel_db[ch] / 20) * np.exp(0.5j * np.pi * ch)
+        if self.gain_ref is not None:
+            scale *= 10 ** ((sum(self._gains[ch].values()) - self.gain_ref) / 20)
+        out = x * scale
+        return (np.clip(out.real, -1, 1) + 1j * np.clip(out.imag, -1, 1)).astype(np.complex64)
+
     def _synth(self, first, n):
-        """`n` complex64 samples of the built signal from sample `first` (channel 0), clipped as an ADC would"""
+        """`n` samples of the built signal from sample `first`, before gain and the ADC"""
         pending = self._pending_cf
         if pending is not None and first < pending[0] < first + n:   # a retune lands inside: two pieces
             cut = pending[0] - first
@@ -205,9 +222,7 @@ class Sim(NativeDevice):
         if self.noise is not None:
             sigma = np.sqrt(10 ** (self.noise / 10) / 2)
             out += sigma * (self._rng.standard_normal(n) + 1j * self._rng.standard_normal(n))
-        if self.gain_ref is not None:
-            out *= 10 ** ((sum(self._gain.values()) - self.gain_ref) / 20)
-        return (np.clip(out.real, -1, 1) + 1j * np.clip(out.imag, -1, 1)).astype(np.complex64)
+        return out
 
     def _lose(self, count):
         if count > 0:
@@ -238,8 +253,7 @@ class Sim(NativeDevice):
             self._lose(sum(n for _, n in due))
         if self._synthetic:
             x = self._synth(self._produced, self.block_samples)
-            raws = {ch: self.SAMPLE_FORMAT.from_complex64((x * np.complex64(np.exp(0.5j * np.pi * ch))).astype(np.complex64))
-                    for ch in set(self._rx_channels)}
+            raws = {ch: self.SAMPLE_FORMAT.from_complex64(self._received(x, ch)) for ch in set(self._rx_channels)}
         else:
             raws = self._raws
         for slot, ch in enumerate(self._rx_channels):
@@ -336,10 +350,10 @@ class Sim(NativeDevice):
         else:
             if_gain = min(gain, stages["IF"].max)
             bb_gain = min(gain - if_gain, stages["BB"].max)
-        rtr["if"] = self.set_rx_if_gain(if_gain)
-        rtr["bb"] = self.set_rx_bb_gain(bb_gain)
+        rtr["if"] = self.set_rx_if_gain(if_gain, channel=channel)
+        rtr["bb"] = self.set_rx_bb_gain(bb_gain, channel=channel)
         return rtr
     def _set_rx_if_gain(self, gain, channel=0):
-        self._gain["if"] = gain
+        self._gains[channel]["if"] = gain
     def _set_rx_bb_gain(self, gain, channel=0):
-        self._gain["bb"] = gain
+        self._gains[channel]["bb"] = gain

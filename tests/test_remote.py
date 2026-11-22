@@ -927,3 +927,16 @@ class TestLatestAndLost:
     def test_hosted_status_has_health(self, server, dev):
         with Client(server.endpoint) as c:
             assert c.list()[0]["health"] == "ok"
+
+
+def test_find_gain_remotely(server):
+    d = pysdrlib.device("remote", server.endpoint, "sim", init_kwargs={"tones": [[125_000, -20]], "gain_ref": 32})
+    d.open()
+    try:
+        d.initialize(Fs=1e6)
+        span = d.caps.gain_range("rx")
+        f = d.find_gain(count=8192, timeout=2.0)
+        assert f * (span.hi - span.lo) + span.lo == pytest.approx(52, abs=3)   # a -20 dBFS tone at 32 dB clips above 52
+        assert d.get_rx_gain() == pytest.approx(f)
+    finally:
+        d.close()

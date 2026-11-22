@@ -28,6 +28,7 @@ import dataclasses
 import functools
 import itertools
 import time
+import warnings
 import weakref
 from typing import Any
 
@@ -807,6 +808,74 @@ class Device:
         finally:
             if started and self.state["rx"]:
                 self.stop_rx()
+    def find_gain(self, channel=0, count=65536, max_clip=1e-4, clip_level=0.98, headroom_db=0.0, resolution=0.01,
+                  timeout=None, skip=0):
+        """The highest receive gain at which the signal doesn't clip, found by bisecting the gain fraction (clipping only
+        grows with gain), and set:
+
+            sdr.find_gain()                        # -> 0.62: channel 0's gain fraction, now in effect
+            sdr.find_gain(channel=[0, 1])          # -> {0: 0.62, 1: 0.71}: each channel's, from aligned reads
+
+        At each step the gain is set (skipping its settling, `flush=True`), `skip` more samples are discarded, and
+        `count` are read; a block clips when more than `max_clip` of its samples have I or Q at `clip_level` of full
+        scale or beyond. headroom_db: then back off this much below the gain found. resolution: of the fraction.
+        Channels whose gain is one setting (`caps.shared["gain"]`) get the gain at which none clips.
+        The gain mode is set to "manual" (an AGC would undo it). Starts receiving if it wasn't, and stops it again.
+        The result holds while the signal stays as it was during the search"""
+        multi = not np.isscalar(channel)
+        channels = tuple(channel) if multi else (channel,)
+        if not 0 < resolution < 1:
+            raise ValueError(f"resolution is a fraction of the gain range, between 0 and 1, not {resolution}")
+        for ch in channels:
+            if self.get_rx_gain_mode(ch) != "manual":
+                self.set_rx_gain_mode("manual", ch)
+        joint = multi and self.caps.shared.get("gain", "channel") != "channel"
+        target = channels if multi else channel
+        started = not self.state["rx"]
+        if started:
+            self.start_rx(channels=channels if channels != (0,) else None)
+
+        def clipping(fractions):
+            for ch, f in fractions.items():
+                self.set_rx_gain(f, channel=ch, flush=True)
+            if skip:
+                self.read(int(skip), timeout=timeout, channel=target)
+            x = np.atleast_2d(self.read(int(count), timeout=timeout, channel=target))
+            over = ((np.abs(x.real) >= clip_level) | (np.abs(x.imag) >= clip_level)).mean(axis=1)
+            share = dict(zip(channels, over.tolist()))
+            return {ch: max(share.values()) for ch in channels} if joint else share
+
+        quiet = warnings.catch_warnings()   # gains between the device's steps round down: that's expected here
+        quiet.__enter__()
+        warnings.filterwarnings("ignore", message=".*gain must", category=warn._Warning)
+        try:
+            lo, hi = dict.fromkeys(channels, 0.0), dict.fromkeys(channels, 1.0)
+            share = clipping(hi)
+            for ch in channels:
+                if share[ch] <= max_clip:
+                    lo[ch] = 1.0   # doesn't clip even at the top
+            while any(hi[ch] - lo[ch] > resolution for ch in channels):
+                mid = {ch: (lo[ch] + hi[ch]) / 2 if hi[ch] - lo[ch] > resolution else lo[ch] for ch in channels}
+                share = clipping(mid)
+                for ch in channels:
+                    if hi[ch] - lo[ch] > resolution:
+                        (lo if share[ch] <= max_clip else hi)[ch] = mid[ch]
+            found = {}
+            for ch in channels:
+                if lo[ch] == 0.0 and hi[ch] <= resolution:
+                    self.log.warning("find_gain: channel %s clips even at the lowest gain", ch)
+                self.set_rx_gain(lo[ch], channel=ch, flush=True)
+                if headroom_db:
+                    floor = self.caps.gain_range(self._direction("rx", ch)).lo
+                    self.set_rx_gain_db(max(floor, self.get_rx_gain_db(channel=ch) - headroom_db), channel=ch,
+                                        flush=True)
+                found[ch] = self.get_rx_gain(channel=ch)
+        finally:
+            quiet.__exit__(None, None, None)
+            if started and self.state["rx"]:
+                self.stop_rx()
+        return found if multi else found[channel]
+
     def read_available(self, channel=0, count=None):
         """What is queued for a channel now (up to `count`), without waiting: (samples, index of the first). Stops at a
         gap, so the samples are contiguous; the next call's index shows the jump. For relaying a stream (the remote
