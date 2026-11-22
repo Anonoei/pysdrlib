@@ -412,6 +412,7 @@ class TestOnDrop:
 
     def test_raise_carries_the_block(self, live):
         live.read(4096, timeout=1.0)
+        live.flush()   # nothing queued ahead: the drop lands inside the next read, not past its end
         live.drop(5000, after=4096)
         with pytest.raises(err.Dropped) as e:
             live.read(16384, timeout=1.0, on_drop="raise")
@@ -420,6 +421,7 @@ class TestOnDrop:
 
     def test_default_returns_the_block(self, live):
         live.read(4096, timeout=1.0)
+        live.flush()
         live.drop(5000, after=4096)
         _, m = live.read(16384, timeout=1.0, meta=True)
         assert sum(n for _, n in m.gaps) == 5000
@@ -427,6 +429,7 @@ class TestOnDrop:
     def test_stream(self, live):
         with live.stream(16384, timeout=1.0, on_drop="raise") as s:
             s.read()
+            live.flush()
             live.drop(5000, after=4096)
             with pytest.raises(err.Dropped):
                 s.read()

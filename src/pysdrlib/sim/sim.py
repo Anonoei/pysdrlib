@@ -90,6 +90,7 @@ class Sim(NativeDevice):
         self._sim_cf = None         # the frequency the signal is at (None: the device's)
         self._pending_cf = None     # (sample index, frequency): a retune not yet showing
         self._pending_drop = []     # (sample index, count): drops still to happen
+        self._deliver_lock = threading.Lock()   # a block's delivery and its count are one step, as `drop` sees them
         self._stall_until = 0.0
         self.disconnected = False
         self._make_block()
@@ -133,7 +134,8 @@ class Sim(NativeDevice):
     def drop(self, count, after=0):
         """Lose `count` samples (of every channel), as a radio's overflow: readers see a gap. after: once this many more
         samples are delivered (rounded up to a whole block), so a drop can land inside a read"""
-        self._pending_drop.append((self._produced + int(after), int(count)))
+        with self._deliver_lock:
+            self._pending_drop.append((self._produced + int(after), int(count)))
 
     def stall(self, seconds=None):
         """Stop delivering, for `seconds` (None: until `resume`). The samples the radio would have delivered meanwhile
@@ -152,7 +154,7 @@ class Sim(NativeDevice):
         self.stall()
 
     def _rx_lost(self):
-        return "disconnected (Sim.disconnect)" if self.disconnected else None
+        return "disconnected (Sim.disconnect): close it, and open it again" if self.disconnected else None
 
     @property
     def stalled(self):
@@ -274,6 +276,10 @@ class Sim(NativeDevice):
 
     def _deliver(self):
         """What a driver's streaming thread does with a transfer: every channel's block, each to its slot"""
+        with self._deliver_lock:
+            self._deliver_block()
+
+    def _deliver_block(self):
         if self._stamp:   # a radio with a clock (as a USRP): its time of the stream's first sample
             self._stamp = False
             now = time.time()
@@ -301,7 +307,8 @@ class Sim(NativeDevice):
                 while self.stalled and not self._stop.is_set():
                     self._stop.wait(min(0.01, max(0.0, self._stall_until - time.monotonic())))
                 if self.realtime:   # what the radio produced meanwhile overflowed it
-                    self._lose(int((time.perf_counter() - began) * self._Fs))
+                    with self._deliver_lock:
+                        self._lose(int((time.perf_counter() - began) * self._Fs))
                 next_t = time.perf_counter()
                 continue
             self._deliver()
