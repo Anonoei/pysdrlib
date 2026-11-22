@@ -20,8 +20,8 @@ from pysdrlib.base.native import NativeDevice
 def test_ls_finds_drivers_by_their_device_line():
     names = devices.ls()
     assert names == sorted(names)
-    assert {"hackrf", "rtl_sdr", "uhd", "extio", "sim"} <= set(names)
-    assert not {"base", "file", "remote", "bladerf"} & set(names)   # not drivers (or a stub with no Device yet)
+    assert {"hackrf", "rtl_sdr", "uhd", "extio", "sim", "bladerf"} <= set(names)
+    assert not {"base", "file", "remote"} & set(names)   # not drivers
     assert not [n for n in names if n.startswith("_")]
 
 def test_get_unknown_driver_names_the_ones_there_are():

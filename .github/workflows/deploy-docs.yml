@@ -20,19 +20,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: Deploy
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    permissions:
-      pages: write      # to deploy to Pages
-      id-token: write   # to verify the deployment originates from an appropriate source
-      contents: write
-    concurrency:
-      group: ${{ github.workflow }}-${{ github.ref }}
-
+  # Build and deploy are separate jobs so a failed deploy can be re-run alone: re-running a job that uploads the
+  # "github-pages" artifact adds a second one to the run, and deploy-pages refuses to choose between two.
+  build:
+    name: Build
+    runs-on: ubuntu-latest      # permissions: the workflow's (configure-pages reads the Pages settings)
     steps:
       - name: Checkout repo
         uses: actions/checkout@v6
@@ -67,6 +59,18 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: './docs/pysdrlib'
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write      # to deploy to Pages
+      id-token: write   # to verify the deployment originates from an appropriate source
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

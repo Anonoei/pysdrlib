@@ -63,17 +63,19 @@ TX_CHUNK = 16384   # samples a multi-channel write queues per channel at a time 
 def _stage_setter(cls, direction, stage, spec, name):
     hook = f"_set_{direction.lower()}_{stage.lower()}_gain"
 
-    def setter(self, gain=None):
+    def setter(self, gain=None, channel=0):
         apply = getattr(self, hook, None)
         if apply is None:
             raise NotImplementedError(f"{type(self).__name__} declares a {direction} {stage} gain stage but has no {hook}")
-        return self._set_gain_stage(direction, stage, gain, apply)
+        self._ensure_open(name)
+        self._check_channel(direction.lower(), channel)
+        return self._set_gain_stage(direction, stage, gain, apply, channel)
 
     steps = f" in {spec.step} dB steps" if spec.step else ""
     default = f" (default {spec.default})" if spec.default is not None else ""
     setter.__name__ = name
     setter.__qualname__ = f"{cls.__qualname__}.{name}"
-    setter.__doc__ = f"{direction} {stage} gain [dB], {spec.min}-{spec.max}{steps}{default}. None: the default. Returns the gain set"
+    setter.__doc__ = f"{direction} {stage} gain [dB], {spec.min}-{spec.max}{steps}{default}. None: the default. `channel`: which channel's. Returns the gain set"
     setter._generated = True   # type: ignore[attr-defined]
     return setter
 

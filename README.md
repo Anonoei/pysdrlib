@@ -22,8 +22,8 @@ For a more robust C implementation with far more hardware, use [SoapySDR](https:
 | [USRP B210 (UHD)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/uhd) | `uhd` | 2 RX and 2 TX channels |
 | [USRP X310, X410 (UHD)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/uhd#x310-and-x410) | `x310`, `x410` | Experimental, untested on hardware; on a network (`find(addresses=...)`), needs a system libuhd |
 | [RX-888 (ExtIO)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/extio) | `extio` | |
+| [BladeRF 2.0 micro](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/bladerf) | `bladerf` | 2 RX and 2 TX channels; tested on a 2.0 micro xA4 (receive), transmit checked for plumbing only |
 | [TCP IQ stream](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/tcpiq) | `tcpiq` | Receive raw I/Q over TCP, as the client (`host=`, `port=`) or the server (`listen=True`); not listed by `find()` |
-| [BladeRF](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/bladerf) | `bladerf` | Planned |
 
 Also: `sim`, a simulated radio that needs no hardware, and `file`, which plays a recording back as a radio
 (see [Sample files](#sample-files)).
@@ -180,7 +180,7 @@ authentication or encryption, so only serve a network you trust. See the
 and wire formats.
 
 ## Building from source
-Each driver needs its vendor's library (libhackrf, libuhd...).
+Each driver needs its vendor's library (libhackrf, libuhd, libbladeRF...).
 Use the one your package manager has, or build the copy that
 comes with pysdrlib:
 
@@ -195,9 +195,9 @@ Building needs `cmake`, a C++17 compiler, `pkg-config` and the development files
 is built out of the source tree into a per-user cache.
 Tests for a device whose library isn't there are skipped.
 
-Prebuilt `librtlsdr` / `libhackrf` / `libextio_sdcc` / `libuhd` packages can be installed instead of building them.
+Prebuilt `librtlsdr` / `libhackrf` / `libextio_sdcc` / `libuhd` / `libbladeRF` packages can be installed instead of building them.
 
-Install the build tools and `libusb`, plus **fftw** for the RX-888 or **boost** for UHD:
+Install the build tools and `libusb`, plus **fftw** for the RX-888, **boost** for UHD or `patch` for the bladeRF:
 
 | System | Command |
 | --- | --- |
