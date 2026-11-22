@@ -47,6 +47,7 @@ nav = [
   ] },
   { "Contributing" = "contributing.md" },
   { "Roadmap" = "roadmap.md" },
+  { "Changelog" = "changelog.md" },
 ]
 
 [project.theme]

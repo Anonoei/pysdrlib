@@ -55,4 +55,4 @@ sdr.close()
 - [Sample files](https://anonoei.github.io/pysdrlib/guide/files/): raw formats, SigMF, a recording played back as a radio
 - [Remote radios](https://anonoei.github.io/pysdrlib/guide/remote/): use a radio on another machine, or share one between programs
 - [Drivers of your own](https://anonoei.github.io/pysdrlib/guide/custom-drivers/): a new radio without changing pysdrlib
-- [Contributing](https://anonoei.github.io/pysdrlib/contributing/), [Roadmap](https://anonoei.github.io/pysdrlib/roadmap/)
+- [Contributing](https://anonoei.github.io/pysdrlib/contributing/), [Roadmap](https://anonoei.github.io/pysdrlib/roadmap/), [Changelog](https://anonoei.github.io/pysdrlib/changelog/)

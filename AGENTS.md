@@ -87,6 +87,8 @@ python examples/quickstart.py     # every example runs on the simulated radio
   - concepts and reference live in docstrings, which are the API pages
   - how-to lives in `docs/guide/*.md`, which embed `examples/*.py` (tested by `tests/test_examples.py`)
   - orientation lives here
+  - what changed per release lives in `CHANGELOG.md` (the site's Changelog page): add a line under the unreleased
+    version for anything a user would notice, breaking changes first
 - Other sessions may edit the same working tree: don't commit or revert changes you didn't make.
 
 ## Where to read more
