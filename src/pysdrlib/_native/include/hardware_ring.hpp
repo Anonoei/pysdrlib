@@ -47,6 +47,8 @@ struct RingStats {
     uint64_t skipped = 0;      // lost before the ring (skip()) since reset_stats()
     uint64_t dropped = 0;      // discarded because the consumer fell behind
     uint64_t pending = 0;      // waiting to be read
+    uint64_t reading = 0;      // claimed by a read still copying them out: their slots can't be written yet, so a
+                               // producer that must not lose any waits for pending + reading <= capacity - its write
     uint64_t max_chunk = 0;    // samples in the largest write
     uint64_t calls = 0;        // writes
     double busy = 0;           // seconds spent in them (including converting, for the receive path)
@@ -251,6 +253,7 @@ public:
         s.skipped = skipped_;
         s.dropped = dropped_;
         s.pending = pending_;
+        s.reading = copying_ ? written_ - copy_from_ - pending_ : 0;
         s.max_chunk = max_chunk_;
         s.calls = calls_;
         s.busy = busy_;

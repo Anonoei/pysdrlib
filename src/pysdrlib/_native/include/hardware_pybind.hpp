@@ -187,6 +187,7 @@ py::class_<Device> bind_device(py::module_& m, const char* name) {
             out["skipped"] = s.skipped;
             out["dropped"] = s.dropped;
             out["pending"] = s.pending;
+            out["reading"] = s.reading;
             out["max_chunk"] = s.max_chunk;
             out["calls"] = s.calls;
             out["busy"] = s.busy;

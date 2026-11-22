@@ -227,10 +227,13 @@ class Replay(NativeDevice):
             if x is None:
                 self._stop.wait(0.05)
                 continue
-            if not self.realtime:   # as fast as it is read: wait for room, rather than drop the oldest
+            if not self.realtime:   # as fast as it is read: wait for room, rather than lose any
                 room = self._queue_samples() - len(x)
-                while self.device.rx_stats()["pending"] > room and not self._stop.wait(0.001):
-                    pass
+                while not self._stop.is_set():   # samples a read is still copying out hold their slots too
+                    s = self.device.rx_stats()
+                    if s["pending"] + s["reading"] <= room:
+                        break
+                    self._stop.wait(0.001)
             self.device._dispatch_rx(x.view(np.float32), None, 0)
             total += len(x)
             if self.realtime:
