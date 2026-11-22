@@ -77,6 +77,7 @@ class DeviceWorker:
         self.device = device
         self.log = logger.new(f"remote.worker.{dev_id}")
         self.lock = threading.RLock()           # serializes calls into the device
+        self.health = "ok"                      # of its receive stream: "ok", "stalled", "lost" or "failing" (in `list`)
         self._owner_lock = threading.Lock()     # guards who controls it (never held while calling the device)
         self._last_status = None                # what `status` last saw, shown while the device is busy
         self.token = None                       # controller token, None if uncontrolled
@@ -205,7 +206,8 @@ class DeviceWorker:
     def status(self):
         """What `list` shows clients: id, type, name, state, frequency, sample rate, wire format and whether it is controlled.
         While a call into the device is under way (a slow stop_rx...), the last status seen, with `busy` set"""
-        owner = {"controlled": self.token is not None, "program": self.program, "need": self.need, "want": self.want}
+        owner = {"controlled": self.token is not None, "program": self.program, "need": self.need, "want": self.want,
+                 "health": self.health}
         if not self.lock.acquire(timeout=STATUS_WAIT):
             last = self._last_status or {   # never seen yet: what can be read without the device (its cached settings)
                 "id": self.id, "type": self.type, "name": type(self.device).NAME, "state": dict(self.device.state),
@@ -357,13 +359,17 @@ class DeviceWorker:
                 stalled = False
                 broken = False
                 failed = False
+                if any(len(x) for _, x, _ in reads):
+                    self.health = "ok"
             except err.StreamStalled as exc:
+                self.health = "lost" if isinstance(exc, err.Lost) else "stalled"
                 if not stalled:
                     self.log.warning("%s", exc)
                     stalled = True
             except Exception:
                 if not self._stop.is_set() and self.streaming.is_set() and self.device.state.get("rx") and not broken:
                     broken = True
+                    self.health = "failing"
                     self.log.exception("%s: reading the device failed (disconnected? retrying)", self.id)
             if failed:
                 time.sleep(IDLE_SLEEP)

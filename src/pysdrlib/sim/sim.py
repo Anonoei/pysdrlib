@@ -21,6 +21,7 @@ For testing what reads it, the signal can instead be built from parts, and the s
               retune_delay=0.05)    # a new frequency shows 50 ms of samples after set_rx_freq (stale samples in between)
     sdr.drop(10_000)                # lose samples, as a radio's overflow: readers see a gap
     sdr.stall(2.0); sdr.resume()    # stop delivering (for 2 s, or until resume()); what would have come is lost
+    sdr.disconnect()                # unplugged: once what is queued is read, read raises err.Lost
 """
 import threading
 import time
@@ -91,6 +92,7 @@ class Sim(NativeDevice):
         self._pending_cf = None     # (sample index, frequency): a retune not yet showing
         self._pending_drop = []     # (sample index, count): drops still to happen
         self._stall_until = 0.0
+        self.disconnected = False
         self._make_block()
 
     # --- simulation interface --- #
@@ -113,7 +115,17 @@ class Sim(NativeDevice):
 
     def resume(self):
         """End a `stall`"""
-        self._stall_until = 0.0
+        if not self.disconnected:
+            self._stall_until = 0.0
+
+    def disconnect(self):
+        """As if the radio were unplugged: it stops delivering for good, and once what is queued has been read, `read`
+        raises err.Lost"""
+        self.disconnected = True
+        self.stall()
+
+    def _rx_lost(self):
+        return "disconnected (Sim.disconnect)" if self.disconnected else None
 
     @property
     def stalled(self):

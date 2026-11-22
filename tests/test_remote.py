@@ -873,3 +873,57 @@ def test_a_recording_is_served_like_a_radio(tmp_path):
     assert m.index == 0 and m.freq == 100e6
     assert [(e.offset, e.value) for e in m.events] == [(20_000, 101e6)]
     assert np.allclose(x[:20_000], 0.25) and np.allclose(x[20_000:], 0.5)
+
+
+class TestLatestAndLost:
+    """read(latest=True) and a lost or stalled server-side radio, seen from a client"""
+
+    def test_latest(self, dev):
+        dev.initialize(Fs=1e6)
+        dev.start_rx()
+        dev.read(4096, timeout=2.0)
+        time.sleep(0.3)
+        _, m = dev.read(4096, timeout=2.0, meta=True, latest=True)
+        assert m.discarded > 100_000
+        dev.stop_rx()
+
+    def test_radio_lost_on_the_server(self, server, dev):
+        dev.initialize(Fs=1e6)
+        dev.start_rx()
+        dev.read(4096, timeout=2.0)
+        dev.stall_timeout = 0.3
+        server.workers[dev.id].device.disconnect()
+        with pytest.raises(err.Lost, match="gone"):
+            dev.read(10_000_000, timeout=10.0)
+
+    def test_radio_stalled_on_the_server(self, server, dev):
+        dev.initialize(Fs=1e6)
+        dev.start_rx()
+        dev.read(4096, timeout=2.0)
+        dev.stall_timeout = 0.3
+        server.workers[dev.id].device.stall()
+        with pytest.raises(err.StreamStalled, match="stopped delivering") as e:
+            dev.read(10_000_000, timeout=10.0)
+        assert not isinstance(e.value, err.Lost)
+
+    def test_server_gone(self):
+        s = Server("tcp://127.0.0.1:0", devices=["sim"], lease=0).start()
+        d = pysdrlib.device("remote", s.endpoint, "sim", timeout=1.0)
+        d.open()
+        d.initialize(Fs=1e6)
+        d.start_rx()
+        d.read(4096, timeout=2.0)
+        d.stall_timeout = 0.3
+        s.stop()
+        t = time.monotonic()
+        with pytest.raises(err.Lost, match="answer|no longer hosts"):
+            d.read(10_000_000)   # no timeout: it would wait forever
+        assert time.monotonic() - t < 5.0
+        try:
+            d.close()
+        except (TimeoutError, err._Error):
+            pass
+
+    def test_hosted_status_has_health(self, server, dev):
+        with Client(server.endpoint) as c:
+            assert c.list()[0]["health"] == "ok"

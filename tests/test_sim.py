@@ -435,3 +435,71 @@ class TestOnDrop:
         live.set_rx_freq = retune
         with pytest.raises(err.Dropped):
             list(live.sweep([100e6], count=16384, timeout=1.0, on_drop="raise"))
+
+
+class TestLatest:
+    """read(latest=True): the newest block at the current settings"""
+
+    @pytest.fixture
+    def live(self):
+        dev = Sim(realtime=True, block_samples=4096, tones=[{"freq": 100.2e6, "level": -6}])
+        dev.open()
+        dev.initialize(cf=100e6, Fs=1e6)
+        dev.start_rx()
+        yield dev
+        dev.close()
+
+    def test_skips_the_backlog(self, live):
+        live.read(4096, timeout=1.0)
+        time.sleep(0.2)
+        _, m = live.read(4096, timeout=1.0, meta=True, latest=True)
+        assert m.discarded > 150_000 and not m.gaps
+        total, _ = live._rx_position()
+        assert total - (m.index + 4096) <= 3 * 4096   # what came in while it was read, at most
+
+    def test_skips_what_came_before_a_retune(self, live):
+        live.read(4096, timeout=1.0)
+        time.sleep(0.05)
+        live.set_rx_freq(100.1e6)   # no flush: the queue still holds samples at 100 MHz
+        x, m = live.read(8192, timeout=1.0, meta=True, latest=True)
+        assert m.freq == 100.1e6 and not m.events
+        assert tone_hz(x, 1e6) == pytest.approx(100_000, abs=300)
+
+    def test_stream(self, live):
+        with live.stream(4096, timeout=1.0, meta=True, latest=True) as s:
+            s.read()
+            time.sleep(0.1)
+            _, m = s.read()
+            assert m.discarded > 50_000
+
+
+class TestLost:
+    @pytest.fixture
+    def live(self):
+        dev = Sim(realtime=True, block_samples=4096)
+        dev.open()
+        dev.initialize(cf=100e6, Fs=1e6)
+        dev.start_rx()
+        yield dev
+        dev.close()
+
+    def test_disconnect_raises_lost_once_drained(self, live):
+        live.read(4096, timeout=1.0)
+        time.sleep(0.05)
+        live.disconnect()
+        live.read(8192, timeout=1.0)   # what was queued is still read
+        t = time.monotonic()
+        with pytest.raises(err.Lost):
+            live.read(1_000_000, timeout=5.0)
+        assert time.monotonic() - t < 1.0   # at once, not after the stall timeout
+        live.resume()
+        assert live.stalled   # unplugged stays unplugged
+
+    def test_a_stall_is_not_lost(self, live):
+        live.stall_timeout = 0.2
+        live.read(4096, timeout=1.0)
+        live.stall()
+        live.flush()
+        with pytest.raises(err.StreamStalled) as e:
+            live.read(4096, timeout=2.0)
+        assert not isinstance(e.value, err.Lost)

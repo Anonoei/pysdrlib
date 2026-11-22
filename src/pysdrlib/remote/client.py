@@ -35,6 +35,8 @@ from . import shm
 
 DEFAULT_TIMEOUT = 5.0
 PULL_LIMIT = 256   # blocks taken from the socket per call (its receive high-water mark)
+STALL_TIMEOUT = 2.0   # seconds without samples before `read` asks the server why (RemoteDevice.stall_timeout)
+PROBE_TIMEOUT = 2.0   # seconds to wait for its answer before the server counts as gone
 
 
 def _rx_synced(method):
@@ -213,6 +215,9 @@ class RemoteDevice(Device):
         self._changes_seen = set()  # `seq` of the stream changes applied (see `_apply_change`)
         self._rx_last = {}          # channel -> index after the last sample received
         self._rx_time = None        # time.monotonic() of the last block
+        self._idle_since = None     # time.monotonic() a read first found nothing, with no block yet (see `_rx_idle`)
+        self._probed = 0.0          # time.monotonic() the server was last asked how the device is
+        self.stall_timeout = STALL_TIMEOUT   # seconds without samples before `read` asks the server why; None: never
         self._tx = None             # PUSH socket for TX blocks (the controller's)
         self._tx_seq = 0
         self._beat = None
@@ -579,10 +584,45 @@ class RemoteDevice(Device):
     def _drop_received(self):
         if self._sub is not None:
             self._pull(0)
+        self._rx_time = self._idle_since = None
         self._bufs.clear()
         self._stream_restarted()
         self._close_rings()   # the old stream's; the new one has rings of its own
         self._from_start = self.is_controller
+
+    def _rx_idle(self):
+        """Nothing has arrived for `stall_timeout` seconds: ask the server (at most once per `stall_timeout`) whether
+        it is there and how its device is. err.Lost when it doesn't answer, no longer hosts the device or the device
+        is gone or failing; err.StreamStalled when the device stopped delivering"""
+        if self.stall_timeout is None:
+            return
+        now = time.monotonic()
+        last = self._rx_time if self._rx_time is not None else self._idle_since
+        if last is None:
+            self._idle_since = now
+            return
+        if now - last < self.stall_timeout or now - self._probed < self.stall_timeout:
+            return
+        self._probed = now
+        try:
+            ch = _Channel(self.address, min(self.timeout, PROBE_TIMEOUT))
+            try:
+                hosted = {d["id"]: d for d in ch.request("list")["devices"]}
+            finally:
+                ch.close()
+        except (TimeoutError, zmq.ZMQError) as e:
+            raise err.Lost(f"{self.id}: no samples for {now - last:.1f}s, and the server at {self.address} doesn't "
+                           f"answer ({e})") from None
+        status = hosted.get(self.id)
+        if status is None:
+            raise err.Lost(f"{self.id}: the server at {self.address} no longer hosts it")
+        health = status.get("health", "ok")
+        if health in ("lost", "failing"):
+            raise err.Lost(f"{self.id}: the server's device is {'gone' if health == 'lost' else 'failing'}")
+        if health == "stalled":
+            raise err.StreamStalled(f"{self.id}: the server's device stopped delivering samples")
+        if not status.get("state", {}).get("rx"):
+            raise err.NotStreaming(f"{self.id} isn't receiving on the server (its controller stopped it)")
 
     @_rx_synced
     def _rx_wait(self, count, timeout, slot=0):

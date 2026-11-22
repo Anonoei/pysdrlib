@@ -685,15 +685,21 @@ class Device:
         return self.caps.json()
 
     # ------------------------------------------------------------------ reading
-    def read(self, count, timeout=None, meta=False, channel=0, on_drop=None):
+    def read(self, count, timeout=None, meta=False, channel=0, on_drop=None, latest=False):
         """Exactly `count` samples (complex64), waiting for them. Raises err.Timeout after `timeout` seconds
         (None: wait as long as the device delivers; a stalled device raises err.StreamStalled).
         meta=True returns (samples, RxMeta): the first sample's index, where samples were lost, retunes...
         channel: one of `rx_channels`, or several (a sequence): then a (channels, count) array whose rows start at
         the same sample index (the same instant), and a list of RxMeta.
         on_drop="raise": raise err.Dropped if samples were lost inside this block (`RxMeta.gaps`), for a capture that
-        must be contiguous; the exception carries the block (`.samples`, `.meta`, `.lost`). None: return it anyway"""
+        must be contiguous; the exception carries the block (`.samples`, `.meta`, `.lost`). None: return it anyway.
+        latest=True: the newest `count` samples at the current settings, for a display: what is queued before them
+        is skipped, and so is everything from before the last change of a setting (a retune, a new rate or gain...) and
+        its settling (`caps.retune_settle`); if not enough has arrived since, wait for it. The skipped samples are
+        counted in `RxMeta.discarded`, not as gaps"""
         _check_on_drop(on_drop)
+        if latest:
+            self._skip_to_latest(int(count), (channel,) if np.isscalar(channel) else tuple(channel))
         if not np.isscalar(channel):
             out, metas = self._read_aligned(int(count), timeout, True, tuple(channel))
             _gap_check(on_drop, out, metas)
@@ -732,16 +738,17 @@ class Device:
         m = self._read_into(out, timeout, channel)
         _gap_check(on_drop, out, m)
         return (len(out), m) if meta else len(out)
-    def stream(self, count, timeout=None, meta=False, channel=0, flush=True, on_drop=None):
+    def stream(self, count, timeout=None, meta=False, channel=0, flush=True, on_drop=None, latest=False):
         """Blocks of `count` samples, in a `with` block that starts receiving (and stops it after) when it wasn't:
 
             with sdr.stream(65536) as s:
                 for x in s: ...
 
         flush: when already receiving, discard what was queued before the stream starts. on_drop: as `read`'s, for
-        each block (an err.Dropped ends a `for` loop over the stream; call `s.read()` in a loop to carry on past one)"""
+        each block (an err.Dropped ends a `for` loop over the stream; call `s.read()` in a loop to carry on past one).
+        latest: each block is the newest (see `read`), for a display that would rather skip than fall behind"""
         _check_on_drop(on_drop)
-        return RxStream(self, count, timeout, meta, channel, flush, on_drop)
+        return RxStream(self, count, timeout, meta, channel, flush, on_drop, latest)
     def sweep(self, start, stop=None, step=None, count=65536, timeout=None, meta=False, channel=0, repeat=False,
               offset=0.0, skip=0, on_drop=None, retries=3):
         """Step the receiver across frequencies, yielding (frequency, samples): `count` samples at each, all received
@@ -832,6 +839,26 @@ class Device:
         self._rx_discard = max(self._rx_discard, total)
         return n
 
+    def _skip_to_latest(self, count, channels):
+        """`read(latest=True)`: move the discard point up to the newest `count` samples, and past the last change of a
+        setting (and its settling) of any of `channels`"""
+        self._ensure_open("read")
+        if not self.state["rx"]:
+            return   # (the read says why)
+        slot = self._slot(channels[0])
+        self._rx_wait(0, 0.0, slot=slot)   # (a remote device takes what has arrived, changes too)
+        total, _ = self._rx_position(slot=slot)
+        mark = total - count
+        settle = int(self.caps.retune_settle * (self._Fs or 0)) + int(self.caps.retune_samples)
+        for index, kind, _, ch in self._rx_events:
+            if kind != "hw_time" and ch in channels:
+                mark = max(mark, index + settle)
+        self._rx_discard = max(self._rx_discard, mark)
+
+    def _rx_idle(self):
+        """`read` got nothing for a moment: raise err.Lost / err.StreamStalled if the device is gone or stopped
+        delivering (a device without its own watchdog, as a remote one, checks here)"""
+
     def _slot(self, channel):
         try:
             return self._rx_channels.index(channel)
@@ -851,6 +878,7 @@ class Device:
             left = None if deadline is None else deadline - time.monotonic()
             n, idx = self._rx_read_into(out[got:], READ_SLICE if left is None else max(0.0, min(READ_SLICE, left)), slot)
             if n == 0:
+                self._rx_idle()
                 if deadline is not None and time.monotonic() >= deadline:
                     raise err.Timeout(f"{type(self).NAME}: got {got} of {count} samples in {timeout}s")
                 continue

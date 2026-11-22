@@ -14,6 +14,10 @@ class NotOpen(_Error):
 class StreamStalled(_Error):
     """Error thrown by `get_samples` when the device has stopped delivering samples"""
 
+class Lost(StreamStalled):
+    """Error thrown by `read` when the device is gone: unplugged, closed or failing, or the server it is on no longer
+    answers. Reopen it (or connect again) to go on"""
+
 class RemoteError(_Error):
     """Error raised by a remote pysdrlib server that has no more specific type"""
 

@@ -67,6 +67,11 @@ class NativeDevice(Device):
     def _close(self):
         self.device.close()
 
+    def _rx_lost(self):
+        """Why the device is known to be gone (unplugged...), or None. A driver that can tell overrides it, so `read`
+        raises err.Lost, not err.StreamStalled after `stall_timeout`"""
+        return None
+
     def _start_rx(self):
         self._rx_base = 0
         self._rate_changed()
@@ -162,6 +167,10 @@ class NativeDevice(Device):
         if report.shortfall_start:   # once per episode; stats.missing keeps the total
             self._report_drop(report.missing, f"{type(self).NAME}: delivering fewer samples than {self._Fs:,.0f} "
                                               f"samples/s requires (about {report.missing:,} missing in the last window)")
+        if not have_samples:
+            why = self._rx_lost()
+            if why:
+                raise err.Lost(f"{type(self).NAME}: {why}. Close it, and open it again")
         if report.stalled and not have_samples:
             stats = self.stats
             raise err.StreamStalled(
