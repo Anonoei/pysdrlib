@@ -37,7 +37,10 @@ class StreamStalled(_Error):
 
 class Lost(StreamStalled):
     """Error thrown by `read` when the device is gone: unplugged, closed or failing, or the server it is on no longer
-    answers. Reopen it (or connect again) to go on"""
+    answers. Reopen it (or connect again) to go on. Raised by a `read` of one channel, it carries what that read had
+    received before the end: `.samples` (complex64, possibly empty) and `.meta` (their RxMeta, or None when there are none)"""
+    samples = None
+    meta = None
 
 class RemoteError(_Error):
     """Error raised by a remote pysdrlib server that has no more specific type"""

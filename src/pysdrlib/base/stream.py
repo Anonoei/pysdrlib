@@ -26,7 +26,9 @@ class RxMeta:
     gaps: (offset in the block, samples missing just before it), for every place samples were lost
     discarded: samples skipped on purpose (settling after a retune with flush=True) before this block
     time: time.monotonic() at which the first sample was received (estimated from the deliveries, smoothed so it never goes backwards), or None
-    freq / rate: what the device was set to for the first sample; events: changes inside the block
+    freq / rate: what the device was set to for the first sample; events: changes inside the block, each reported once
+    (offset 0: at the first sample, or in a gap just before it; a change a flush skipped past is not an event, the
+    whole block being at the new setting)
     hw_time: the radio's own clock at the first sample (seconds; UHD's device time, a replayed recording's time), for
     devices that timestamp their samples; None otherwise. Unlike `time` it has no host jitter, and two radios
     sharing a clock reference and a time (GPS, PPS) agree on it

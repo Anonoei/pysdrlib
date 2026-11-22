@@ -186,6 +186,52 @@ class TestReceiving:
             finally:
                 sdr.close()
 
+    def test_a_reader_behind_a_retune_still_finds_its_generations_time(self, d):
+        with ShmStream("t.ch1", Fs=1e5, cf=1e6, directory=d) as out:
+            sdr = pysdrlib.open("shm", name="t.ch1", directory=d)
+            try:
+                gen0 = dict(sdr.manifest)                 # what a reader on generation 0 holds (no anchor yet)
+                out.publish(ramp(0, 1000), 0, wall_time=1.7e9)
+                out.retune(cf=2e6)                        # the manifest now describes generation 1
+                assert stream.read_manifest(out.path)["anchors"] == {gen0["segment"]: [1.7e9, 0]}
+                sdr._stamp(gen0, 100)
+                assert (gen0["wall_time"], gen0["wall_index"]) == (1.7e9, 0)
+            finally:
+                sdr.close()
+
+    def test_a_retune_at_a_block_boundary_is_an_event_at_offset_0(self, d):
+        with ShmStream("t.ch1", Fs=1e6, cf=1e8, directory=d) as out:
+            sdr = opened(d)
+            try:
+                out.publish(ramp(0, 1000), 0)
+                x, m = read(sdr, 1000)
+                out.retune(cf=1.01e8)
+                out.publish(ramp(0, 1000), 0)
+                x, m = read(sdr, 1000)
+                assert [(e.offset, e.kind, e.value) for e in m.events] == [(0, "freq", 1.01e8)] and m.freq == 1.01e8
+                out.publish(ramp(1000, 1000), 1000)
+                x, m = read(sdr, 1000)
+                assert m.events == ()                    # reported once
+            finally:
+                sdr.close()
+
+    def test_lost_carries_what_the_read_had(self, d):
+        out = ShmStream("t.ch1", Fs=1e6, cf=1e8, directory=d)
+        sdr = opened(d)
+        try:
+            out.publish(ramp(0, 1500), 0)
+            out.close()
+            x, m = read(sdr, 1000)
+            with pytest.raises(err.Lost) as e:
+                sdr.read(1000, timeout=5, meta=True)
+            assert np.array_equal(e.value.samples, ramp(1000, 500)) and e.value.samples.dtype == np.complex64
+            assert (e.value.meta.index, e.value.meta.count) == (1000, 500)
+            with pytest.raises(err.Lost) as e:
+                sdr.read(1000, timeout=5)
+            assert len(e.value.samples) == 0 and e.value.meta is None
+        finally:
+            sdr.close()
+
     def test_a_closed_stream_is_lost_once_read(self, d):
         out = ShmStream("t.ch1", Fs=1e6, cf=1e8, directory=d)
         sdr = opened(d)

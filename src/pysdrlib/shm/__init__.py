@@ -47,6 +47,7 @@ in place of the manifest.
 | `Fs`, `cf` | Sample rate and centre frequency of the generation |
 | `pid` | The publisher's process: a manifest whose process is gone is left out |
 | `wall_time`, `wall_index` | `time.time()` of the ring sample `wall_index` (the generation's first published), or null before the first publish |
+| `anchors` | `{segment: [wall_time, wall_index]}` of the last 8 generations, for a reader still on one when the publisher retuned |
 | `info` | The publisher's own fields |
 
 A retune writes the new manifest, then closes the old ring and removes it; `close` closes the ring, removes the manifest,

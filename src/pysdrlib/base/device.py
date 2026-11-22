@@ -1007,9 +1007,15 @@ class Device:
             if not self.state["rx"]:
                 self._rx_not_started()
             left = None if deadline is None else deadline - time.monotonic()
-            n, idx = self._rx_read_into(out[got:], READ_SLICE if left is None else max(0.0, min(READ_SLICE, left)), slot)
+            try:
+                n, idx = self._rx_read_into(out[got:], READ_SLICE if left is None else max(0.0, min(READ_SLICE, left)), slot)
+                if n == 0:
+                    self._rx_idle()
+            except err.Lost as exc:   # the end of the stream: what this read had goes with the error
+                exc.samples = out[:got].copy()
+                exc.meta = self._meta(first, got, channel, gaps, discarded) if got else None
+                raise
             if n == 0:
-                self._rx_idle()
                 if deadline is not None and time.monotonic() >= deadline:
                     raise err.Timeout(f"{type(self).NAME}: got {got} of {count} samples in {timeout}s")
                 continue
@@ -1040,6 +1046,7 @@ class Device:
 
     def _meta(self, first, count, channel, gaps, discarded):
         events, later, stamp = [], [], None
+        before = self._rx_ends.get(channel, 0)          # where the last block returned ended: changes before it were reported
         for change in self._rx_events:
             index, kind, value, ch = change
             if ch != channel:                           # another channel's: its own reads report it
@@ -1047,6 +1054,10 @@ class Device:
                 continue
             if index <= first:
                 self._rx_now[(kind, ch)] = value        # in effect at the block's start
+                # at its first sample (or in a gap before it), not yet reported. A change a flush skipped past isn't
+                # one: the whole block is at the new setting, as RxMeta says
+                if index >= before and kind != "hw_time" and count and not discarded:
+                    events.append(Event(0, kind, value, ch))
                 continue
             if index < first + count:
                 if kind == "hw_time":                   # (index, seconds): how the radio's clock reads, not a change
@@ -1055,6 +1066,8 @@ class Device:
                     events.append(Event(index - first, kind, value, ch))
             later.append(change)
         self._rx_events = later
+        if count:
+            self._rx_ends[channel] = first + count + sum(n for at, n in gaps if at > 0)
         total, age = self._rx_position(slot=self._slot(channel))
         when = self._stream_time(channel, self._Fs, sample_time(self._Fs, total, age, first), first)
         rate = self._rx_now.get(("rate", channel), self._Fs)
@@ -1096,6 +1109,7 @@ class Device:
         self._rx_discard = 0        # samples before this index are skipped (flush=True)
         self._rx_events = []        # (index, kind, value, channel) changes not yet past
         self._rx_now = {}           # (kind, channel) -> value at the last block's start
+        self._rx_ends = {}          # channel -> stream index after the last block returned (changes before it are reported)
         self._rx_dc = {}
         self._rx_clock = {}         # channel -> [rate, t0, last time]: the stream's time of sample 0, smoothed
         self._rx_buf = np.empty(0, dtype=np.complex64)

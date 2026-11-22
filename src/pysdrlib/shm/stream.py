@@ -15,6 +15,7 @@ from . import ring
 
 FORMAT = 1                    # the manifest's "format": a reader refuses a later one
 DIR_ENV = "PYSDRLIB_SHM_DIR"
+ANCHORS = 8                   # earlier generations whose time anchor the manifest keeps
 NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
 
 
@@ -93,6 +94,7 @@ class ShmStream:
         self.Fs, self.cf, self.info = float(Fs), float(cf), dict(info)
         self._capacity = capacity
         self._anchor = None            # (wall time, stream index) of this generation's first sample published
+        self._anchors = {}             # segment -> [wall time, index] of the last generations (a reader may still be on one)
         self.writer = None
         self.writer = self._new_ring()
         self._write_manifest()
@@ -110,7 +112,7 @@ class ShmStream:
         wall, index = self._anchor if self._anchor else (None, None)
         return {"format": FORMAT, "name": self.name, "segment": self.writer.name, "gen": self.gen,
                 "capacity": self.writer.capacity, "Fs": self.Fs, "cf": self.cf, "pid": os.getpid(),
-                "wall_time": wall, "wall_index": index, "info": self.info}
+                "wall_time": wall, "wall_index": index, "anchors": self._anchors, "info": self.info}
 
     def _write_manifest(self):
         """Replace the manifest at once (a reader never sees half of one)"""
@@ -158,6 +160,10 @@ class ShmStream:
                 self.info.pop(k, None)
             else:
                 self.info[k] = v
+        if self._anchor is not None:   # a reader that hasn't reached this generation's samples yet needs its anchor
+            self._anchors[old.name] = list(self._anchor)
+            while len(self._anchors) > ANCHORS:
+                del self._anchors[next(iter(self._anchors))]
         self._anchor = None
         self.writer = self._new_ring()
         self._write_manifest()   # first: a reader that sees the old ring closed finds the new one

@@ -39,6 +39,9 @@ PyPI.
 
 ### Receiving
 
+- A change at a block's first sample (or in a gap just before it) is an `Event` at offset 0 in that block's
+  `RxMeta.events`; before, only `RxMeta.freq`/`rate` showed it. After a flush there is still none.
+- `err.Lost` raised by `read` carries what that read had received: `.samples` and `.meta`.
 - `read(latest=True)` skips what is queued except the newest block, and anything from before the last setting
   change: what a display wants.
 - `err.Lost` is raised when the radio is gone: unplugged, or a remote server that no longer hosts it.

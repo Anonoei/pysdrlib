@@ -133,9 +133,11 @@ class ShmDevice(NativeDevice):
     def _stamp(self, m, index):
         """The wall-clock time of the ring's sample `index` becomes the radio time of the next sample delivered"""
         if m.get("wall_time") is None:   # published after the manifest we have: the anchor came with the first samples
-            latest = self._latest()
-            if latest is not None and latest["segment"] == m["segment"]:
+            latest = self._latest() or {}
+            if latest.get("segment") == m["segment"]:
                 m["wall_time"], m["wall_index"] = latest.get("wall_time"), latest.get("wall_index")
+            elif m["segment"] in (latest.get("anchors") or {}):   # retuned since: the manifest keeps the anchor
+                m["wall_time"], m["wall_index"] = latest["anchors"][m["segment"]]
         if m.get("wall_time") is not None and m.get("wall_index") is not None:
             self.device.stamp_rx(m["wall_time"] + (index - m["wall_index"]) / m["Fs"], 0)
 
