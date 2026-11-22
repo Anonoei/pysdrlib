@@ -1,3 +1,10 @@
+"""`NativeDevice`: the base of every driver over a compiled extension.
+
+The extension streams on its own thread, converting to complex64 and queueing in C++ without the GIL. This class adds
+the Python side: draining the queue, the stall watchdog, drop reporting (`on_drop`, `stats`) and transmit through the
+extension's queue. A driver subclasses it and implements only what is particular to its hardware: see
+`pysdrlib.contributing`.
+"""
 import numpy as np
 
 from .. import err, warn

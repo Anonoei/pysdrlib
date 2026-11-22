@@ -1,7 +1,7 @@
 """Native C++ vs the original pure-numpy implementation, on identical data.
 
-    python tests/bench/vs_numpy.py            # one 131,072-sample transfer (a HackRF USB transfer)
-    python tests/bench/vs_numpy.py --samples 1000000
+    python tools/bench/vs_numpy.py            # one 131,072-sample transfer (a HackRF USB transfer)
+    python tools/bench/vs_numpy.py --samples 1000000
 
 The numpy versions are the oracles in tests/reference/. Times are best-of-N seconds per call (the minimum is
 the most stable statistic on a busy machine); `speedup` is numpy time / native time.
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # tests/, for `reference`
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))   # for `reference`
 from reference import buffer_numpy, convert_numpy  # noqa: E402
 
 from pysdrlib.base import buffer, convert  # noqa: E402

@@ -1,7 +1,7 @@
 """How long after a retune the old frequency's samples keep coming, and whether set_freq(flush=True) skips them
 
-    python tests/dev/retune.py                      # the first device found, an FM station it finds itself
-    python tests/dev/retune.py --driver rtl_sdr --rates 1.024e6 2.4e6 --station 92.3e6
+    python tools/dev/retune.py                      # the first device found, an FM station it finds itself
+    python tools/dev/retune.py --driver rtl_sdr --rates 1.024e6 2.4e6 --station 92.3e6
 
 Retunes from `away` Hz off a strong signal onto it at random moments (so the USB transfers are caught at every point),
 and finds the sample where the signal appears relative to where read(meta=True) marks the retune. Then checks that

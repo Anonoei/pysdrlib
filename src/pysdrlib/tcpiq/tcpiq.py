@@ -1,4 +1,4 @@
-"""A TCP stream of raw I/Q samples (receive only), as the client or the server: see the README"""
+"""A TCP stream of raw I/Q samples (receive only), as the client or the server: see `pysdrlib.tcpiq`"""
 from ..base import convert
 from ..base.caps import Capabilities, Range
 from ..base.native import NativeDevice

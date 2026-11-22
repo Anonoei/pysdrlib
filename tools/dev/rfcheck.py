@@ -1,4 +1,4 @@
-"""Shared pieces of the hardware check scripts in tests/dev (retune.py, gain.py, api_check.py)
+"""Shared pieces of the hardware check scripts in tools/dev (retune.py, gain.py, api_check.py)
 
 They work on any device pysdrlib.find() lists, or a remote one (--remote tcp://host:5555 --driver <type>).
 """

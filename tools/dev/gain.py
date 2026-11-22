@@ -1,7 +1,7 @@
 """What each relative gain does to a real signal: its level, the noise floor, SNR, clipping and spurs
 
-    python tests/dev/gain.py                              # the first device found, an FM station it finds itself
-    python tests/dev/gain.py --freq 162.4e6 --steps 21    # any frequency (a band you want to tune the gain for)
+    python tools/dev/gain.py                              # the first device found, an FM station it finds itself
+    python tools/dev/gain.py --freq 162.4e6 --steps 21    # any frequency (a band you want to tune the gain for)
 
 Sweeps set_rx_gain from 0 to 1 and, at each step, measures:
     signal   power within +-80 kHz of the centre (dB re full scale)

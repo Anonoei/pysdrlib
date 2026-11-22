@@ -1,11 +1,11 @@
 """Run the pysdrlib overhead benchmarks and compare against a baseline.
 
-    python tests/bench/run.py                   run everything, print a table
-    python tests/bench/run.py --quick           faster, noisier
-    python tests/bench/run.py --hardware        also stream from every supported SDR that is plugged in
-    python tests/bench/run.py --hardware rtl_sdr  ONLY the hardware benchmarks, for the named devices
-    python tests/bench/run.py --update-baseline record this machine's baseline (.benchmarks/baseline.json)
-    python tests/bench/run.py --check           compare to the baseline; exit 1 on a regression
+    python tools/bench/run.py                   run everything, print a table
+    python tools/bench/run.py --quick           faster, noisier
+    python tools/bench/run.py --hardware        also stream from every supported SDR that is plugged in
+    python tools/bench/run.py --hardware rtl_sdr  ONLY the hardware benchmarks, for the named devices
+    python tools/bench/run.py --update-baseline record this machine's baseline (.benchmarks/baseline.json)
+    python tools/bench/run.py --check           compare to the baseline; exit 1 on a regression
 
 Baselines are per machine (timings don't transfer between computers), so .benchmarks/ is gitignored.
 """

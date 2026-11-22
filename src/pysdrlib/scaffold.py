@@ -26,6 +26,23 @@ def _fill(text, names):
     return text
 
 # --------------------------------------------------------------------------- Python templates
+# The package docstring is the driver's page in the docs (and `help(pysdrlib.<name>)`)
+DOC = '''"""@CLASS@: TODO what the radio is, and links (vendor page, a how-to, the library it wraps).
+
+## Specs
+- Frequency (TODO)
+- Sample rate (TODO)
+- Samples (TODO: complex int16, converted to complex64)
+- Gain (dB): TODO the stages, as `sdr.rx_gain_stages()` lists them
+
+## Setup
+TODO: what the first import looks for (system library, cache, bundled build) and what a build needs.
+
+## Notes
+TODO: anything measured (retune settling, rates that drop samples), udev rules, quirks.
+"""
+'''
+
 INIT = '''from .._ext import @NAME@ as ext, utils
 
 @CLASS@ = utils.import_device(__name__, ".@NAME@", "@CLASS@", ext.LIB)
@@ -195,23 +212,6 @@ def get():
     TODO: when _native/@NAME@/ compiles, return the line below instead of None."""
     return None
     # return utils.pybind_extension("@NAME@", "src/pysdrlib/@NAME@/vendor/@NAME@/include", "@NAME@.h")
-'''
-
-README = '''# @CLASS@
-
-TODO: what the radio is, and links (vendor page, a how-to, the library it wraps).
-
-## Specs
-- Frequency (TODO)
-- Sample rate (TODO)
-- Samples (TODO: complex int16, converted to complex64)
-- Gain (dB): TODO the stages, as `sdr.rx_gain_stages()` lists them
-
-## Setup
-TODO: what the first import looks for (system library, cache, bundled build) and what a build needs.
-
-## Notes
-TODO: anything measured (retune settling, rates that drop samples), udev rules, quirks.
 '''
 
 # --------------------------------------------------------------------------- out-of-tree templates
@@ -428,9 +428,8 @@ def files(name, cls, native=True, out_of_tree=False):
         }
         return {path: _fill(text, names) for path, text in out.items()}
     out = {
-        f"{name}/__init__.py": INIT if native else INIT_PY,
+        f"{name}/__init__.py": DOC + (INIT if native else INIT_PY),
         f"{name}/{name}.py": DEVICE if native else DEVICE_PY,
-        f"{name}/README.md": README,
     }
     if native:
         out.update({

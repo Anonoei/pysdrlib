@@ -133,7 +133,7 @@ def test_scaffold_writes_the_listed_files_and_never_overwrites(tmp_path):
     written = scaffold.new_driver("probe_radio", root=tmp_path)
     rel = {p.relative_to(tmp_path).as_posix() for p in written}
     assert rel == {"probe_radio/__init__.py", "probe_radio/probe_radio.py",
-                   "probe_radio/README.md", "probe_radio/lib/__init__.py",
+                   "probe_radio/lib/__init__.py",
                    "_ext/probe_radio.py", "_native/probe_radio/probe_radio_device.hpp",
                    "_native/probe_radio/probe_radio_device.cpp", "_native/probe_radio/probe_radio_pybind.cpp"}
     for path in written:
@@ -147,7 +147,7 @@ def test_scaffold_writes_the_listed_files_and_never_overwrites(tmp_path):
 
 def test_python_only_scaffold_has_no_extension_files(tmp_path):
     rel = {p.relative_to(tmp_path).as_posix() for p in scaffold.new_driver("probe_py", native=False, root=tmp_path)}
-    assert rel == {"probe_py/__init__.py", "probe_py/probe_py.py", "probe_py/README.md"}
+    assert rel == {"probe_py/__init__.py", "probe_py/probe_py.py"}
 
 def test_unfinished_native_driver_is_left_out_of_the_build(tmp_path):
     scaffold.new_driver("probe_radio", root=tmp_path)

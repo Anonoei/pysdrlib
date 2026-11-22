@@ -1,7 +1,7 @@
 """The generic API on a real device: find, caps, controls, blocking reads at full rate, gap reporting, drop policy
 
-    python tests/dev/api_check.py                 # the first device pysdrlib.find() lists
-    python tests/dev/api_check.py --driver rtl_sdr
+    python tools/dev/api_check.py                 # the first device pysdrlib.find() lists
+    python tools/dev/api_check.py --driver rtl_sdr
 
 Prints what it sees; read it against what the device should do (see test_generic_api.py for the same on fakes).
 """

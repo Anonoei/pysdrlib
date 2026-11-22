@@ -38,7 +38,7 @@ class BladeRF(NativeDevice):
     # on a bladeRF 2.0 micro xA4 (FPGA 0.16.0, firmware 2.6.0, USB 3) at 2, 10 and 40 MS/s, retuning at random moments
     # between an FM station and a quiet frequency (100 <-> 125 MHz, 100 MHz <-> 5 GHz): at most 2034 samples from before
     # the retune after the mark (2 MS/s), and none at 10 or 40; the level had settled before the mark every time. So one
-    # 16384-sample buffer plus 5 ms is margin, checked with flush=True (see the README)
+    # 16384-sample buffer plus 5 ms is margin, checked with flush=True (see `pysdrlib.bladerf`)
     RETUNE_SAMPLES = 16384
     RETUNE_SETTLE = 0.005
 

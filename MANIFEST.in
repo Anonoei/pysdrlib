@@ -2,7 +2,6 @@ graft src
 graft tests
 
 prune src/*.egg-info
-prune tests/dev
 prune tests/build
 prune src/pysdrlib/_ext/cache
 global-exclude *~ *.py[cod] *.html

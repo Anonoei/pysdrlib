@@ -8,7 +8,7 @@ alone:
     from pysdrlib import testing
     problems = testing.check_driver(MyRadio)          # [Problem]; empty: nothing found
     testing.assert_conforms(MyRadio)                  # raises AssertionError listing the errors (warnings are fine)
-    testing.check_package("my_radio")                 # the package around it: Device, find(), lib/, _ext/, README
+    testing.check_package("my_radio")                 # the package around it: Device, find(), lib/, _ext/, docstring
 
 `tests/test_conformance.py` runs both on every driver, so a new driver is checked as soon as it exists.
 
@@ -194,8 +194,8 @@ def check_package(name) -> list:
     if name not in devices._packages():   # a driver from outside pysdrlib: no package of ours to look into
         return problems
     folder = Path(module.__file__).parent
-    if not (folder / "README.md").is_file():
-        add(WARNING, "has no README.md (what it is, its specs, what to install)")
+    if len((module.__doc__ or "").strip().splitlines()) < 3:
+        add(WARNING, "has no docstring in its __init__.py (what it is, its specs, what to install: its page in the docs)")
     if issubclass(device, NativeDevice) and name not in ("sim", "file"):   # they stream through pysdrlib's NullDevice
         if importlib.util.find_spec(f"pysdrlib._ext.{name}") is None:
             add(ERROR, f"has no _ext/{name}.py (how its vendor library is found or built, and its extension)")

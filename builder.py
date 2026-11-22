@@ -2,7 +2,7 @@
 """Development helper: bump the version, compile the extensions, build, install and test.
 
 Releases are published by CI (.github/workflows/python-publish.yml) from a GitHub release tagged vX.Y.Z, and the docs by
-deploy-docs.yml: neither is done from here.
+deploy-docs.yml: neither is done from here. `-d` builds the docs site locally (into site/).
 """
 
 import argparse
@@ -26,7 +26,7 @@ def run(*cmd):
         sys.exit(f"'{shlex.join(cmd)}' failed with status {result.returncode}")
 
 
-def need(*packages):
+def need(*packages, extra="dev"):
     """Exit, saying how to install them, if any of these distributions is missing"""
     missing = []
     for name in packages:
@@ -35,7 +35,7 @@ def need(*packages):
         except importlib.metadata.PackageNotFoundError:
             missing.append(name)
     if missing:
-        sys.exit(f"missing {', '.join(missing)}: pip install -e '.[dev]'")
+        sys.exit(f"missing {', '.join(missing)}: pip install -e '.[{extra}]'")
 
 
 def version():
@@ -74,6 +74,12 @@ def cmd_test(args):
     run(sys.executable, "-m", "pytest")
 
 
+def cmd_docs(args):
+    need("zensical", "mkdocstrings-python", extra="docs")
+    run(sys.executable, "tools/gen_docs.py")      # docs/api/*.md, docs/llms.txt, docs/llms-full.txt
+    run(sys.executable, "-m", "zensical", "build", "--strict")
+
+
 def cmd_new_device(args):
     run(sys.executable, "-m", "pysdrlib.scaffold", args.new_device)
 
@@ -89,12 +95,14 @@ def main():
     actions.add_argument("-b", "--build", action="store_true", help="build the sdist and wheel into dist/")
     actions.add_argument("-l", "--local", action="store_true", help="install the package in editable mode")
     actions.add_argument("-t", "--test", action="store_true", help="run the tests")
+    actions.add_argument("-d", "--docs", action="store_true", help="build the docs site into site/ (pip install -e '.[docs]')")
     parser.add_argument("-r", "--run", action="store_true", help="really bump the version (-v)")
     args = parser.parse_args()
 
     os.chdir(ROOT)
     steps = [(args.new_device, cmd_new_device), (args.version, cmd_version), (args.compile, cmd_compile),
-             (args.build, cmd_build), (args.local, cmd_local), (args.test, cmd_test)]
+             (args.build, cmd_build), (args.local, cmd_local), (args.test, cmd_test),
+             (args.docs, cmd_docs)]
     if not any(wanted for wanted, _ in steps):
         parser.print_help()
         return

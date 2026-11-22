@@ -1,8 +1,8 @@
 """Channels on a real multi-channel device (a B210): per-channel controls, two-channel streams, coherence
 
-    python tests/dev/channels.py                    # the first device pysdrlib.find() lists (needs 2 RX channels)
-    python tests/dev/channels.py --no-tx            # skip the transmit check
-    python tests/dev/channels.py --station 92.3e6   # the coherence check's signal (default: search the FM band)
+    python tools/dev/channels.py                    # the first device pysdrlib.find() lists (needs 2 RX channels)
+    python tools/dev/channels.py --no-tx            # skip the transmit check
+    python tools/dev/channels.py --station 92.3e6   # the coherence check's signal (default: search the FM band)
 
 1. Controls per channel and direction, read back from the hardware (the driver's own getters)
 2. Both RX channels streamed together at a low, middle and high rate: aligned blocks, nothing lost

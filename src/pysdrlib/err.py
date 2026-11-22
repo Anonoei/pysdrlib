@@ -1,4 +1,11 @@
-"""Error types"""
+"""The exceptions pysdrlib raises, the same for every driver.
+
+The ones code usually handles: `NotSupported` (a control this radio doesn't have; also a `NotImplementedError`),
+`InvalidValue` (out of range with `sdr.strict`, or always for nonsense), `NoDevice` (nothing to open, or it can't be
+opened), `Timeout` (a `read` with a `timeout`; also a `TimeoutError`), `StreamStalled` (no samples for
+`sdr.stall_timeout`), `Lost` (the radio or its server is gone: reopen), `Dropped` (`on_drop="raise"` and samples were
+lost). From a server: `Busy`, `NotController`, `RemoteError`, `ProtocolError`. Warnings are in `pysdrlib.warn`.
+"""
 class _Error(Exception):
     """pysdrlib Error"""
 

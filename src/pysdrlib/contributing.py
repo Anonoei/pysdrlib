@@ -14,9 +14,8 @@ then fill in each `TODO`, checking as you go with `pysdrlib.testing`.
 | File | What it holds |
 | --- | --- |
 | `<name>/<name>.py` | The `Device` subclass: the hooks below |
-| `<name>/__init__.py` | `Device = <class>` and `find()` |
+| `<name>/__init__.py` | Its docstring (the radio's page in the docs: what it is, specs, what to install), `Device = <class>` and `find()` |
 | `<name>/lib/__init__.py` | The compiled extension's import (its error classes, `lib.err`, come from the extension) |
-| `<name>/README.md` | What the radio is, its specs, what to install |
 | `_ext/<name>.py` | `LIB` (how the vendor library is found or built) and `get()` (the extension, for setup.py) |
 | `_native/<name>/` | `<name>_device.hpp/.cpp` (the wrapper) and `<name>_pybind.cpp` (its Python binding) |
 | `tests/devices.py` | A `Spec`, which puts the driver under every contract test |
@@ -134,8 +133,10 @@ needs the radio is marked `hardware`, runs only with `PYSDRLIB_HW=1`, and skips 
 ## 6. Document it
 
 The reference documentation is generated from docstrings: document the class, and every public method a driver adds,
-as you would for a user. Fill in `README.md`: what the radio is, its specs, what to install, and what you measured.
-Add it to the roadmap list in the top-level README.
+as you would for a user. Fill in the docstring of `<name>/__init__.py`: what the radio is, its specs, what to install,
+and what you measured (the existing drivers show the shape). Add a row to the supported-devices table in the top-level
+README, and its page to `API_PAGES` in `tools/gen_docs.py` and under *Drivers* in `zensical.toml` (`python builder.py -d` builds
+the site; `tests/test_docs.py` checks both).
 
 ## Out of tree
 
