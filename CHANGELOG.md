@@ -52,7 +52,7 @@ PyPI.
   spike out of the way) and `skip=`.
 - Every device has `is_controller` (always true locally), `id` and `granted` (None locally), so code that handles
   local and remote devices alike doesn't need `getattr`.
-- `RxMeta.next_index` (the stream index just after a block), `RxMeta.follows(prev)` (it starts where `prev`
+- `RxMeta.index_at(k)` (the stream index of a block's sample `k`), `RxMeta.next_index` (the stream index just after a block), `RxMeta.follows(prev)` (it starts where `prev`
   ended, nothing lost or discarded between) and `RxMeta.wall_time` (the radio's clock when it holds a date, else the
   receive time on the wall clock). `index` is documented as the absolute position across gaps.
 - `rx_antenna_info()` / `tx_antenna_info()`: each antenna port with its chain, the antenna fitted, whether the

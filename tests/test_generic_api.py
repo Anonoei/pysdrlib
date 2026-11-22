@@ -107,6 +107,13 @@ class TestRead:
             lead = sum(n for at, n in m.gaps if at == 0)
             assert m.index == prev.index + prev.count + sum(n for at, n in prev.gaps if at > 0) + m.discarded + lead
             assert m.follows(prev) == (lead == 0 and m.discarded == 0)
+        for m in blocks:
+            assert m.index_at(0) == m.index and m.index_at(-1) == m.next_index - 1
+            for at, n in m.gaps:
+                if at > 0:
+                    assert m.index_at(at) == m.index_at(at - 1) + 1 + n   # the samples lost sit just before `at`
+        with pytest.raises(IndexError):
+            blocks[0].index_at(blocks[0].count)
 
     def test_wall_time(self):
         now, mono = time.time(), time.monotonic()

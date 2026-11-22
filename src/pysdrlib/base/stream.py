@@ -32,7 +32,7 @@ class RxMeta:
     sharing a clock reference and a time (GPS, PPS) agree on it
 
     `index` is the absolute position in the stream, across gaps: sample `k` of the block is stream sample
-    `index + k + sum(n for at, n in gaps if 0 < at <= k)` (a gap at offset 0 is already in `index`). The next block's
+    `index_at(k)` = `index + k + sum(n for at, n in gaps if 0 < at <= k)` (a gap at offset 0 is already in `index`). The next block's
     `index` is `index + count + sum(n for at, n in gaps if at > 0)`, plus its own `discarded` and its own gap at
     offset 0. So a block can be stamped with its position and time straight from `index` and `time`/`hw_time`.
     """
@@ -56,6 +56,14 @@ class RxMeta:
     def next_index(self) -> int:
         """The stream index just after this block: where the next one starts when nothing is lost or discarded first"""
         return self.index + self.count + sum(n for at, n in self.gaps if at > 0)
+
+    def index_at(self, k: int) -> int:
+        """The stream index of the block's sample `k` (0 <= k < count; negative counts from the end, as for a list),
+        counting the samples lost before it inside the block"""
+        if not -self.count <= k < self.count:
+            raise IndexError(f"sample {k} of a block of {self.count}")
+        k %= self.count
+        return self.index + k + sum(n for at, n in self.gaps if 0 < at <= k)
 
     def follows(self, prev: "RxMeta") -> bool:
         """Whether this block starts right where `prev` ended (same channel, nothing lost or discarded between). Gaps
