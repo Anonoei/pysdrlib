@@ -206,7 +206,7 @@ class TestBufferedRx:
     def test_concurrent_producers_and_a_reader_lose_nothing(self, dev, fmt):
         dev.set_rx_buffer(2000)
         raw = self.raw(fmt, 100)
-        pushed, got, done = [0], [0], threading.Event()
+        got, done = [0], threading.Event()
         def produce():
             for _ in range(200):
                 dev._dispatch_rx(raw.tobytes())

@@ -233,13 +233,13 @@ class Sim(NativeDevice):
             return np.concatenate((self._synth(first, cut), self._synth(first + cut, n - cut)))
         cf, fs = self._center(first), self._Fs
         idx = first + np.arange(n, dtype=np.float64)
-        out = np.zeros(n, dtype=np.complex128)
+        out = np.zeros(n, dtype=np.complex64)
         tones = self.tones or ([] if self.bursts or self.noise is not None else
                                [{"offset": self._tone if self._tone is not None else fs / 8, "level": 20 * np.log10(0.5)}])
         for t in tones:
             if not self._in_band(t, cf, fs):
                 continue
-            out += 10 ** (t["level"] / 20) * np.exp(2j * np.pi * ((self._offset(t, cf) / fs * idx) % 1.0))
+            out += 10 ** (t["level"] / 20) * self._carrier(self._offset(t, cf) / fs, idx)
         for b in self.bursts:
             if not self._in_band(b, cf, fs):
                 continue
@@ -250,13 +250,19 @@ class Sim(NativeDevice):
             sps = max(1, int(fs / b.get("symbol_rate", fs / 16)))
             sym = (idx // sps).astype(np.int64)
             sym -= sym[0]
-            qpsk = np.exp(1j * (np.pi / 4 + np.pi / 2 * self._rng.integers(0, 4, sym[-1] + 1)))[sym]
-            carrier = np.exp(2j * np.pi * ((self._offset(b, cf) / fs * idx) % 1.0))
-            out += on * 10 ** (b["level"] / 20) * qpsk * carrier
+            qpsk = np.exp(1j * (np.pi / 4 + np.pi / 2 * self._rng.integers(0, 4, sym[-1] + 1))).astype(np.complex64)[sym]
+            out += on * 10 ** (b["level"] / 20) * qpsk * self._carrier(self._offset(b, cf) / fs, idx)
         if self.noise is not None:
             sigma = np.sqrt(10 ** (self.noise / 10) / 2)
-            out += sigma * (self._rng.standard_normal(n) + 1j * self._rng.standard_normal(n))
+            out += sigma * (self._rng.standard_normal(n, dtype=np.float32) + 1j * self._rng.standard_normal(n, dtype=np.float32))
         return out
+
+    @staticmethod
+    def _carrier(cycles, idx):
+        """exp(2j*pi*cycles*idx) as complex64: the phase is wrapped to one cycle in float64 (exact for any sample index),
+        then evaluated in float32"""
+        phase = ((cycles * idx) % 1.0).astype(np.float32)
+        return np.exp(np.float32(2 * np.pi) * 1j * phase)
 
     def _lose(self, count):
         if count > 0:

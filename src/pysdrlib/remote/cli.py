@@ -435,7 +435,6 @@ def print_stats(metrics):
 
 def run_client(args):
     """`pysdrlib client`: list, info, stats, rx, watch, set and tx"""
-    import pysdrlib
     from .client import Client, RemoteDevice
     if args.cmd == "list":
         with Client(args.address, args.timeout) as c:

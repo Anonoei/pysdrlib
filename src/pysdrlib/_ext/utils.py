@@ -195,7 +195,8 @@ class VendorLibrary:
                 if stale:
                     driver = self.driver or self.name
                     warnings.warn(f"{cached} was built from older sources than this pysdrlib's: run "
-                                  f"`pysdrlib build {driver} --force` (or set PYSDRLIB_BUILD=auto) to rebuild it", _StaleLibrary)
+                                  f"`pysdrlib build {driver} --force` (or set PYSDRLIB_BUILD=auto) to rebuild it", _StaleLibrary,
+                                  skip_file_prefixes=(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + os.sep,))
                 return f"{'stale' if stale else 'cached'} {cached}"
             except OSError:
                 pass

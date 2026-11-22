@@ -5,7 +5,7 @@ import pytest
 
 import pysdrlib
 from pysdrlib import targets
-from pysdrlib.targets import Target, parse_target, format_target
+from pysdrlib.targets import Target, parse_target
 
 
 @pytest.mark.parametrize("text, expect", [

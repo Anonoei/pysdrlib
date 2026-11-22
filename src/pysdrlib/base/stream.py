@@ -6,7 +6,7 @@
             if m.events: ...                       # the frequency / rate / gain changed inside it (m.events)
 """
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 @dataclass(frozen=True)

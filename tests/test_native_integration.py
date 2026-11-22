@@ -9,7 +9,6 @@ import time
 import numpy as np
 import pytest
 
-import pysdrlib
 from pysdrlib import err
 from pysdrlib.base import Formats
 from pysdrlib.file import File
@@ -89,7 +88,6 @@ from pysdrlib.remote import RemoteDevice, Server  # noqa: E402
 @pytest.fixture
 def served(spec, monkeypatch):
     """A server hosting the device, over a fake driver whose queue is swapped for the extension's real one"""
-    from devices import fake_lib
     monkeypatch.setattr(spec.device_module, "lib", fake_lib(spec))
     with Server("tcp://127.0.0.1:0", devices=[spec.name], lease=0) as server:
         worker, _ = server.open_device(spec.name)

@@ -1,4 +1,3 @@
-import numpy as np
 
 from ..base.native import NativeDevice
 from ..base import convert

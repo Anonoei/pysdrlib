@@ -205,10 +205,11 @@ class TestHardwareTime:
         sdr.initialize(cf=1e6, Fs=1e6)
         t = time.time()
         with sdr.stream(10_000, meta=True, timeout=2) as s, FileSink(tmp_path / "r.sigmf", "cf32") as out:
-            for _, (x, m) in zip(range(3), s):
+            for i, (x, m) in zip(range(3), s):
                 assert abs(m.hw_time - t) < 1.0
                 out.write(x, meta=m)
-                first = first if _ else m
+                if i == 0:
+                    first = m
         sdr.close()
         assert m.hw_time - first.hw_time == pytest.approx(0.02)
         assert pysdrlib.file.sigmf.read(tmp_path / "r").start_time == pytest.approx(first.hw_time, abs=1e-5)

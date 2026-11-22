@@ -227,7 +227,7 @@ class TestFourBitAndHalf:
         assert convert.sample_format("ci4t") == convert.INT4_PACKED and convert.INT4_PACKED.bytes_per_sample == 1
 
     def test_ci4_matches_the_file_format(self, tmp_path):
-        from pysdrlib import File, FileSink
+        from pysdrlib import File
         iq = (np.arange(-8, 8) / 8 + 1j * np.arange(7, -9, -1) / 8).astype(np.complex64)
         raw = convert.INT4_PACKED.from_complex64(iq)
         path = tmp_path / "x.bin"

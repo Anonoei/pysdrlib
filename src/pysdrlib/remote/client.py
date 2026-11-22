@@ -27,7 +27,6 @@ from .. import logger
 from ..base import caps as _caps
 from ..base import convert
 from ..base.device import Device
-from ..base.stream import RxMeta
 from ..base.watchdog import StreamStats
 from . import choose
 from . import protocol

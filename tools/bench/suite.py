@@ -13,8 +13,6 @@ import os
 import platform
 import statistics
 import subprocess
-import sys
-import threading
 import time
 import warnings
 from dataclasses import dataclass

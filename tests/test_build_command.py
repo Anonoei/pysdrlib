@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from pysdrlib import devices
-from pysdrlib._ext import build, utils
+from pysdrlib._ext import build
 from pysdrlib import cli
 
 

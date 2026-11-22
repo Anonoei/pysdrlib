@@ -779,7 +779,7 @@ class Device:
         started = not self.state["rx"]
         if started:
             self.start_rx()
-        shift = None
+        shift, shift_rate = None, None
         try:
             while True:
                 for f in freqs:

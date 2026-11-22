@@ -3,7 +3,6 @@
 Reading runs on the simulated device (the real C++ ring and a streaming thread); the controls run on every
 hardware device over its fake driver (tests/devices.py), so each driver's mapping onto them is checked.
 """
-import dataclasses
 import time
 
 import numpy as np
