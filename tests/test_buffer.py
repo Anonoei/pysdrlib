@@ -332,6 +332,36 @@ class TestStreaming:
         assert rot_buf.dropped == 0
         assert flat == list(range(total))
 
+    def test_copies_are_never_overwritten_and_indices_stay_exact(self):
+        """A read copies with the lock released, while the producer keeps a full ring busy: every sample read is the
+        one its index says (none torn by a write into slots being copied), and read + dropped == written"""
+        ring = buffer.RotatingBuffer()
+        ring.reset(8192)
+        block, blocks = 1000, 4000
+        done = threading.Event()
+        bad, count = [], [0]
+
+        def producer():
+            for k in range(blocks):
+                ring.update(seq(k * block, block))
+            done.set()
+
+        def consumer():
+            while not done.is_set() or ring.available:
+                x, first = ring.read_indexed(8192)
+                if len(x) and not np.array_equal(x.real, np.arange(first, first + len(x), dtype=np.float32)):
+                    bad.append(first)
+                count[0] += len(x)
+
+        threads = [threading.Thread(target=producer), threading.Thread(target=consumer)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+        assert not any(t.is_alive() for t in threads)
+        assert not bad
+        assert count[0] + ring.dropped == block * blocks
+
     def test_falling_behind_drops_but_stays_ordered_and_accounted(self):
         """Tiny ring + slow reader: oldest samples are dropped, none duplicated or reordered,
         and delivered + dropped == produced."""

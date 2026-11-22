@@ -18,6 +18,10 @@
 // If the consumer falls behind by more than the capacity, the OLDEST pending samples are dropped, so a
 // read is always the most recent data; `dropped` counts them.
 //
+// A read copies with the lock released, so a slow copy never holds up the producer. While a copy is in flight the
+// producer can't overwrite the samples being copied: a write that would (the ring is full) drops the NEWEST samples
+// that don't fit instead, as a gap (their indices are skipped, like skip()'s), and counts them in `dropped`.
+//
 // The ring also keeps count of what passed through it (see RingStats), for the stream watchdog.
 
 #include <algorithm>
@@ -59,6 +63,7 @@ public:
         // Plain floats, not `new cfloat[n]`: std::complex's constructor would zero all of it (a 40 MB memset).
         // std::complex<float> is layout-compatible with float[2], so the ring views it as complex.
         std::unique_ptr<float[]> storage(capacity ? new float[2 * capacity] : nullptr);
+        std::lock_guard<std::mutex> reading(read_m_);   // not while a read is copying out of the old storage
         std::lock_guard<std::mutex> lock(m_);
         buf_ = std::move(storage);
         cap_ = capacity;
@@ -140,8 +145,19 @@ private:
     template <typename Fill>
     void push_locked(size_t n, Fill& fill) {
         const auto start = clock::now();
+        size_t lost = 0;   // dropped newest: the slots they'd take are being copied by a read
+        if (copying_ && written_ + n > copy_from_ + cap_) {
+            lost = static_cast<size_t>(written_ + n - (copy_from_ + cap_));
+            n -= lost;
+        }
         if (cap_ == 0) {
             dropped_ += n;
+        } else if (copying_) {   // fits in front of the copy: nothing pending is overwritten either (it is all after it)
+            const size_t first = std::min(n, cap_ - head_);
+            if (first) fill(samples() + head_, 0, first);
+            if (n > first) fill(samples(), first, n - first);
+            head_ = (head_ + n) % cap_;
+            pending_ += n;
         } else if (n >= cap_) {   // this write alone fills the ring
             dropped_ += pending_ + (n - cap_);
             fill(samples(), n - cap_, cap_);
@@ -159,9 +175,14 @@ private:
             }
             pending_ = pending;
         }
+        written_ += n;
+        if (lost) {
+            marks_.emplace_back(written_, lost);
+            dropped_ += lost;
+            n += lost;
+        }
         samples_ += n;
         total_ += n;
-        written_ += n;
         max_chunk_ = std::max<uint64_t>(max_chunk_, n);
         ++calls_;
         seen_ = true;
@@ -193,22 +214,32 @@ public:
 
     // Consumer: move up to `max_count` of the oldest pending samples to `dst`; returns how many.
     // `first_index`: set to the index of the first sample returned (or of the next one to come, if none)
+    // The copy runs with the lock released (one reader at a time): the samples are claimed first, and the producer
+    // keeps clear of them until it is done.
     size_t read(cfloat* dst, size_t max_count, uint64_t* first_index = nullptr) {
-        std::lock_guard<std::mutex> lock(m_);
-        const uint64_t at = written_ - pending_;    // write position of the oldest pending sample
-        while (!marks_.empty() && marks_.front().first <= at) {   // gaps before it: their indices are behind us
-            gap_offset_ += marks_.front().second;
-            marks_.pop_front();
+        std::lock_guard<std::mutex> reading(read_m_);
+        size_t take, start;
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            const uint64_t at = written_ - pending_;    // write position of the oldest pending sample
+            while (!marks_.empty() && marks_.front().first <= at) {   // gaps before it: their indices are behind us
+                gap_offset_ += marks_.front().second;
+                marks_.pop_front();
+            }
+            if (first_index) *first_index = at + gap_offset_;
+            take = std::min(max_count, pending_);
+            if (!marks_.empty()) take = std::min<uint64_t>(take, marks_.front().first - at);   // never across a gap
+            if (take == 0) return 0;
+            start = (head_ + cap_ - pending_) % cap_;
+            pending_ -= take;
+            copying_ = true;
+            copy_from_ = at;
         }
-        if (first_index) *first_index = at + gap_offset_;
-        size_t take = std::min(max_count, pending_);
-        if (!marks_.empty()) take = std::min<uint64_t>(take, marks_.front().first - at);   // never across a gap
-        if (take == 0) return 0;
-        const size_t start = (head_ + cap_ - pending_) % cap_;
         const size_t first = std::min(take, cap_ - start);
         std::memcpy(dst, samples() + start, first * sizeof(cfloat));
         if (take > first) std::memcpy(dst + first, samples(), (take - first) * sizeof(cfloat));
-        pending_ -= take;
+        std::lock_guard<std::mutex> lock(m_);
+        copying_ = false;
         return take;
     }
 
@@ -232,6 +263,9 @@ private:
     cfloat* samples() { return reinterpret_cast<cfloat*>(buf_.get()); }
 
     mutable std::mutex m_;
+    std::mutex read_m_;                          // one read at a time (taken before m_); reset() waits for it
+    bool copying_ = false;                       // a read is copying samples from write position copy_from_ on
+    uint64_t copy_from_ = 0;
     std::condition_variable cv_;
     std::unique_ptr<float[]> buf_;   // 2 * cap_ floats: cap_ complex samples
     size_t cap_ = 0, head_ = 0, pending_ = 0;   // capacity; next write; unread
