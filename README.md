@@ -57,3 +57,9 @@ sdr.close()
 - [Remote radios](https://anonoei.github.io/pysdrlib/guide/remote/): use a radio on another machine, or share one between programs
 - [Drivers of your own](https://anonoei.github.io/pysdrlib/guide/custom-drivers/): a new radio without changing pysdrlib
 - [Contributing](https://anonoei.github.io/pysdrlib/contributing/), [Roadmap](https://anonoei.github.io/pysdrlib/roadmap/), [Changelog](https://anonoei.github.io/pysdrlib/changelog/)
+
+## License
+
+Copyright (C) 2025-2026 Anonoei and contributors. pysdrlib is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of
+the License, or (at your option) any later version. See [LICENSE](LICENSE). Releases up to 0.4.6 were MIT-licensed.

@@ -7,6 +7,7 @@ PyPI.
 
 ### Breaking
 
+- **pysdrlib is now licensed GPL-3.0-or-later** (it was MIT). Releases up to 0.4.6 stay MIT.
 - **File format names count the bits of one value (I or Q), as SigMF does, not of the whole sample.** `cf32` is now
   two float32 (numpy `complex64`, a GNU Radio `.cfile`; it was `cf64`). `cf64` was `cf128`, `cf16` was `cf32`, and
   `ci16t` was `ci32t` (likewise for ci4t, ci8t and ci32t). Two's complement is the default (`ci8` is `ci8t`). Code
