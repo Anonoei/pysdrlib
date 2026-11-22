@@ -51,8 +51,10 @@ def test_a_raw_file_needs_its_rate(tmp_path):
     path = ramp(tmp_path)
     with pytest.raises(ValueError, match="rate"):
         pysdrlib.open("file", path=path, fmt="cf32")
+    bare = path.rename(path.with_suffix(".bin"))   # (".cfile" names its format)
     with pytest.raises(ValueError, match="fmt"):
-        pysdrlib.open("file", path=path, rate=1e6)
+        pysdrlib.open("file", path=bare, rate=1e6)
+    path = bare.rename(path)
     with pysdrlib.open("file", path=path, fmt="cf32", rate=1e6, freq=50e6) as sdr:
         sdr.initialize()
         assert sdr.get_rx_freq() == 50e6

@@ -226,14 +226,53 @@ class TestOpenClose:
             assert ints(opened.next(3)) == [0, 1, 2]
         assert file.f is None
 
-    def test_reading_when_closed_raises_not_open(self, tmp_path):
+    def test_reading_opens_the_file(self, tmp_path):
         file = File()
         file.set_path(make_file(tmp_path))
         file.set_fmt("i16t")
+        assert ints(file.next(3)) == [0, 1, 2] and file.f is not None
+        assert ints(file.prev(1)) == [2]
+        file.close()
+        assert ints(file.next(1)) == [2]   # where it was
+        file.close()
+
+    def test_reading_without_a_path_raises_not_open(self):
         with pytest.raises(err.NotOpen):
-            file.next(1)
-        with pytest.raises(err.NotOpen):
-            file.prev(1)
+            File().next(1)
+
+
+class TestExtensions:
+    @pytest.mark.parametrize("name, fmt", [("a.cfile", "cf32"), ("a.CF32", "cf32"), ("a.fc32", "cf32"), ("a.cs16", "ci16t"),
+                                           ("a.cs8", "ci8t"), ("a.cu8", "cui8"), ("a.cf64", "cf64")])
+    def test_format_from_extension(self, tmp_path, name, fmt):
+        from pysdrlib import Formats
+        path = tmp_path / name
+        path.write_bytes(bytes(64))
+        assert File(path).fmt is Formats[fmt]
+        assert File(path, "ci8t").fmt is Formats.ci8t   # a given format wins
+
+    def test_unknown_extension_needs_a_format(self, tmp_path):
+        path = tmp_path / "a.bin"
+        path.write_bytes(bytes(8))
+        with pytest.raises(ValueError, match="fmt"):
+            File(path)
+
+    def test_sink_guesses_too(self, tmp_path):
+        from pysdrlib.file import FileSink
+        from pysdrlib import Formats
+        assert FileSink(tmp_path / "x.cs16").fmt is Formats.ci16t
+        assert FileSink(tmp_path / "x.bin").fmt is Formats.cf32
+
+    def test_errors_live_in_pysdrlib_err(self, tmp_path):
+        assert file_err.Overflow is err.Overflow and file_err.Underflow is err.Underflow
+        path = tmp_path / "a.cf32"
+        path.write_bytes(bytes(16))   # two samples
+        with File(path) as f:
+            with pytest.raises(err.Overflow):
+                f.next(3)
+            with pytest.raises(EOFError):
+                f.next(3)
+            assert len(f.next(3, partial=True)) == 2
 
 
 class TestConvenience:

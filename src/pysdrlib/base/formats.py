@@ -243,6 +243,13 @@ class Formats(Enum):
         return _TO_SIGMF.get(self.name)
 
     @classmethod
+    def from_extension(cls, path):
+        """The format a file's extension conventionally means (".cfile", ".cf32" and ".fc32" -> cf32, ".cs16" -> ci16t,
+        ".cu8" -> cui8, ...; see `EXTENSIONS`), or None"""
+        name = EXTENSIONS.get(str(path).rsplit(".", 1)[-1].lower()) if "." in str(path) else None
+        return cls[name] if name else None
+
+    @classmethod
     def get(cls, name):
         """The format called `name`: one of `ls()` or an alias (`Formats.get("cf32")`, the same as `Formats["cf32"]`), or
         a SigMF datatype ("cf32_le", "ci16_le", "cu8"). A member is returned as it is. Raises KeyError for an unknown
@@ -255,6 +262,15 @@ class Formats(Enum):
             return cls[_FROM_SIGMF[name]]
         raise KeyError(f"unknown format {name!r}: one of {', '.join(cls.ls())}, or a SigMF datatype "
                          f"({', '.join(sorted(_FROM_SIGMF))})")
+
+# File extensions in common use (GNU Radio, SDR#, gqrx, rtl_sdr, inspectrum...) -> format
+EXTENSIONS = {
+    "cfile": "cf32", "cf32": "cf32", "fc32": "cf32", "cf64": "cf64", "fc64": "cf64",
+    "cs32": "ci32t", "ci32": "ci32t", "sc32": "ci32t",
+    "cs16": "ci16t", "ci16": "ci16t", "sc16": "ci16t",
+    "cs8": "ci8t", "ci8": "ci8t", "sc8": "ci8t",
+    "cu8": "cui8", "cu16": "cui16",
+}
 
 # SigMF `core:datatype` of each format SigMF can describe (8-bit types have no byte order)
 _TO_SIGMF = {

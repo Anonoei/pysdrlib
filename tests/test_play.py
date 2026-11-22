@@ -37,12 +37,16 @@ def test_play_shows_the_power_as_it_goes(rec, capsys):
     assert "433.92 MHz  power   -6.0 dBFS" in lines[0] and "434 MHz  power  -26.6 dBFS" in lines[-1]
 
 def test_a_raw_file_needs_its_format_and_rate(tmp_path):
-    path = tmp_path / "x.cfile"
+    path = tmp_path / "x.bin"
     np.zeros(1000, np.complex64).tofile(path)
     with pytest.raises(SystemExit, match="fmt"):
         main(["play", str(path)])
     with pytest.raises(SystemExit, match="--rate"):
         main(["play", str(path), "--fmt", "cf32"])
+    named = path.rename(path.with_suffix(".cfile"))   # its extension names the format: only the rate is missing
+    with pytest.raises(SystemExit, match="--rate"):
+        main(["play", str(named)])
+    path = named.rename(path)
     with pytest.raises(SystemExit) as e:
         main(["play", str(path), "--fmt", "cf32", "--rate", "1e6", "--fast"])
     assert e.value.code == 0

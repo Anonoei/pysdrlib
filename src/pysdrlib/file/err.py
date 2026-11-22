@@ -1,5 +1,4 @@
-class Overflow(Exception):
-    """Asked for samples past the end of the file (or before its start)"""
+"""The file errors, now `pysdrlib.err.Overflow` and `pysdrlib.err.Underflow` (kept here under their old names)"""
+from ..err import Overflow, Underflow
 
-class Underflow(Exception):
-    """The file held fewer samples than its size says, e.g. it was truncated while being read"""
+__all__ = ["Overflow", "Underflow"]

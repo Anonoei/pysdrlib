@@ -160,10 +160,10 @@ class TestRead:
             File(tmp_path / "a.sigmf")
 
     def test_a_raw_file_still_needs_its_format(self, tmp_path):
-        (tmp_path / "x.cfile").write_bytes(b"\0" * 8)
-        assert File(tmp_path / "x.cfile", "cf32").meta is None
+        (tmp_path / "x.bin").write_bytes(b"\0" * 8)
+        assert File(tmp_path / "x.bin", "cf32").meta is None
         with pytest.raises(ValueError, match="fmt"):
-            File(tmp_path / "x.cfile")
+            File(tmp_path / "x.bin")   # (".cfile" would name its format)
 
 
 def test_big_endian_recordings(tmp_path):

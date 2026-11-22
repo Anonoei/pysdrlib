@@ -33,7 +33,14 @@ class NotStreaming(_Error):
     """Error thrown when reading from a device that isn't receiving"""
 
 class Dropped(_Error):
-    """Error thrown when samples were lost and the device's `on_drop` is 'raise'"""
+    """Error thrown when samples were lost and the device's `on_drop` is 'raise', or inside a block read with
+    on_drop="raise" (that one carries the block: `.samples`, `.meta`, and `.lost`, how many samples)"""
+
+class Overflow(_Error, EOFError):
+    """Error thrown by `File` when asked for samples past the end of the file (or before its start)"""
+
+class Underflow(_Error):
+    """Error thrown by `File` when the file held fewer samples than its size says, e.g. it was truncated while being read"""
 
 class NotSupported(_Error, NotImplementedError):
     """Error thrown when a device has no such control (see `Device.caps`)"""

@@ -16,7 +16,7 @@ def add_arguments(sub):
     p = sub.add_parser("play", help="look at a recording, play it in real time, or serve it like a radio",
                        description=__doc__.split("\n\n")[0])
     p.add_argument("path", help="the recording: a SigMF one (NAME.sigmf, or either of its files), or a raw file")
-    p.add_argument("--fmt", help="its sample format, for a raw file (see pysdrlib.Formats: cf32, ci16, cu8...)")
+    p.add_argument("--fmt", help="its sample format, for a raw file whose extension doesn't name one (see pysdrlib.Formats: cf32, ci16t, cui8...)")
     p.add_argument("--rate", type=float, help="its sample rate, for a raw file (Hz)")
     p.add_argument("--freq", type=float, help="its centre frequency (Hz; for SigMF: overrides the recording's)")
     p.add_argument("--loop", action="store_true", help="start again at the end")

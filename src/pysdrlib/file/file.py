@@ -6,9 +6,9 @@ from pathlib import Path
 import numpy as np
 
 from .. import logger
+from .. import err
 from .. import err as pysdr_err
 from ..base import Formats
-from . import err
 from . import sigmf as _sigmf
 
 class File:
@@ -23,6 +23,9 @@ class File:
                 ...
 
     A SigMF recording ("x.sigmf-meta", "x.sigmf-data", "x.sigmf", or just "x") needs no `fmt`: it comes from the metadata, with `rate`, `freq` and the rest in `meta`.
+    Nor does a file whose extension names its format (".cfile", ".cf32", ".cs16", ".cu8"...; see `Formats.from_extension`).
+    Reading past the end raises `pysdrlib.err.Overflow` (or, with `partial=True`, returns what is left). Reading opens the
+    file if it isn't open yet.
     """
     def __init__(self, path=None, fmt: str | None = None, scale: bool = False):
         self.log = logger.new("device.File")
@@ -40,7 +43,7 @@ class File:
         if path is not None:
             self.set_path(path)
         if self.fmt is None and path is not None:
-            raise ValueError(f"{path}: give the sample format (fmt=...), or a SigMF recording")
+            raise ValueError(f"{path}: give the sample format (fmt=...): its extension doesn't name one, and it isn't SigMF")
 
     @property
     def rate(self):
@@ -110,6 +113,8 @@ class File:
             self.meta = _sigmf.read(meta)
             if self.fmt is None:
                 self.fmt = self.meta.fmt
+        elif self.fmt is None:
+            self.fmt = Formats.from_extension(path)
         self.path = path
         self._fsize = path.stat().st_size
         if self.fmt is not None:
@@ -168,7 +173,9 @@ class File:
 
     def _ensure_open(self, name):
         if self.f is None:
-            raise pysdr_err.NotOpen(f"Cannot call `{name}` when file isn't open")
+            if self.path is None:
+                raise pysdr_err.NotOpen(f"Cannot call `{name}` before a file is given (set_path)")
+            self.open()
 
     def _read(self, count: int):
         """Read <count> samples at the current position (does not touch cur_samp)"""

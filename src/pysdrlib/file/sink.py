@@ -13,7 +13,8 @@ from . import sigmf as _sigmf
 _EPOCH_PLAUSIBLE = 946684800.0   # 2000-01-01: a radio's clock later than this was set to a date, not counting from 0
 
 class FileSink:
-    """Counterpart of File: `FileSink(path, fmt)`, then `write(samples)`.
+    """Counterpart of File: `FileSink(path, fmt)`, then `write(samples)`. `fmt` left out: the one the extension names
+    (".cs16" -> ci16t...; see `Formats.from_extension`), else cf32.
 
     Truncates an existing file unless `append=True` (the format of an existing file is not checked).
     `open=True` opens it on construction.
@@ -28,12 +29,12 @@ class FileSink:
     with a device's `RxMeta` fills in the rate and frequency, starts a new capture at each retune, and annotates where
     samples were lost; `retune(freq)` starts a capture by hand.
     """
-    def __init__(self, path, fmt: str = "cf32", append: bool = False, open: bool = False, clip: bool = False,
+    def __init__(self, path, fmt: str | None = None, append: bool = False, open: bool = False, clip: bool = False,
                  scale: bool = False, sigmf: bool | None = None, rate: float | None = None, freq: float | None = None, hw: str | None = None):
         self.log = logger.new("device.FileSink")
         self.sigmf = _sigmf.is_sigmf(path) if sigmf is None else bool(sigmf)
         self.path = _sigmf.paths(path)[0] if self.sigmf else Path(path)
-        self.fmt: Formats = Formats.get(fmt)
+        self.fmt: Formats = Formats.get(fmt) if fmt is not None else (Formats.from_extension(self.path) or Formats.cf32)
         if self.sigmf and self.fmt.sigmf is None:
             raise ValueError(f"SigMF has no datatype for {self.fmt.name}")
         if self.sigmf and append:
