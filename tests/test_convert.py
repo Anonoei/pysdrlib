@@ -213,6 +213,15 @@ class TestNames:
         assert convert.sample_format("cf64").dtype == np.float64
         assert convert.sample_format(convert.INT12) is convert.INT12
 
+    def test_formats_members(self):
+        from pysdrlib import Formats
+        assert convert.sample_format(Formats.ci16t) is convert.INT16
+        assert convert.sample_format(Formats.cf32) is convert.FLOAT32
+        assert convert.sample_format(Formats.get("cu8")) is convert.UINT8
+        assert convert.sample_format(Formats.ci16t_be) == SampleFormat("int", 16, 16, byteorder=">")
+        with pytest.raises(ValueError, match="unknown sample format"):
+            convert.sample_format(Formats.f32)   # real, not I/Q
+
     def test_unknown_names_are_refused(self):
         for bad in ("cf8", "ci2", "i16", "complex64"):
             with pytest.raises(ValueError, match="unknown sample format"):

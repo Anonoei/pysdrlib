@@ -105,7 +105,11 @@ class TestClient:
         sdr.initialize(cf=1e6, Fs=1e6)
         sdr.start_rx()
         assert wait_for(lambda: sdr.eof)
-        assert len(sdr.read(1000, timeout=1.0)) == 1000
+        assert len(sdr.read(1000, timeout=1.0)) == 1000   # what arrived is read first
+        t = time.monotonic()
+        with pytest.raises(err.Lost, match="server closed"):
+            sdr.read(1000, timeout=5.0)
+        assert time.monotonic() - t < 2.0   # at once, not after the timeout
         sdr.stop_rx()
         sdr.close()
 

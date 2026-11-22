@@ -9,7 +9,9 @@
 //
 // Compile with -ffp-contract=off so the arithmetic matches pysdrlib's numpy reference (tests/reference)
 // to the last bit on every CPU, and -fno-trapping-math so the clamps in the encoder can be vectorised
-// (nothing here depends on floating-point exceptions).
+// (nothing here depends on floating-point exceptions). Never -ffast-math, -Ofast or /fp:fast: the rounding by
+// (x + 12582912.0f) - 12582912.0f (1.5 * 2^23, which leaves x rounded to an integer, ties to even) is folded away
+// to x by any compiler allowed to reassociate.
 //
 // The hot loops are compiled for several instruction sets and the CPU picks one when the library loads
 // (HW_SIMD), the way numpy does it, so a generic wheel still uses AVX2 where there is any.

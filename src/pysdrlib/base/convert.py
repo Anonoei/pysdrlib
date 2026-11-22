@@ -12,6 +12,7 @@ The conversion itself is C++ (`_native/include/hardware_convert.hpp`), the same 
 This module describes the layouts and checks them.
 """
 from dataclasses import dataclass
+from enum import Enum
 
 import numpy as np
 
@@ -118,11 +119,12 @@ NAMES = tuple(sorted(n for n in _NAMES if n not in ("cui8", "cui16"))) + tuple(
 
 def sample_format(fmt) -> SampleFormat:
     """A `SampleFormat` from itself or a SigMF-style name: "cf32" (GNU Radio complex64), "ci16", "ci8", "cu8"/"cui8"
-    (RTL-SDR), "cu16", "ci32", "cf64", "cf16" (IEEE half), "ci4" (I and Q nibbles in a byte). Two's complement may be spelled out ("ci16t"), and "_le"/"_be" picks the byte
+    (RTL-SDR), "cu16", "ci32", "cf64", "cf16" (IEEE half), "ci4" (I and Q nibbles in a byte), or the `Formats` member of
+    one of those (`Formats.ci16t`), so the names File and FileSink take work here too. Two's complement may be spelled out ("ci16t"), and "_le"/"_be" picks the byte
     order (default little-endian)."""
     if isinstance(fmt, SampleFormat):
         return fmt
-    name = str(fmt).lower()
+    name = (fmt.name if isinstance(fmt, Enum) else str(fmt)).lower()   # a Formats member, as File and FileSink take
     order = "<"
     if name.endswith(("_le", "_be")):
         name, order = name[:-3], "<" if name.endswith("_le") else ">"

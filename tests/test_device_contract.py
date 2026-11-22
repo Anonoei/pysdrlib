@@ -30,6 +30,9 @@ class TestOpenClose:
             sdr.open()
         assert not sdr.state["open"]
 
+    def test_local_devices_answer_what_remote_ones_add(self, sdr):
+        assert sdr.is_controller and sdr.id is None and sdr.granted is None
+
     def test_close(self, sdr):
         sdr.close()
         assert not sdr.state["open"] and sdr.device.names()[-1] == "close"

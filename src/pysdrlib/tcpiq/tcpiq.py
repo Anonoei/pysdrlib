@@ -122,9 +122,15 @@ class TcpIq(NativeDevice):
                 "gain_count": d.rtl_gain_count}
 
     def _rx_lost(self):
-        """Listening: the client dropped `reconnect_timeout` seconds ago, and none has connected since"""
+        """Connected: the server closed the stream, or keepalive found it gone. Listening: the client dropped
+        `reconnect_timeout` seconds ago, and none has connected since"""
         d, limit = self.device, getattr(self, "reconnect_timeout", None)
-        if d is None or limit is None or not d.listening:
+        if d is None:
+            return None
+        if not d.listening:
+            return ("the server closed the stream, or stopped answering: open the device again to reconnect"
+                    if d.eof else None)
+        if limit is None:
             return None
         gone = d.disconnected_for
         if gone > limit:

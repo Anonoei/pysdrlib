@@ -207,8 +207,9 @@ class TestPosition:
 class TestOpenClose:
     def test_close_then_reopen(self, f):
         f.next(10)
+        assert f.is_open
         f.close()
-        assert f.f is None
+        assert not f.is_open
         f.open()
         assert ints(f.next(5)) == list(range(10, 15))  # resumes where it left off
 

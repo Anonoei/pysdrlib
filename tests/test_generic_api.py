@@ -85,6 +85,28 @@ class TestRead:
             s.stop_rx()
         assert m.dropped > 0 and m.gaps[0][0] == 0 and m.index == 1000 + m.dropped
 
+    def test_index_stays_absolute_across_gaps_inside_blocks(self):
+        s = pysdrlib.open("sim")
+        s.initialize(cf=1e6, Fs=1e6)
+        s.on_drop = "ignore"
+        s.start_rx()
+        blocks = []
+        try:
+            for i in range(60):   # the sim delivers ahead of the reader: a drop lands some blocks later
+                if i in (2, 5):
+                    s.drop(1234, after=10_000)
+                blocks.append(s.read(30_000, timeout=2, meta=True)[1])
+                if sum(m.dropped for m in blocks) == 2 * 1234:
+                    blocks.append(s.read(30_000, timeout=2, meta=True)[1])
+                    break
+        finally:
+            s.close()
+        assert sum(m.dropped for m in blocks) == 2 * 1234
+        assert any(at > 0 for m in blocks for at, _ in m.gaps)
+        for prev, m in zip(blocks, blocks[1:]):
+            lead = sum(n for at, n in m.gaps if at == 0)
+            assert m.index == prev.index + prev.count + sum(n for at, n in prev.gaps if at > 0) + m.discarded + lead
+
     def test_stream_starts_and_stops(self):
         s = sim()
         with s.stream(2048, timeout=2, meta=True) as st:

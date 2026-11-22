@@ -28,6 +28,11 @@ class RxMeta:
     hw_time: the radio's own clock at the first sample (seconds; UHD's device time, a replayed recording's time), for
     devices that timestamp their samples; None otherwise. Unlike `time` it has no host jitter, and two radios
     sharing a clock reference and a time (GPS, PPS) agree on it
+
+    `index` is the absolute position in the stream, across gaps: sample `k` of the block is stream sample
+    `index + k + sum(n for at, n in gaps if 0 < at <= k)` (a gap at offset 0 is already in `index`). The next block's
+    `index` is `index + count + sum(n for at, n in gaps if at > 0)`, plus its own `discarded` and its own gap at
+    offset 0. So a block can be stamped with its position and time straight from `index` and `time`/`hw_time`.
     """
     index: int
     count: int

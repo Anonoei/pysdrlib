@@ -30,6 +30,9 @@ PyPI.
   - Measures the arrival rate (`sdr.measured_rate`) and warns (`warn.RateMismatch`) when it disagrees with the
     declared `Fs`.
   - Accepts 4-bit packed (`ci4`) and half-float (`cf16`) streams. `pysdrlib.tcpiq.FORMATS` lists every stream format.
+    The format can also be a `Formats` member (`Formats.ci16t`), as File and FileSink take.
+  - Connected mode: when the server closes the stream, or stops answering (keepalive notices in about 5 s), a read
+    raises `err.Lost` once what arrived has been read. Before, it waited until its timeout.
 - **sim** runs on the same native streaming path as the hardware drivers. Its signal is built from tones, noise and
   QPSK bursts, set in `open()` or `configure()`. It can scale with gain and clip like an ADC, and can delay a retune,
   drop samples, stall or disconnect on demand. Each channel has its own gain and strength (`channel_db`).
@@ -47,6 +50,8 @@ PyPI.
   that arrive during a slow retune report the new setting.
 - `Device.sweep(start, stop, step, count)` takes a list of frequencies, `offset=` (tune off centre, which moves the DC
   spike out of the way) and `skip=`.
+- Every device has `is_controller` (always true locally), `id` and `granted` (None locally), so code that handles
+  local and remote devices alike doesn't need `getattr`.
 - `find_gain()` finds and sets the highest receive gain that doesn't clip, for one channel or several, local or remote.
 - Gain splitting is cached: a repeated HackRF `set_rx_gain` takes 5 µs instead of 723 µs.
 - The native ring copies samples out with its lock released, so a slow reader no longer holds up the driver's thread.
@@ -58,6 +63,7 @@ PyPI.
 - `pysdrlib.open("file", path=...)` plays a recording as a radio (`loop=`, `realtime=`, seek). `tx_path=` records
   what is transmitted. A server can host either.
 - Big-endian formats (`ci16_be`, `cf32_be`...), 4-bit packed and half-float formats, and `FileSink(scale=True)`.
+- `File.is_open`.
 - The format is taken from the file extension (`.cf32`, `.cu8`, `.cfile`...) when none is given.
 
 ### Finding and opening radios
@@ -77,6 +83,8 @@ PyPI.
 
 - Building from a source checkout works again (`pip install -e .`, sdist to wheel, cibuildwheel). It was broken since
   hardware timestamps landed.
+- A recording played with `realtime=False` could lose whole blocks while a read was copying out of the queue: the
+  ring now reports what is being copied (`rx_stats()["reading"]`), and playback waits for that as well.
 - `with pysdrlib.open(...) as sdr` no longer warns that the device is already open.
 - pysdrlib's warnings point at the caller's line, not at pysdrlib's own code.
 

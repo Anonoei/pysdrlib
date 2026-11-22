@@ -189,6 +189,7 @@ void TcpIqDevice::open_connect(const std::string& host, uint16_t port, double ti
         set_rcvbuf(s);
         int err = connect_within(s, ai, timeout);
         if (err == 0) {
+            set_keepalive(s);   // a server that vanishes without closing (host off, network gone) fails recv in ~5 s
             auto* c = new TcpIqConn;
             c->client = s;
             port_ = local_port(s);
@@ -235,6 +236,7 @@ void TcpIqDevice::open_listen(const std::string& host, uint16_t port, const Samp
             sock_close(s);
             continue;
         }
+        set_blocking(s, false);   // a client that resets between poll and accept must not block accept (BSD, macOS)
         port_ = local_port(s);
         auto* c = new TcpIqConn;
         c->listener = s;
@@ -467,6 +469,7 @@ void TcpIqDevice::io_loop() {
             accept_client(c);
             continue;
         }
+        if (r > 0 && !(p[0].revents & (POLLIN | POLLHUP | POLLERR))) continue;   // only the listener had an event
         long n = -1;
         if (r > 0) {
             n = static_cast<long>(recv(c->client, reinterpret_cast<char*>(buf_.data() + carry_),

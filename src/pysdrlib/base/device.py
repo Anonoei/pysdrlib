@@ -97,6 +97,15 @@ class Device:
     GAIN_RESERVE: dict = {}  # {"rx"/"tx": (stage, ...)}: stages a total gain uses only when the others can't reach it
     GAIN_BALANCE = "range"   # how a total is shared: "range" (each stage the same fraction of its range) or "db" (equal dB)
 
+    # Set by a remote device (pysdrlib.remote.RemoteDevice); these defaults let a caller read them from any device
+    id: str | None = None        # the device's id on its server ("<driver>-0"); None for a local device
+    granted: dict | None = None  # what the radio a server chose can do, nearest to what was asked; None when not chosen
+
+    @property
+    def is_controller(self) -> bool:
+        """Whether this handle may change settings: always for a local device; a remote one may be a viewer"""
+        return True
+
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         cls._make_stage_setters()

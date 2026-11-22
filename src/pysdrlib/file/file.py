@@ -52,6 +52,11 @@ class File:
         """Centre frequency of the first sample of a SigMF recording (None: not recorded, or not SigMF)"""
         return self.meta.freq if self.meta else None
 
+    @property
+    def is_open(self) -> bool:
+        """Whether the file is open (`open`, or the first read); `close` keeps the position for the next"""
+        return self.f is not None
+
     def __str__(self):
         return f"File ({self.cur_samp}/{self.max_samp},{self.fmt.name}): {self.path}"
 
