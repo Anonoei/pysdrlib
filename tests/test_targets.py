@@ -30,10 +30,30 @@ def test_round_trip(text):
     assert str(t) == text and parse_target(str(t)) == t
 
 
-def test_bad_targets():
-    for text in ("", "  ", "@a06"):
-        with pytest.raises(ValueError):
-            parse_target(text)
+@pytest.mark.parametrize("text", ["", "  ", "@a06", "tcp:/hackrf", "://host:5555", "tcp://", "tcp://host:5555/a/b",
+                                  "udp://host/sim", "host:99999/sim", "host:port/sim", "a b/sim", "ipc:///sim"])
+def test_bad_targets(text):
+    with pytest.raises(ValueError):
+        parse_target(text)
+
+
+@pytest.mark.parametrize("server", ["", "tcp://", "://host", "tcp://a/b", "tcp://host:0", "host:", "ipc://"])
+def test_bad_servers(server):
+    with pytest.raises(ValueError):
+        targets.endpoint(server)
+
+
+def test_ipv6_server():
+    assert targets.endpoint("[::1]") == "tcp://[::1]:5555"
+    assert parse_target("[fe80::1]:6000/sim-0") == Target("tcp://[fe80::1]:6000", "sim-0")
+
+
+def test_tcpiq_lists_its_formats():
+    from pysdrlib import tcpiq
+    from pysdrlib.base import convert
+    assert "cf32" in tcpiq.FORMATS and "cu8" in tcpiq.FORMATS and "ci16_be" in tcpiq.FORMATS
+    for name in tcpiq.FORMATS:
+        convert.sample_format(name)
 
 
 def test_servers_from_the_environment(monkeypatch):

@@ -45,18 +45,33 @@ class Target:
         return format_target(self.server, self.device, self.serial)
 
 
+_HOST = re.compile(r"^(?P<host>\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9_.-]+)(?::(?P<port>\d+))?$")
+_SCHEMES = ("tcp", "ipc", "inproc")
+
+
 def endpoint(server: str) -> str:
     """A server as a ZeroMQ endpoint: "radiohost" -> "tcp://radiohost:5555", "radiohost:5556" -> "tcp://radiohost:5556";
-    an endpoint (tcp://, ipc://...) is kept, with the default port added to a tcp:// one without"""
-    server = server.strip().rstrip("/")
+    an endpoint (tcp://, ipc://...) is kept, with the default port added to a tcp:// one without. Raises ValueError
+    for anything else: a tcp server is host[:port] (an IPv6 host in brackets), an ipc one a path"""
+    text = str(server).strip()
+    server = text[:-1] if text.endswith("/") and not text.endswith("://") else text
     if not server:
         raise ValueError("an empty server address")
     if "://" not in server:
         server = "tcp://" + server
     scheme, rest = server.split("://", 1)
-    if scheme == "tcp" and not re.search(r":\d+$", rest):
-        server = f"{server}:{DEFAULT_PORT}"
-    return server
+    if scheme not in _SCHEMES:
+        raise ValueError(f"server {text!r}: the scheme is one of {', '.join(_SCHEMES)}, not {scheme!r}")
+    if scheme != "tcp":
+        if not rest.strip("/"):
+            raise ValueError(f"server {text!r} has no path")
+        return server
+    m = _HOST.match(rest)
+    if not m:
+        raise ValueError(f"server {text!r}: a tcp server is host or host:port")
+    if m["port"] is not None and not 0 < int(m["port"]) < 65536:
+        raise ValueError(f"server {text!r}: port {m['port']} is out of range")
+    return server if m["port"] is not None else f"{server}:{DEFAULT_PORT}"
 
 
 def short(server: str) -> str:

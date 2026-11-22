@@ -32,7 +32,7 @@ class TcpIq(NativeDevice):
         """host, port: the server to connect to; or, with `listen`, the address to listen on (host default: every
         interface; port 0: any free one, see `port`). timeout: seconds to connect.
         sample_format: layout of what the other end sends, a `convert.SampleFormat` or a name ("cf32", "ci16",
-        "cu8", ... see `convert.sample_format`)"""
+        "cu8", ...: one of `pysdrlib.tcpiq.FORMATS`)"""
         f = self.SAMPLE_FORMAT = convert.sample_format(sample_format)
         layout = (f.kind, f.bits, f.storage, f.packed, f.byteorder == ">")
         if listen:

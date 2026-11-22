@@ -105,6 +105,12 @@ _NAMES = {"ci8": INT8, "cu8": UINT8, "cui8": UINT8, "ci16": INT16, "cf32": FLOAT
           "cu16": SampleFormat("uint", 16, 16), "cui16": SampleFormat("uint", 16, 16),
           "ci32": SampleFormat("int", 32, 32), "cf64": SampleFormat("float", 64, 64)}
 
+# The names `sample_format` takes, each once (aliases aside: "cui8" = "cu8", "ci16t" = "ci16", "_le" = no suffix): what a
+# stream's format can be (e.g. tcpiq's). Multi-byte ones also big-endian. Files take more (`pysdrlib.Formats`: 4-bit,
+# float16...), which the stream converters don't decode
+NAMES = tuple(sorted(n for n in _NAMES if n not in ("cui8", "cui16"))) + tuple(
+    sorted(f"{n}_be" for n, f in _NAMES.items() if f.storage > 8 and n not in ("cui16",)))
+
 def sample_format(fmt) -> SampleFormat:
     """A `SampleFormat` from itself or a SigMF-style name: "cf32" (GNU Radio complex64), "ci16", "ci8", "cu8"/"cui8"
     (RTL-SDR), "cu16", "ci32", "cf64". Two's complement may be spelled out ("ci16t"), and "_le"/"_be" picks the byte
