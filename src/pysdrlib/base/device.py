@@ -234,6 +234,10 @@ class Device:
                 self._set_rx_channels(chs)
             self._rx_channels = chs
         self._rx_reset()
+        for ch in self._rx_channels:   # what the stream starts at: a block from before a later change keeps saying so
+            d = self._direction("rx", ch)
+            self._rx_now[("freq", ch)] = self._tuning.get(("freq", d, ch), self._cf)
+            self._rx_now[("rate", ch)] = self._tuning.get(("rate", d, ch), self._Fs)
         self._start_rx()
         self.state["rx"] = True
     @property
@@ -337,6 +341,7 @@ class Device:
         if hw != Fs and not _caps.contains(self.caps.rates, hw):
             hw, scale = Fs, 1.0    # discrete rates: the hardware can't be asked for a corrected one
         rx_before = self._Fs
+        at = self._rx_mark()
         self._Fs = hw
         done = [(self._set_rx_sample_rate if d == "rx" else self._set_tx_sample_rate)(hw, channel=channel)   # may snap self._Fs
                 for d in self._hooked(direction, dirs, "rate")]
@@ -345,7 +350,7 @@ class Device:
             actual = self._Fs if "rx" in dirs else hw
         rate = Fs if actual == hw else actual * scale
         self._Fs = rx_before if "rx" not in dirs else rate
-        self._tuned("rate", rate, dirs, channel, flush)
+        self._tuned("rate", rate, dirs, channel, flush, at)
         return rate
     def _tune_freq(self, freq, direction, channel, flush):
         """The work of `set_*_freq`; `direction` None: both (what a correction re-applies)"""
@@ -360,12 +365,13 @@ class Device:
         held = self._within(radio, self.caps.freq, "Frequency")
         if held != radio:
             radio, freq = held, held if chain is None else chain.to_rf(held)
+        at = self._rx_mark()
         for d in self._hooked(direction, dirs, "freq"):
             link = chain if d == (direction or "rx") else self._chain(d, channel)
             hw = radio if link is chain else (freq if link is None else link.to_if(freq))
             hw = hw / self._ppm_scale() if self._ppm else hw
             (self._set_rx_freq if d == "rx" else self._set_tx_freq)(hw, channel=channel)
-        self._tuned("freq", freq, dirs, channel, flush)
+        self._tuned("freq", freq, dirs, channel, flush, at)
         return freq
 
     def _chain(self, direction, channel=0):
@@ -473,6 +479,7 @@ class Device:
         self.log.trace("set_%s_gain_db(%s, stage=%s)", d, gain, stage)
         self._ensure_open(f"set_{d}_gain_db")
         self._direction(d, channel)
+        at = self._rx_mark() if d == "rx" else None
         if stage is None:
             total = "default" if gain is None else self._check_gain(gain, d.upper())
             (self._set_rx_gain if d == "rx" else self._set_tx_gain)(total, channel=channel)
@@ -484,7 +491,7 @@ class Device:
             self._set_gain_stage(d.upper(), name, gain, setter, channel)
         value = self._get_gain_db(d, stage, channel)
         if d == "rx":
-            self._note("gain", value, channel, flush)
+            self._note("gain", value, channel, flush, at=at)
         return value
 
     def _get_gain_db(self, d, stage, channel):
@@ -569,10 +576,11 @@ class Device:
         else:
             bw = max(r.hi for r in ranges)
             self._invalid(f"Bandwidth {want:,.0f} is wider than {type(self).NAME} allows, using {bw:,.0f}")
+        at = self._rx_mark() if d == "rx" else None
         bw = self._set_bandwidth(d, bw, channel=channel) or bw
         self._bandwidth[(d, channel)] = bw
         if d == "rx":
-            self._note("bandwidth", bw, channel, False)
+            self._note("bandwidth", bw, channel, False, at=at)
         return bw
 
     def rx_antennas(self, channel=0):
@@ -913,22 +921,29 @@ class Device:
         self._rx_buf = np.empty(0, dtype=np.complex64)
         self._rx_buf_index = 0
 
-    def _note(self, kind, value, channel, flush, channels=None):
-        """A receive setting changed (for `channels`, default `channel`): mark where in the stream, and skip the
-        settling with flush"""
+    def _rx_mark(self):
+        """Where the receive stream is before a setting is sent to the hardware (None: not receiving). The change is
+        marked there, not where the driver's call returns: a call can block for a long time (~130 ms for a bladeRF's
+        cross-band retune) while samples keep arriving, and those are already at, or settling to, the new setting"""
+        return self._rx_position()[0] if self.state.get("rx") else None
+
+    def _note(self, kind, value, channel, flush, channels=None, at=None):
+        """A receive setting changed (for `channels`, default `channel`): mark where in the stream (`at`: the position
+        `_rx_mark` took before the hardware call; default now), and skip the settling with flush, counted from now"""
         if not self.state.get("rx"):
             return
         total, _ = self._rx_position()
+        mark = total if at is None else min(at, total)
         for ch in (channels if channels is not None else (channel,)):
             if ch in self._rx_channels:
-                self._rx_events.append((total, kind, value, ch))
+                self._rx_events.append((mark, kind, value, ch))
         if flush:
             for slot in range(len(self._rx_channels)):
                 self._rx_flush(slot=slot)
             settle = int(self.caps.retune_settle * (self._Fs or 0)) + int(self.caps.retune_samples)
             self._rx_discard = max(self._rx_discard, total + settle)
 
-    def _tuned(self, kind, value, dirs, channel, flush):
+    def _tuned(self, kind, value, dirs, channel, flush, at=None):
         """Record a frequency or rate for every (direction, channel) it changed, per caps.shared[kind]: "channel" (just
         that one), "direction" (all channels of the direction), "device" (everything); mark the receive stream"""
         shared = self.caps.shared.get(kind, "channel")
@@ -941,7 +956,7 @@ class Device:
         if kind == "freq":
             self._cf = self._tuning.get(("freq", "rx", 0), self._cf)
         if "rx" in hit:
-            self._note(kind, value, channel, flush, hit["rx"])
+            self._note(kind, value, channel, flush, hit["rx"], at)
 
     def _hooked(self, direction, dirs, kind):
         """The directions whose hook a tuning call runs: the one asked for. With none asked for (both) and one synthesizer

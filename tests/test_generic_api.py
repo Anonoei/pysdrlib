@@ -123,6 +123,33 @@ class TestRead:
         assert (changes and changes[0].value == 101e6 and m.freq == 100e6) or m.freq == 101e6
         assert m2.freq == 102e6 and not m2.events and m2.dropped == 0
 
+    def test_a_slow_retune_is_marked_where_it_started(self):
+        """A driver call that blocks (a bladeRF's cross-band retune takes ~130 ms) while samples keep arriving: the change
+        is marked where the stream was when it was sent, not where the call returned"""
+        seen = {}
+
+        class Slow(Sim):
+            def _set_rx_freq(self, freq, channel=0):
+                seen["sent"] = self._rx_position()[0]
+                time.sleep(0.1)
+                super()._set_rx_freq(freq, channel)
+                seen["done"] = self._rx_position()[0]
+
+        s = Slow(realtime=True, block_samples=4096)
+        s.open()
+        s.initialize(cf=100e6, Fs=1e6)
+        s.start_rx()
+        try:
+            s.read(1000, timeout=2)
+            s.set_rx_freq(101e6)
+            x, m = s.read(400_000, timeout=3, meta=True)
+        finally:
+            s.stop_rx()
+        assert seen["done"] - seen["sent"] > 20_000          # samples did arrive during the call
+        changes = [e for e in m.events if e.kind == "freq"]
+        assert m.freq == 100e6 and changes and changes[0].value == 101e6
+        assert m.index + changes[0].offset <= seen["sent"]
+
     def test_dc_correction(self):
         s = sim()
         s.dc_correction = True
