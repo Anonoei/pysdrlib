@@ -36,7 +36,10 @@ PYBIND11_MODULE(_tcpiq, m) {
         .def_property_readonly("eof", &TcpIqDevice::eof)
         .def_property_readonly("peer", &TcpIqDevice::peer)
         .def_property_readonly("connections", &TcpIqDevice::connections)
-        .def_property_readonly("port", &TcpIqDevice::port);
+        .def_property_readonly("port", &TcpIqDevice::port)
+        .def_property_readonly("rtl_header", &TcpIqDevice::rtl_header)
+        .def_property_readonly("rtl_tuner", &TcpIqDevice::rtl_tuner)
+        .def_property_readonly("rtl_gain_count", &TcpIqDevice::rtl_gain_count);
 
     m.def("connect", [](const std::string& host, uint16_t port, double timeout, const std::string& kind, int bits,
                         int storage, bool packed, bool big_endian) {

@@ -65,6 +65,18 @@ class TcpIq(NativeDevice):
         """The local port (the one chosen, after listening on port 0)"""
         return self.device.port if self.device is not None else None
 
+    RTL_TUNERS = {0: "unknown", 1: "E4000", 2: "FC0012", 3: "FC0013", 4: "FC2580", 5: "R820T", 6: "R828D"}
+
+    @property
+    def rtl_tcp(self):
+        """What the rtl_tcp server said about its dongle, when the stream began with rtl_tcp's 12-byte header (which
+        is skipped, not read as samples): {"tuner": name, "tuner_type": n, "gain_count": n}; None otherwise (or not yet)"""
+        d = self.device
+        if d is None or not d.rtl_header:
+            return None
+        return {"tuner": self.RTL_TUNERS.get(d.rtl_tuner, f"type {d.rtl_tuner}"), "tuner_type": d.rtl_tuner,
+                "gain_count": d.rtl_gain_count}
+
     def _set_rx_freq(self, freq, channel=0):
         pass   # declared, not sent: the sender decides what it streams
     def _set_rx_sample_rate(self, Fs, channel=0):

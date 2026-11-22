@@ -189,3 +189,75 @@ class TestServer:
             assert wait_for(lambda: sdr.connections == 1)
             sdr.close()   # joins the thread; must not hang
         assert not sdr.state["open"]
+
+
+def rtl_header(tuner=5, gains=29):
+    return b"RTL0" + tuner.to_bytes(4, "big") + gains.to_bytes(4, "big")
+
+
+@pytest.fixture
+def pieces():
+    """A TCP server that sends its `chunks` to the first client one at a time, a pause between them (so the receiver
+    sees them split), then holds the connection"""
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    state = {"chunks": []}
+
+    def serve():
+        try:
+            conn, _ = srv.accept()
+        except OSError:
+            return
+        with conn:
+            for chunk in state["chunks"]:
+                conn.sendall(chunk)
+                time.sleep(0.03)
+            time.sleep(0.5)
+
+    threading.Thread(target=serve, daemon=True).start()
+    state["port"] = srv.getsockname()[1]
+    yield state
+    srv.close()
+
+
+class TestRtlTcpHeader:
+    """rtl_tcp starts its stream with 12 bytes of dongle info: skipped, not read as samples"""
+
+    def read_cu8(self, port, count):
+        sdr = pysdrlib.open("tcpiq", host="127.0.0.1", port=port, sample_format="cu8")
+        try:
+            sdr.initialize(cf=100e6, Fs=1e6)
+            sdr.start_rx()
+            y = sdr.read(count, timeout=2.0)
+            sdr.stop_rx()
+            return y, sdr.rtl_tcp
+        finally:
+            sdr.close()
+
+    @pytest.mark.parametrize("split", [None, (1, 3, 5), (12,), (4, 9)], ids=["whole", "bytewise", "header-alone", "into-samples"])
+    def test_skipped(self, pieces, split):
+        x = (0.5 * tone(1000)).astype(np.complex64)
+        data = rtl_header() + convert.UINT8.from_complex64(x).tobytes()
+        cuts = [0, *np.cumsum(split or ()).tolist(), len(data)]
+        pieces["chunks"] = [data[a:b] for a, b in zip(cuts, cuts[1:]) if b > a]
+        y, info = self.read_cu8(pieces["port"], 1000)
+        np.testing.assert_array_equal(y, convert.UINT8.to_complex64(data[12:]))
+        assert info == {"tuner": "R820T", "tuner_type": 5, "gain_count": 29}
+
+    def test_a_stream_without_it_is_untouched(self, pieces):
+        data = b"RT" + bytes(range(256)) * 4   # starts like the magic, then isn't
+        pieces["chunks"] = [data[:1], data[1:3], data[3:]]
+        y, info = self.read_cu8(pieces["port"], len(data) // 2)
+        np.testing.assert_array_equal(y, convert.UINT8.to_complex64(data))
+        assert info is None
+
+    def test_listening_each_client(self, listening):
+        for tuner in (1, 6):
+            with client(listening) as c:
+                c.sendall(rtl_header(tuner, 14) + tone(5000).tobytes())
+                if tuner == 1:
+                    listening.start_rx()
+                assert wait_for(lambda: listening.rtl_tcp is not None and listening.rtl_tcp["tuner_type"] == tuner)
+            assert wait_for(lambda: listening.peer is None)
+        listening.stop_rx()

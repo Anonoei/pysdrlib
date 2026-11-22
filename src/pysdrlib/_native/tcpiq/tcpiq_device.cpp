@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <algorithm>
 #include <cstring>
 
 // ---- sockets, the same on every platform from here on ---- //
@@ -167,8 +168,8 @@ void TcpIqDevice::open_connect(const std::string& host, uint16_t port, double ti
             format_ = format;
             listening_ = false;
             eof_ = false;
-            carry_ = 0;
-            buf_.assign(CHUNK_BYTES + format.bytes_per_sample(), 0);
+            buf_.assign(CHUNK_BYTES + format.bytes_per_sample() + RTL_HEADER, 0);
+            new_stream();
             handle_ = c;
             return;
         }
@@ -210,8 +211,8 @@ void TcpIqDevice::open_listen(const std::string& host, uint16_t port, const Samp
         listening_ = true;
         eof_ = false;
         connections_ = 0;
-        carry_ = 0;
-        buf_.assign(CHUNK_BYTES + format.bytes_per_sample(), 0);
+        buf_.assign(CHUNK_BYTES + format.bytes_per_sample() + RTL_HEADER, 0);
+        new_stream();
         handle_ = c;
         stop_ = false;
         io_ = std::thread([this] { io_loop(); });   // accepts and drains from now until close()
@@ -270,13 +271,55 @@ std::string TcpIqDevice::peer() const {
 void TcpIqDevice::drop_client() {
     sock_close(handle_->client);
     handle_->client = NO_SOCKET;
-    carry_ = 0;
+    new_stream();
     std::lock_guard<std::mutex> lock(peer_mutex_);
     peer_.clear();
 }
 
+// A connection's stream starts: nothing carried, and its first bytes are checked for an rtl_tcp header
+void TcpIqDevice::new_stream() {
+    carry_ = 0;
+    head_len_ = 0;
+    sniffing_ = true;
+    rtl_seen_ = false;
+}
+
+// rtl_tcp (librtlsdr's server) starts its stream with 12 bytes of "dongle info": "RTL0", then the tuner type and the
+// number of gain steps (big-endian uint32). They are not samples: the first bytes of a stream are held back until they
+// show whether they are that header (then dropped) or samples (then put back in front). `got` new bytes are at the
+// start of buf_ (nothing is carried yet); returns how many bytes of samples are there now
+size_t TcpIqDevice::sniff_header(size_t got) {
+    static const char magic[4] = {'R', 'T', 'L', '0'};
+    const size_t held = head_len_;
+    const size_t take = std::min(RTL_HEADER - head_len_, got);
+    std::memcpy(head_ + head_len_, buf_.data(), take);
+    head_len_ += take;
+    if (std::memcmp(head_, magic, std::min<size_t>(head_len_, 4)) != 0) {   // samples: put what was held in front
+        sniffing_ = false;
+        if (held) {
+            std::memmove(buf_.data() + held, buf_.data(), got);
+            std::memcpy(buf_.data(), head_, held);
+        }
+        return held + got;
+    }
+    if (head_len_ < RTL_HEADER) return 0;   // (so far) a header: wait for the rest of it
+    sniffing_ = false;
+    auto be32 = [this](size_t at) {
+        return (uint32_t(head_[at]) << 24) | (uint32_t(head_[at + 1]) << 16) | (uint32_t(head_[at + 2]) << 8) | head_[at + 3];
+    };
+    rtl_tuner_ = be32(4);
+    rtl_gains_ = be32(8);
+    rtl_seen_ = true;
+    if (take < got) std::memmove(buf_.data(), buf_.data() + take, got - take);
+    return got - take;
+}
+
 // `got` new bytes are in buf_ after the carried ones: queue the whole samples (while receiving), keep a split one
 void TcpIqDevice::receive(size_t got) {
+    if (sniffing_) {
+        got = sniff_header(got);
+        if (!got) return;
+    }
     const size_t bps = format_.bytes_per_sample();
     const size_t total = carry_ + got;
     const size_t whole = total - total % bps;
@@ -302,7 +345,7 @@ void TcpIqDevice::io_loop() {
             set_blocking(s, true);
             set_rcvbuf(s);
             c->client = s;
-            carry_ = 0;
+            new_stream();
             {
                 std::lock_guard<std::mutex> lock(peer_mutex_);
                 peer_ = addr_text(reinterpret_cast<sockaddr*>(&from), len);

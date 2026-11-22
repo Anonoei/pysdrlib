@@ -51,6 +51,10 @@ public:
     std::string peer() const;                               // "host:port" of the other end; "" when none
     uint64_t connections() const { return connections_; }  // clients accepted since open (listening)
     uint16_t port() const { return port_; }                 // the local port
+    // The rtl_tcp header the stream began with ("RTL0", tuner type, gain count; skipped, not samples), if it did
+    bool rtl_header() const { return rtl_seen_; }
+    uint32_t rtl_tuner() const { return rtl_tuner_; }
+    uint32_t rtl_gain_count() const { return rtl_gains_; }
 
 protected:
     HardwareError not_open_error() const override;
@@ -60,6 +64,8 @@ private:
     void stop_thread();
     void drop_client();
     void receive(size_t got);
+    void new_stream();
+    size_t sniff_header(size_t got);
 
     SampleFormat format_{SampleKind::Float, 32, 32, false};
     std::thread io_;
@@ -74,4 +80,12 @@ private:
     uint16_t port_ = 0;
     std::vector<unsigned char> buf_;   // a read, after `carry_` bytes of a sample split by the previous one
     size_t carry_ = 0;
+    // The start of a connection's stream, held back until it shows whether it is an rtl_tcp header (12 bytes)
+    static constexpr size_t RTL_HEADER = 12;
+    unsigned char head_[RTL_HEADER] = {};
+    size_t head_len_ = 0;
+    bool sniffing_ = false;
+    std::atomic<bool> rtl_seen_{false};
+    std::atomic<uint32_t> rtl_tuner_{0};
+    std::atomic<uint32_t> rtl_gains_{0};
 };

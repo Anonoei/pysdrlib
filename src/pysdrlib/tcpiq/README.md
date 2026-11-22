@@ -38,6 +38,9 @@ the `Dropped` warning). There is no stall watchdog, because the sender decides w
   `"ci4"` (I and Q nibbles in one byte, I high), optionally with `_be`; `pysdrlib.tcpiq.FORMATS` lists them) or any
   `pysdrlib.base.convert.SampleFormat`. The stream is little-endian unless the format says otherwise. A sample split across two
   reads is put back together.
+- `rtl_tcp`: its stream starts with 12 bytes of dongle info ("RTL0", tuner type, gain count). They are recognized and
+  skipped, not read as samples, and `sdr.rtl_tcp` has them (`{"tuner": "R820T", "tuner_type": 5, "gain_count": 29}`).
+  Nothing is sent back: set the frequency, rate and gain on the rtl_tcp side.
 - Gain: none (`rx_gain_stages()` is empty).
 
 ## Notes
