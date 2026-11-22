@@ -68,8 +68,8 @@ class NativeDevice(Device):
         self.device.close()
 
     def _rx_lost(self):
-        """Why the device is known to be gone (unplugged...), or None. A driver that can tell overrides it, so `read`
-        raises err.Lost, not err.StreamStalled after `stall_timeout`"""
+        """Why the device is known to be gone (unplugged...), or None, saying what to do about it. A driver that can tell
+        overrides it, so `read` raises err.Lost, not err.StreamStalled after `stall_timeout`"""
         return None
 
     def _start_rx(self):
@@ -170,7 +170,7 @@ class NativeDevice(Device):
         if not have_samples:
             why = self._rx_lost()
             if why:
-                raise err.Lost(f"{type(self).NAME}: {why}. Close it, and open it again")
+                raise err.Lost(f"{type(self).NAME}: {why}")
         if report.stalled and not have_samples:
             stats = self.stats
             raise err.StreamStalled(

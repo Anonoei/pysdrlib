@@ -97,7 +97,7 @@ void set_rcvbuf(sock_t s) {
 
 // A client that vanishes without closing (crashed, its network dropped) is noticed within ~KEEPALIVE_IDLE + 3 *
 // KEEPALIVE_INTERVAL seconds, so a listening device goes back to waiting for one, instead of on a dead connection
-constexpr int KEEPALIVE_IDLE = 5, KEEPALIVE_INTERVAL = 2, KEEPALIVE_COUNT = 3;
+constexpr int KEEPALIVE_IDLE = 2, KEEPALIVE_INTERVAL = 1, KEEPALIVE_COUNT = 3;
 
 void set_keepalive(sock_t s) {
     int on = 1;
@@ -243,6 +243,7 @@ void TcpIqDevice::open_listen(const std::string& host, uint16_t port, const Samp
         eof_ = false;
         connections_ = 0;
         replaced_ = 0;
+        dropped_at_ = 0;
         buf_.assign(CHUNK_BYTES + format.bytes_per_sample() + RTL_HEADER, 0);
         new_stream();
         handle_ = c;
@@ -301,9 +302,19 @@ std::string TcpIqDevice::peer() const {
     return peer_;
 }
 
+static int64_t now_ns() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+double TcpIqDevice::disconnected_for() const {
+    const int64_t at = dropped_at_;
+    return at ? (now_ns() - at) / 1e9 : -1.0;
+}
+
 void TcpIqDevice::drop_client() {
     sock_close(handle_->client);
     handle_->client = NO_SOCKET;
+    dropped_at_ = now_ns();
     new_stream();
     std::lock_guard<std::mutex> lock(peer_mutex_);
     peer_.clear();
@@ -425,6 +436,7 @@ bool TcpIqDevice::accept_client(TcpIqConn* c) {
         std::lock_guard<std::mutex> lock(peer_mutex_);
         peer_ = addr_text(reinterpret_cast<sockaddr*>(&from), len);
     }
+    dropped_at_ = 0;
     ++connections_;
     return true;
 }

@@ -369,3 +369,40 @@ class TestMeasuredRate:
         paced_sender(listening.port, 200e3, 1.5).join()
         assert wait_for(lambda: listening.peer is None)
         assert listening.measured_rate is None
+
+    def test_lost_when_nobody_reconnects_in_time(self):
+        sdr = pysdrlib.open("tcpiq", listen=True, host="127.0.0.1", port=0, reconnect_timeout=0.3)
+        try:
+            sdr.initialize(cf=100e6, Fs=1e6)
+            sdr.start_rx()
+            with client(sdr) as c:
+                c.sendall(tone(5000).tobytes())
+                sdr.read(5000, timeout=2.0)
+            t = time.monotonic()
+            with pytest.raises(err.Lost, match="has not reconnected"):
+                sdr.read(5000, timeout=5.0)
+            assert time.monotonic() - t < 2.0
+            with client(sdr) as c:   # still listening: a client that comes later is read
+                c.sendall(tone(5000).tobytes())
+                np.testing.assert_array_equal(sdr.read(5000, timeout=2.0), tone(5000))
+        finally:
+            sdr.close()
+
+    def test_no_timeout_before_the_first_client_or_when_none(self):
+        for limit in (0.2, None):
+            sdr = pysdrlib.open("tcpiq", listen=True, host="127.0.0.1", port=0, reconnect_timeout=limit)
+            try:
+                sdr.initialize(cf=100e6, Fs=1e6)
+                sdr.start_rx()
+                if limit is None:   # a client came and went
+                    with client(sdr) as c:
+                        c.sendall(tone(100).tobytes())
+                        sdr.read(100, timeout=2.0)
+                    assert wait_for(lambda: sdr.peer is None)
+                with pytest.raises(err.Timeout):   # waited, not Lost
+                    sdr.read(100, timeout=0.6)
+            finally:
+                sdr.close()
+
+    def test_default_is_ten_seconds(self, listening):
+        assert listening.reconnect_timeout == 10.0

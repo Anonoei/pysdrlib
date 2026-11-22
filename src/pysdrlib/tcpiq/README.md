@@ -27,9 +27,11 @@ the `Dropped` warning). There is no stall watchdog, because the sender decides w
   `port` (`0`: any free port, see `sdr.port`). A port that is in use raises `err.NoDevice`.
 - It listens from `open` to `close` and serves one client at a time. When the client disconnects it waits for it to
   reconnect (or for another), and the stream goes on: `start_rx` holds, and a `read` waits through the gap (give it a
-  `timeout` to bound that). A client that connects while one is connected takes over, as a sender reconnecting after
-  its connection died does before this end has noticed; TCP keepalive notices a client that vanished without closing
-  within about 11 s. `sdr.reconnects` counts the takeovers.
+  `timeout` to bound that). `reconnect_timeout` (default 10 s; None: no limit) is how long it waits: after that a read
+  with nothing queued raises `err.Lost`, until a client connects again (it keeps listening). Before the first client,
+  reads wait as long as it takes. A client that connects while one is connected takes over, as a sender reconnecting
+  after its connection died does before this end has noticed; TCP keepalive notices a client that vanished without
+  closing within about 5 s. `sdr.reconnects` counts the takeovers.
 - Samples that arrive while not receiving (before `start_rx`, after `stop_rx`) are read and discarded, so a sender is
   never blocked.
 - `sdr.peer` is the connected client (`"host:port"`, or None: waiting for one), and `sdr.connections` counts the clients

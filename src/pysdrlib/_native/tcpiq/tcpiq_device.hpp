@@ -54,6 +54,7 @@ public:
     std::string peer() const;                               // "host:port" of the other end; "" when none
     uint64_t connections() const { return connections_; }  // clients accepted since open (listening)
     uint64_t replaced() const { return replaced_; }        // ... of which took over from a connected one (reconnects)
+    double disconnected_for() const;   // listening: seconds since the client dropped, with none since; -1 otherwise
     uint16_t port() const { return port_; }                 // the local port
     // The rtl_tcp header the stream began with ("RTL0", tuner type, gain count; skipped, not samples), if it did
     bool rtl_header() const { return rtl_seen_; }
@@ -89,6 +90,7 @@ private:
     std::atomic<bool> eof_{false};
     std::atomic<uint64_t> connections_{0};
     std::atomic<uint64_t> replaced_{0};
+    std::atomic<int64_t> dropped_at_{0};   // steady-clock ns the client dropped (0: connected, or none yet)
     bool listening_ = false;
     uint16_t port_ = 0;
     std::vector<unsigned char> buf_;   // a read, after `carry_` bytes of a sample split by the previous one

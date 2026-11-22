@@ -37,6 +37,7 @@ PYBIND11_MODULE(_tcpiq, m) {
         .def_property_readonly("peer", &TcpIqDevice::peer)
         .def_property_readonly("connections", &TcpIqDevice::connections)
         .def_property_readonly("replaced", &TcpIqDevice::replaced)
+        .def_property_readonly("disconnected_for", &TcpIqDevice::disconnected_for)
         .def_property_readonly("port", &TcpIqDevice::port)
         .def_property_readonly("rtl_header", &TcpIqDevice::rtl_header)
         .def_property_readonly("rtl_tuner", &TcpIqDevice::rtl_tuner)

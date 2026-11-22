@@ -30,11 +30,15 @@ class TcpIq(NativeDevice):
 
     device: lib.tcpiq.device   # the extension's device (None until `open`)
 
-    def _open(self, host=None, port=1234, timeout=5.0, listen=False, sample_format=convert.FLOAT32):
+    def _open(self, host=None, port=1234, timeout=5.0, listen=False, sample_format=convert.FLOAT32, reconnect_timeout=10.0):
         """host, port: the server to connect to; or, with `listen`, the address to listen on (host default: every
         interface; port 0: any free one, see `port`). timeout: seconds to connect.
+        reconnect_timeout (listening): seconds to wait for a client that dropped to come back (or another to connect);
+        after that, a read with nothing queued raises err.Lost, until one does. None: wait as long as it takes. Before
+        the first client, a read waits as long as it takes.
         sample_format: layout of what the other end sends, a `convert.SampleFormat` or a name ("cf32", "ci16",
         "cu8", ...: one of `pysdrlib.tcpiq.FORMATS`)"""
+        self.reconnect_timeout = None if reconnect_timeout is None else float(reconnect_timeout)
         f = self.SAMPLE_FORMAT = convert.sample_format(sample_format)
         layout = (f.kind, f.bits, f.storage, f.packed, f.byteorder == ">")
         if listen:
@@ -116,6 +120,17 @@ class TcpIq(NativeDevice):
             return None
         return {"tuner": self.RTL_TUNERS.get(d.rtl_tuner, f"type {d.rtl_tuner}"), "tuner_type": d.rtl_tuner,
                 "gain_count": d.rtl_gain_count}
+
+    def _rx_lost(self):
+        """Listening: the client dropped `reconnect_timeout` seconds ago, and none has connected since"""
+        d, limit = self.device, getattr(self, "reconnect_timeout", None)
+        if d is None or limit is None or not d.listening:
+            return None
+        gone = d.disconnected_for
+        if gone > limit:
+            return (f"the client dropped {gone:.1f}s ago and has not reconnected (reconnect_timeout {limit:g}s); "
+                    "still listening: reading works again once one connects")
+        return None
 
     def _set_rx_freq(self, freq, channel=0):
         pass   # declared, not sent: the sender decides what it streams

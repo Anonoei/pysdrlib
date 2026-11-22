@@ -71,6 +71,9 @@ class device:
     def rate_windows(self) -> int:
         ...
     @property
+    def disconnected_for(self) -> float:
+        ...
+    @property
     def replaced(self) -> int:
         ...
     @property
