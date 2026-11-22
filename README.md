@@ -22,7 +22,7 @@ For a more robust C implementation with far more hardware, use [SoapySDR](https:
 | [USRP B210 (UHD)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/uhd) | `uhd` | 2 RX and 2 TX channels |
 | [USRP X310, X410 (UHD)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/uhd#x310-and-x410) | `x310`, `x410` | Experimental, untested on hardware; on a network (`find(addresses=...)`), needs a system libuhd |
 | [RX-888 (ExtIO)](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/extio) | `extio` | |
-| [BladeRF 2.0 micro](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/bladerf) | `bladerf` | 2 RX and 2 TX channels; untested on hardware |
+| [BladeRF 2.0 micro](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/bladerf) | `bladerf` | 2 RX and 2 TX channels; tested on a 2.0 micro xA4 (receive), transmit checked for plumbing only |
 | [TCP IQ stream](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/tcpiq) | `tcpiq` | Receive raw I/Q from a TCP server; opened by `host=` and `port=`, not listed by `find()` |
 
 Also: `sim`, a simulated radio that needs no hardware, and [`File`](#sample-files), which reads recordings the way a

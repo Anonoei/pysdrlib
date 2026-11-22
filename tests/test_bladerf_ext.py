@@ -50,8 +50,9 @@ def test_open_without_device_raises_not_found():
 
 
 def test_open_unknown_serial_raises_not_found():
+    # libbladeRF takes a serial of hex digits: anything else is INVAL, not "not found"
     with pytest.raises(lib_err.NOT_FOUND):
-        bladerf.open("*:serial=does-not-exist")
+        bladerf.open("*:serial=" + "0" * 32)
 
 
 def test_closed_device_raises_not_open():
@@ -88,8 +89,22 @@ class TestHardware:
         assert dev.get_rx_rate(0) == pytest.approx(5e6, rel=1e-3)
         dev.set_rx_freq(915_000_000, 0)
         assert dev.get_rx_freq(0) == pytest.approx(915e6, abs=100)
+
+    def test_gain_reads_back_while_streaming(self, dev):
+        # The AD9361 reports the gain of an enabled receiver only: an idle one reads back its maximum whatever was set
+        dev.set_rx_rate(5e6, 0)
+        dev.set_rx_freq(915_000_000, 0)
+        dev.set_rx_gain_mode(bladerf.GAIN_MODE.MGC, 0)
         dev.set_rx_gain_stage("full", 30, 0)
-        assert dev.get_rx_gain_stage("full", 0) == 30
+        dev.set_rx_buffer(1_000_000)
+        dev.start_rx()
+        try:
+            dev.wait_rx(100_000, 5.0)
+            assert dev.get_rx_gain_stage("full", 0) == 30
+            dev.set_rx_gain_stage("full", 45, 0)
+            assert dev.get_rx_gain_stage("full", 0) == 45
+        finally:
+            dev.stop_rx()
 
     def test_sensors(self, dev):
         assert "rfic_temperature" in dev.sensors()

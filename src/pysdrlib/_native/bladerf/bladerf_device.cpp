@@ -12,7 +12,11 @@ const SampleFormat SC16_Q11{SampleKind::Int, 12, 16, false};
 
 constexpr unsigned STREAM_TIMEOUT_MS = 3500;   // libbladeRF's own transfers give up after this
 constexpr unsigned POLL_MS = 100;              // how long a stream thread waits before it looks at its stop flag
-constexpr unsigned NUM_BUFFERS = 32;           // libbladeRF's stream buffers ...
+// 128 buffers hold ~34 ms at 61.44 MS/s (8 MiB). 32 were too few on a bladeRF 2.0 micro (USB 3): a reader taking 1.5 M
+// samples at a time held the queue long enough to overrun them, and 15-20% of the samples at 30.72-61.44 MS/s were lost
+// with no discontinuity in the stream's timestamps (so rx_lost() can't see it; only the watchdog's rate check did). Only
+// NUM_TRANSFERS of them are on USB at once, so usbfs's memory limit is not involved
+constexpr unsigned NUM_BUFFERS = 128;          // libbladeRF's stream buffers ...
 constexpr unsigned BUFFER_SAMPLES = 16384;     // ... of this many samples (a multiple of 1024) ...
 constexpr unsigned NUM_TRANSFERS = 16;         // ... of which this many are in flight on USB at once
 constexpr size_t CHUNK = 8192;                 // samples per channel one stream thread call handles
