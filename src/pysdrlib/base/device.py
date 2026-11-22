@@ -386,10 +386,12 @@ class Device:
     def _chain(self, direction, channel=0):
         """The chain (`caps.chains`) the signal of this direction goes through: the one of the antenna port selected, else the
         one for any port, else the first. None: nothing between the radio and the air"""
+        return self._chain_for_port(direction, self._antenna.get((direction, channel)))
+
+    def _chain_for_port(self, direction, port):
         chains = [c for c in self.caps.chains if c.direction == direction]
         if not chains:
             return None
-        port = self._antenna.get((direction, channel))
         return next((c for c in chains if port is not None and c.port == port), None) or \
             next((c for c in chains if c.port is None), chains[0])
 
@@ -598,6 +600,30 @@ class Device:
     def tx_antennas(self, channel=0):
         """The transmitter's selectable antenna ports ([]: just the one)"""
         return list(self.caps.antennas[self._direction("tx", channel)])
+    def rx_antenna_info(self, channel=0):
+        """Each receive antenna port and what is on it, as `rx_antennas` lists them (one entry, port None, when there is
+        just the one): [{"port", "chain", "antenna", "inverted", "selected"}]. chain: the name of the `caps.Chain` the
+        port goes through (None: none declared); antenna: `Chain.describe()` of the antenna fitted (None: not known;
+        `pysdrlib.base.antennas.format_antenna` makes text of it); inverted: whether the spectrum comes mirrored there
+        (see `get_rx_inverted`); selected: whether it is the port in use (None for each of several when none was ever
+        selected: the radio's default)"""
+        return self._antenna_info("rx", channel)
+    def tx_antenna_info(self, channel=0):
+        """Each transmit antenna port and what is on it: as `rx_antenna_info`"""
+        return self._antenna_info("tx", channel)
+
+    def _antenna_info(self, d, channel):
+        self._direction(d, channel)
+        ports = list(self.caps.antennas[d]) or [None]
+        chosen = self._antenna.get((d, channel))
+        out = []
+        for port in ports:
+            chain = self._chain_for_port(d, port)
+            out.append({"port": port, "chain": (chain.name or None) if chain else None,
+                        "antenna": chain.describe() if chain else None, "inverted": bool(chain and chain.invert),
+                        "selected": True if len(ports) == 1 else (None if chosen is None else port == chosen)})
+        return out
+
     def set_rx_antenna(self, name, channel=0):
         """Select a receive antenna port by name (see `rx_antennas`). Raises `err.NotSupported` for a name the device lacks"""
         return self._set_antenna_of("rx", name, channel)
@@ -965,6 +991,11 @@ class Device:
         except ValueError:
             raise err.InvalidValue(f"channel {channel} isn't streaming (start_rx(channels=...) has {self._rx_channels})") from None
 
+    def _rx_not_started(self):
+        """`read` found the device not receiving: raise err.NotStreaming, or return when it turns out to be (a remote
+        viewer's state can be older than the server's)"""
+        raise err.NotStreaming(f"{type(self).NAME} isn't receiving (call start_rx(), or use stream())")
+
     def _read_into(self, out, timeout, channel):
         self._ensure_open("read")
         self._check_channel("rx", channel)
@@ -974,7 +1005,7 @@ class Device:
         got, first, gaps, discarded = 0, None, [], 0
         while got < count:
             if not self.state["rx"]:
-                raise err.NotStreaming(f"{type(self).NAME} isn't receiving (call start_rx(), or use stream())")
+                self._rx_not_started()
             left = None if deadline is None else deadline - time.monotonic()
             n, idx = self._rx_read_into(out[got:], READ_SLICE if left is None else max(0.0, min(READ_SLICE, left)), slot)
             if n == 0:

@@ -424,6 +424,14 @@ class RemoteDevice(Device):
             self.refresh()
         return result
 
+    def _rx_not_started(self):
+        if not self.is_controller and self.state["open"]:   # a viewer: the controller may have started it since
+            self.refresh()
+            if self.state["rx"]:
+                return
+            raise err.NotStreaming(f"{self.id} isn't receiving on the server: its controller hasn't started it")
+        super()._rx_not_started()
+
     def refresh(self):
         """Update `state`, `CF` and `Fs` from the server (a viewer sees what the controller does)"""
         self._ensure_open("refresh")

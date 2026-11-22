@@ -162,6 +162,17 @@ class TestOwnership:
         assert dev.state["open"]        # a viewer closing doesn't close the device
         assert dev.get_rx_freq() == 50e6
 
+    def test_a_viewer_that_attached_before_the_start_reads_once_it_starts(self, server, dev):
+        dev.initialize(cf=50e6, Fs=1e6)
+        with RemoteDevice(server.endpoint, id=dev.id) as v:
+            assert not v.state["rx"]
+            with pytest.raises(err.NotStreaming, match="hasn't started it"):
+                v.read(1000, timeout=1)
+            dev.start_rx()                       # the viewer's state is now older than the server's
+            assert not v.state["rx"]
+            assert v.read(100_000, timeout=10).size == 100_000
+            assert v.state["rx"]
+
     def test_multiple_viewers_each_get_samples(self, server, dev):
         dev.initialize(Fs=1e6)
         dev.start_rx()

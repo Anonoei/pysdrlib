@@ -147,6 +147,17 @@ def test_another_antenna_port_changes_the_chain_and_retunes(sim):
     assert sim.seen[-1] == 1e9 and sim.get_rx_freq() == 2e9     # the same frequency over the air, through the other chain
 
 
+def test_antenna_info_names_each_port_chain_and_antenna(sim):
+    sim.caps.chains = [Chain(port="A", lo=12e9, invert=True, antenna="ANT500", name="mirror"), Chain(lo=0.0, name="direct")]
+    info = sim.rx_antenna_info()
+    assert [(i["port"], i["chain"], i["inverted"], i["selected"]) for i in info] == \
+        [("A", "mirror", True, None), ("B", "direct", False, None)]       # B: the chain for any port; none selected yet
+    assert antennas.format_antenna(info[0]["antenna"]).startswith("ANT500 (") and info[1]["antenna"] is None
+    sim.set_rx_antenna("B")
+    assert [i["selected"] for i in sim.rx_antenna_info()] == [False, True]
+    assert sim.tx_antenna_info() == [{"port": None, "chain": None, "antenna": None, "inverted": False, "selected": True}]
+
+
 # --- the server's file --- #
 def test_a_frontends_file(tmp_path):
     path = tmp_path / "f.toml"

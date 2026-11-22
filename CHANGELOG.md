@@ -55,6 +55,8 @@ PyPI.
 - `RxMeta.next_index` (the stream index just after a block), `RxMeta.follows(prev)` (it starts where `prev`
   ended, nothing lost or discarded between) and `RxMeta.wall_time` (the radio's clock when it holds a date, else the
   receive time on the wall clock). `index` is documented as the absolute position across gaps.
+- `rx_antenna_info()` / `tx_antenna_info()`: each antenna port with its chain, the antenna fitted, whether the
+  spectrum comes mirrored there, and whether it is selected.
 - `find_gain()` finds and sets the highest receive gain that doesn't clip, for one channel or several, local or remote.
 - Gain splitting is cached: a repeated HackRF `set_rx_gain` takes 5 µs instead of 723 µs.
 - The native ring copies samples out with its lock released, so a slow reader no longer holds up the driver's thread.
@@ -85,6 +87,8 @@ PyPI.
 - `server --open TYPE:KEY=VALUE` and `client --arg KEY=VALUE` pass arguments to a device's `open()`.
 - `format_antenna` moved from `pysdrlib.remote.cli` to `pysdrlib.base.antennas`, which needs no remote extra.
 - Server metrics: `Client.metrics()`, `pysdrlib client ADDRESS stats`, and a periodic log line per streaming device.
+- A viewer whose state is older than the server's (it attached before the controller started receiving) has `read`
+  ask the server once instead of raising `err.NotStreaming`.
 - `RemoteDevice` forwards every public `Device` method. This fixes `split_rx_gain_db` running on the client.
 
 ### Fixes
