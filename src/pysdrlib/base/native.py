@@ -98,7 +98,16 @@ class NativeDevice(Device):
         if slot:   # the stream is judged by its first queue (all are fed together)
             counters = self.device.rx_counters()
         self._check_counters(*counters, have_samples=n > 0)
+        if n:
+            self._take_stamp(slot)
         return n, self._rx_base + first
+
+    def _take_stamp(self, slot):
+        """The driver's hardware timestamps (`stamp_rx`) become stream events, so they reach RxMeta.hw_time here, and
+        the clients of a server, like a retune"""
+        for index, t in self.device.take_rx_stamps(slot):
+            index += self._rx_base
+            self._rx_events.append((index, "hw_time", [index, t], self._rx_channels[slot]))
     def _rx_position(self, slot=0):
         _, total, _, _, age = self.device.rx_counters(slot)
         return self._rx_base + total, None if age < 0 else age

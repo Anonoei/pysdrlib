@@ -26,9 +26,13 @@ def paths(path):
     base = p.with_suffix("") if p.suffix in _SUFFIXES else p
     return base.with_name(base.name + ".sigmf-data"), base.with_name(base.name + ".sigmf-meta")
 
+def iso(seconds):
+    """Seconds since the epoch, as SigMF writes a time (ISO 8601, UTC)"""
+    return _dt.datetime.fromtimestamp(seconds, _dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
 def now():
-    """The current time, as SigMF writes it (ISO 8601, UTC)"""
-    return _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    """The current time, as SigMF writes it"""
+    return iso(_dt.datetime.now(_dt.timezone.utc).timestamp())
 
 @dataclass
 class Meta:
@@ -40,6 +44,16 @@ class Meta:
     datetime: Optional[str] = None
     annotations: list = field(default_factory=list)
     raw: dict = field(default_factory=dict)
+
+    @property
+    def start_time(self):
+        """When the first sample was taken, in seconds since the epoch (from `datetime`; None if not recorded)"""
+        if not self.datetime:
+            return None
+        try:
+            return _dt.datetime.fromisoformat(self.datetime.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
 
     @property
     def freq(self):

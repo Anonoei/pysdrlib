@@ -604,6 +604,17 @@ class TestGenericControlsRemotely:
         assert all(b.index > a.index for (_, _, a), (_, _, b) in zip(steps, steps[1:]))
         assert not dev.state["rx"]
 
+    def test_hardware_time_reaches_the_client(self, dev):
+        dev.initialize(cf=100e6, Fs=1e6)
+        t = time.time()
+        dev.start_rx()
+        try:
+            metas = [dev.read(5000, timeout=5, meta=True)[1] for _ in range(3)]
+        finally:
+            dev.stop_rx()
+        assert abs(metas[0].hw_time - t) < 2.0 and not metas[0].events
+        assert [round(b.hw_time - a.hw_time, 6) for a, b in zip(metas, metas[1:])] == [0.005, 0.005]
+
     def test_a_new_stream_forgets_the_last_ones_flush(self, dev):
         dev.initialize(cf=100e6, Fs=1e6)
         dev.start_rx()

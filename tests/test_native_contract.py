@@ -237,6 +237,30 @@ class TestBufferedRx:
         assert len(sdr.get_samples()) == 0
 
 
+    def test_hardware_timestamps_reach_rxmeta(self, dev, spec, fmt):
+        """A driver stamps where its clock and the sample count part (stamp_rx, as UHD's thread does); each block's
+        hw_time is extrapolated from the stamp that applies to it, across a gap"""
+        sdr = spec.device_class()
+        sdr.device, sdr.state["open"] = dev, True
+        sdr._Fs = 1e6
+        sdr._rate_changed()
+        sdr._rx_reset()
+        sdr.state["rx"] = True
+        raw = self.raw(fmt, 1000)
+        dev.stamp_rx(100.0)
+        dev._dispatch_rx(raw)                  # samples 0-999 from t = 100 s
+        dev._skip_rx(500)                      # 500 lost (an overflow)
+        dev.stamp_rx(100.0015)                 # ... and the clock says so
+        dev._dispatch_rx(raw)                  # samples 1500-2499
+        a = sdr.read(600, timeout=1, meta=True)[1]
+        b = sdr.read(600, timeout=1, meta=True)[1]   # 600-999, then (after the gap) 1500-1699
+        c = sdr.read(500, timeout=1, meta=True)[1]
+        assert a.hw_time == pytest.approx(100.0) and b.hw_time == pytest.approx(100.0006)
+        assert c.index == 1700 and c.hw_time == pytest.approx(100.0017)
+        assert not a.events and not b.events and not c.events   # stamps aren't changes
+        assert dev.take_rx_stamps() == []
+
+
 @pytest.mark.hardware
 class TestHardware:
     """Needs the device. Anything specific to one device is in test_<device>_ext.py."""

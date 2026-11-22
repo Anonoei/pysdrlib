@@ -207,7 +207,18 @@ py::class_<Device> bind_device(py::module_& m, const char* name) {
         }, py::arg("data"), py::arg("valid") = py::none(), py::arg("slot") = 0)
         // Test hook: `samples` lost before the queue, as a driver reports a hardware overflow (readers see the gap)
         .def("_skip_rx", [](Device& d, size_t samples, size_t slot) { d.skip_rx(samples, slot); },
-             py::arg("samples"), py::arg("slot") = 0);
+             py::arg("samples"), py::arg("slot") = 0)
+        // The next sample delivered to `slot` was taken at `t` seconds by the radio's clock (a device fed from Python
+        // stamps its blocks with this; a driver calls stamp_rx from its thread)
+        .def("stamp_rx", [](Device& d, double t, size_t slot) { d.stamp_rx(t, slot); },
+             py::arg("t"), py::arg("slot") = 0)
+        // [(index, seconds)]: the hardware timestamps of a slot's stream since the last call (index counted like
+        // read_rx_into's), oldest first
+        .def("take_rx_stamps", [](Device& d, size_t slot) {
+            py::list out;
+            for (const auto& [index, t] : d.take_rx_stamps(slot)) out.append(py::make_tuple(index, t));
+            return out;
+        }, py::arg("slot") = 0);
 }
 
 // The transmit side every transmitting device shares (HardwareDevice's queues): bind it to a class from bind_device

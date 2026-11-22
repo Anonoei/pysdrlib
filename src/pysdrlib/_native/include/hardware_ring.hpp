@@ -30,6 +30,7 @@
 #include <memory>
 #include <mutex>
 #include <utility>
+#include <vector>
 
 namespace hw {
 
@@ -66,6 +67,7 @@ public:
         total_ = 0;
         written_ = gap_offset_ = 0;
         marks_.clear();
+        stamps_.clear();
     }
 
     // Forget the counts (and `dropped`), keeping pending samples and the capacity
@@ -102,6 +104,22 @@ public:
         marks_.emplace_back(written_, n);
         total_ += n;
         skipped_ += n;
+    }
+
+    // Producer: the next sample written (index `total`) was taken at time `t` by the radio's own clock (seconds).
+    // Stamps queue (the last MAX_STAMPS) until the consumer takes them; it extrapolates from each at the sample rate
+    static constexpr size_t MAX_STAMPS = 1024;
+    void stamp(double t) {
+        std::lock_guard<std::mutex> lock(m_);
+        if (stamps_.size() >= MAX_STAMPS) stamps_.pop_front();
+        stamps_.emplace_back(total_, t);
+    }
+    // Consumer: the stamps since the last call, oldest first
+    std::vector<std::pair<uint64_t, double>> take_stamps() {
+        std::lock_guard<std::mutex> lock(m_);
+        std::vector<std::pair<uint64_t, double>> out(stamps_.begin(), stamps_.end());
+        stamps_.clear();
+        return out;
     }
 
     // Consumer: wait until at least `n` samples are pending (at most the capacity), for up to `timeout`
@@ -223,6 +241,7 @@ private:
     double busy_ = 0;
     bool seen_ = false;
     clock::time_point last_;
+    std::deque<std::pair<uint64_t, double>> stamps_;   // stamp(): (index, the radio's time of that sample)
 };
 
 }  // namespace hw

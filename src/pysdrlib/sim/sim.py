@@ -59,6 +59,7 @@ class Sim(NativeDevice):
         self._tone = tone
         self._raw = None
         self._thread = None
+        self._stamp = False     # stamp the next block with the time (RxMeta.hw_time)
         self._stop = threading.Event()
         self._gain = {n.lower(): s.default for n, s in self.CAPS.gains["rx"].items()}
         self._make_block()
@@ -104,6 +105,11 @@ class Sim(NativeDevice):
 
     def _deliver(self):
         """What a driver's streaming thread does with a transfer: every channel's block, each to its slot"""
+        if self._stamp:   # a radio with a clock (as a USRP): its time of the stream's first sample
+            self._stamp = False
+            now = time.time()
+            for slot in range(len(self._rx_channels)):
+                self.device.stamp_rx(now, slot)
         for slot, ch in enumerate(self._rx_channels):
             self.device._dispatch_rx(self._raws[ch], None, slot)
         self.blocks += 1
@@ -136,6 +142,7 @@ class Sim(NativeDevice):
 
     def _start_rx(self):
         super()._start_rx()
+        self._stamp = True
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="pysdrlib-sim", daemon=True)
         self._thread.start()

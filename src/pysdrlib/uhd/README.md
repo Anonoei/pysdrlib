@@ -48,6 +48,11 @@ A stream's channels share its rate. With two channels the master clock is at mos
 driver picks a power-of-two multiple of the rate under it (10 MS/s: 20 MHz); 30.72 MS/s per channel is the most.
 A two-channel stream starts on a timed command so both start on the same sample.
 
+Received samples carry the radio's time: `read(..., meta=True)` gives `RxMeta.hw_time`, the device time of the block's
+first sample (UHD's `time_spec`; set it with `set_time()`, or from a PPS/GPS `time_source`). The driver stamps the
+stream when it starts and again wherever samples were lost, so it stays exact across overflows. A `FileSink` SigMF
+recording takes its `core:datetime` from it when the clock holds a date. (Not yet checked on hardware.)
+
 On the unit this was tested with, two-channel streams sometimes stop with UHD's `accum_timeout` control error (about
 1 start in 8-16, the same with UHD's own `rx_samples_to_file --channels 0,1`): `read` raises `err.StreamStalled`; close
 and reopen the device. Single-channel streams were not affected.

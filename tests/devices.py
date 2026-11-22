@@ -141,6 +141,9 @@ class FakeDevice:
         out[:len(x)] = x
         return (len(x), first, *self.rx_counters(slot))
 
+    def take_rx_stamps(self, slot=0):
+        return []   # no hardware clock (stamps are tested on the real ring, test_native_contract.py)
+
     def rx_counters(self, slot=0):
         s = self.rx_stats(slot)
         return (s["samples"], s["total"], s["dropped"], s["max_chunk"], -1.0 if s["age"] is None else s["age"])

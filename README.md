@@ -54,7 +54,8 @@ import pysdrlib.rtl_sdr                  # static import; pysdrlib.rtl_sdr.Devic
 the stream. (`get_samples()` is the low-level call under them: whatever has arrived, any number, without waiting.)
 ```python
 x, m = sdr.read(65536, meta=True)        # m.index: the first sample's position in the stream; m.gaps / m.dropped:
-                                         # where samples were lost; m.events: retunes inside the block; m.time
+                                         # where samples were lost; m.events: retunes inside the block; m.time;
+                                         # m.hw_time: the radio's own clock (UHD, a replayed recording), or None
 sdr.read_into(buffer)                    # into an array you own
 
 with sdr.stream(65536, meta=True) as s:  # starts receiving, stops on exit
@@ -62,8 +63,9 @@ with sdr.stream(65536, meta=True) as s:  # starts receiving, stops on exit
 
 sdr.set_rx_freq(162.4e6, flush=True)     # the next read is all at the new frequency (settling skipped)
 
-for freq, x in sdr.sweep(88e6, 108e6, 2e6, 65536):   # each step's samples, after its retune
-    ...
+for freq, x in sdr.sweep(88e6, 108e6, count=65536):          # each step's samples, after its retune (step:
+    ...                                                       # 80% of the rate); a list of frequencies works too
+sdr.sweep(88e6, 108e6, count=65536, offset=250e3, skip=1000)  # DC spike off the middle; settle longer
 ```
 `sdr.on_drop` decides what lost samples do: `"warn"` (default), `"raise"`, `"ignore"` or a function.
 
@@ -132,9 +134,14 @@ with FileSink("capture.sigmf", "ci16", hw=sdr.NAME) as out, sdr.stream(65536, me
         out.write(x, meta=m)           # the rate, frequency, retunes and lost samples go into capture.sigmf-meta
 
 sdr = pysdrlib.open("file", path="capture.sigmf", loop=True)   # a recording, received like a radio
+sdr = pysdrlib.open("file", tx_path="sent.sigmf", rate=2e6)    # transmit into a file
+```
+```
+pysdrlib play capture.sigmf                   # what it is, then its power as it plays (--info: just what it is)
+pysdrlib play capture.sigmf --serve tcp://0.0.0.0:5555 --loop     # host it like a radio (device file-0)
 ```
 See the [file README](https://github.com/Anonoei/pysdrlib/tree/main/src/pysdrlib/file) for the details: SigMF, replay,
-partial blocks, seeking, appending and clipping.
+transmitting to a file, big-endian formats, partial blocks, seeking, appending and clipping.
 
 ### Drivers from outside pysdrlib
 A new radio, or a stream from some other source, needs no change to pysdrlib. Register a `Device` subclass in your program,
@@ -159,6 +166,8 @@ Host SDRs on one machine and use them from another (`pip install pysdrlib[remote
 pysdrlib server --bind tcp://0.0.0.0:5555
 pysdrlib client tcp://host:5555 rx hackrf --freq 100e6 --rate 10e6 -t 5 -o out.cfile
 pysdrlib client tcp://host:5555 rx hackrf --freq 100e6 --rate 10e6 -t 5 -f ci8 -o capture.sigmf   # SigMF, as int8
+pysdrlib client tcp://host:5555 stats                         # what each device published, to whom, what was lost
+pysdrlib server --open file:path=capture.sigmf,loop=true      # serve a recording (--arg KEY=VALUE on a client)
 ```
 ```python
 sdr = pysdrlib.connect("tcp://host:5555", "hackrf")          # same API as a local device (opened, and yours to control)

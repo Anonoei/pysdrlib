@@ -37,9 +37,13 @@ class device:
         """
         Queue up to `samples` complex samples (the oldest are dropped past that) in each of `slots` queues (one per channel of a multi-channel stream); discards pending ones.
         """
+    def stamp_rx(self, t: typing.SupportsFloat | typing.SupportsIndex, slot: typing.SupportsInt | typing.SupportsIndex = 0) -> None:
+        ...
     def start_rx(self) -> None:
         ...
     def stop_rx(self) -> None:
+        ...
+    def take_rx_stamps(self, slot: typing.SupportsInt | typing.SupportsIndex = 0) -> list:
         ...
     def wait_rx(self, samples: typing.SupportsInt | typing.SupportsIndex, timeout: typing.SupportsFloat | typing.SupportsIndex, slot: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
         """

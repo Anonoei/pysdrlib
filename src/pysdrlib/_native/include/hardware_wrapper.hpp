@@ -60,6 +60,11 @@ public:
     size_t wait_rx(size_t samples, double timeout, size_t slot = 0) { return rx_.at(slot).wait(samples, timeout); }
     // The driver's thread: `samples` were lost before reaching us (the hardware said so); readers see the gap
     void skip_rx(size_t samples, size_t slot = 0) const { if (slot < MAX_RX_SLOTS) rx_[slot].skip(samples); }
+    // The driver's thread: the next sample delivered to `slot` was taken at `t` seconds by the radio's own clock (a
+    // hardware timestamp: UHD's time_spec). Call it whenever that clock and the sample count part (the first packet,
+    // after an overflow, a rate change); readers extrapolate from each at the sample rate (RxMeta.hw_time)
+    void stamp_rx(double t, size_t slot = 0) const { if (slot < MAX_RX_SLOTS) rx_[slot].stamp(t); }
+    std::vector<std::pair<uint64_t, double>> take_rx_stamps(size_t slot = 0) { return rx_.at(slot).take_stamps(); }
     hw::RingStats rx_stats(size_t slot = 0) const { return rx_.at(slot).stats(); }
 
     virtual void start_rx() = 0;

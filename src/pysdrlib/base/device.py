@@ -24,6 +24,7 @@ A device that lacks a control raises `err.NotSupported`. Values out of range are
 `err.InvalidValue` with `strict = True`.
 """
 import atexit
+import dataclasses
 import functools
 import itertools
 import time
@@ -176,12 +177,13 @@ class Device:
         self._ensure_open("initialize")
         cf = self.set_rx_freq(cf)
         Fs = self.set_rx_sample_rate(Fs)
-        if type(self).CAN_TRANSMIT and self.caps.shared.get("freq") != "device":   # a transmitter of its own
+        can_tx = type(self).CAN_TRANSMIT and bool(self.caps.channels.get("tx"))   # (this unit, as opened, may not)
+        if can_tx and self.caps.shared.get("freq") != "device":   # a transmitter of its own
             self.set_tx_freq(cf)
-        if type(self).CAN_TRANSMIT and self.caps.shared.get("rate") != "device":
+        if can_tx and self.caps.shared.get("rate") != "device":
             self.set_tx_sample_rate(Fs)
         rx_gain = self._initial_gain("rx", rx_gain, rx_gain_db)
-        tx_gain = self._initial_gain("tx", tx_gain, tx_gain_db) if type(self).CAN_TRANSMIT else None
+        tx_gain = self._initial_gain("tx", tx_gain, tx_gain_db) if can_tx else None
         self._initialize(cf, Fs, rx_gain, tx_gain)   # (the hook gets the total gains in dB)
 
     def _initial_gain(self, d, fraction, db):
@@ -703,7 +705,8 @@ class Device:
                 out[k] = np.concatenate((keep, more))
                 metas[k] = RxMeta(index=start, count=count, freq=metas[k].freq, rate=metas[k].rate, channel=channels[k],
                                   gaps=metas[k].gaps + m.gaps, discarded=metas[k].discarded + skip, time=metas[k].time,
-                                  events=metas[k].events)
+                                  events=metas[k].events,
+                                  hw_time=None if metas[k].hw_time is None else metas[k].hw_time + skip / metas[k].rate)
         return (out, metas) if meta else out
     def read_into(self, out, timeout=None, meta=False, channel=0):
         """`read` into a complex64 array you own (filled completely). Returns its length, or (length, RxMeta)"""
@@ -719,25 +722,47 @@ class Device:
 
         flush: when already receiving, discard what was queued before the stream starts"""
         return RxStream(self, count, timeout, meta, channel, flush)
-    def sweep(self, start, stop, step, count, timeout=None, meta=False, channel=0, repeat=False):
-        """Step the receiver from `start` to `stop` (inclusive) by `step` Hz, yielding (frequency, samples) with `count`
-        samples received at each, all after its retune and settling (`set_rx_freq(..., flush=True)`):
+    def sweep(self, start, stop=None, step=None, count=65536, timeout=None, meta=False, channel=0, repeat=False,
+              offset=0.0, skip=0):
+        """Step the receiver across frequencies, yielding (frequency, samples): `count` samples at each, all received
+        after its retune and settling (`set_rx_freq(..., flush=True)`):
 
-            for freq, x in sdr.sweep(88e6, 108e6, sdr.get_rx_sample_rate(), 65536): ...
+            for freq, x in sdr.sweep(88e6, 108e6, count=65536): ...          # start to stop (inclusive)
+            for freq, x in sdr.sweep([162.4e6, 162.55e6], count=4096): ...   # or a list of frequencies
 
-        Starts receiving if it wasn't, and stops it again when the sweep ends (or the loop breaks). repeat: sweep again
-        and again, until the loop breaks. meta: yield (frequency, samples, RxMeta). The frequency is the one tuned"""
-        if step == 0 or (stop - start) * step < 0:
-            raise ValueError(f"step {step} doesn't go from {start} to {stop}")
-        freqs = start + step * np.arange(int(np.floor((stop - start) / step + 1e-9)) + 1)
+        step: Hz between steps (default: 80% of the sample rate, as a band's edges roll off). offset: tune this far
+        above each frequency and shift the samples back, so the device's DC spike (its LO leaking through) lands
+        `offset` Hz off the middle of each step's spectrum, not on it. skip: samples to discard after each retune on top
+        of the device's own settling (`caps.retune_settle`). repeat: sweep again and again, until the loop breaks.
+        meta: yield (frequency, samples, RxMeta). Starts receiving if it wasn't, and stops it again when the sweep ends
+        (or the loop breaks)"""
+        if stop is None:
+            freqs = np.asarray(list(np.atleast_1d(start)), dtype=float)
+        else:
+            if step is None:
+                step = 0.8 * (self.get_rx_sample_rate(channel) or self.caps.default_rate)
+            if step == 0 or (stop - start) * step < 0:
+                raise ValueError(f"step {step} doesn't go from {start} to {stop}")
+            freqs = start + step * np.arange(int(np.floor((stop - start) / step + 1e-9)) + 1)
+        if not len(freqs):
+            raise ValueError("no frequencies to sweep")
         started = not self.state["rx"]
         if started:
             self.start_rx()
+        shift = None
         try:
             while True:
                 for f in freqs:
-                    tuned = self.set_rx_freq(float(f), channel=channel, flush=True)
+                    tuned = self.set_rx_freq(float(f) + offset, channel=channel, flush=True) - offset
+                    if skip:
+                        self.read(int(skip), timeout=timeout, channel=channel)
                     x, m = self.read(count, timeout=timeout, meta=True, channel=channel)
+                    if offset:
+                        if shift is None or len(shift) != count or shift_rate != m.rate:
+                            shift_rate = m.rate
+                            shift = np.exp(2j * np.pi * offset / m.rate * np.arange(count)).astype(np.complex64)
+                        x *= shift   # the signal at `tuned` sat at -offset: bring it to the middle
+                        m = dataclasses.replace(m, freq=m.freq - offset)
                     yield (tuned, x, m) if meta else (tuned, x)
                 if not repeat:
                     break
@@ -824,7 +849,7 @@ class Device:
         return self._meta(first if first is not None else self._rx_next.get(channel, 0), count, channel, gaps, discarded)
 
     def _meta(self, first, count, channel, gaps, discarded):
-        events, later = [], []
+        events, later, stamp = [], [], None
         for change in self._rx_events:
             index, kind, value, ch = change
             if ch != channel:                           # another channel's: its own reads report it
@@ -834,15 +859,21 @@ class Device:
                 self._rx_now[(kind, ch)] = value        # in effect at the block's start
                 continue
             if index < first + count:
-                events.append(Event(index - first, kind, value, ch))
+                if kind == "hw_time":                   # (index, seconds): how the radio's clock reads, not a change
+                    stamp = stamp or value
+                else:
+                    events.append(Event(index - first, kind, value, ch))
             later.append(change)
         self._rx_events = later
         total, age = self._rx_position(slot=self._slot(channel))
         when = self._stream_time(channel, self._Fs, sample_time(self._Fs, total, age, first), first)
+        rate = self._rx_now.get(("rate", channel), self._Fs)
+        stamp = self._rx_now.get(("hw_time", channel)) or stamp
+        hw_time = stamp[1] + (first - stamp[0]) / rate if stamp and rate else None
         return RxMeta(index=first, count=count, channel=channel,
-                      freq=self._rx_now.get(("freq", channel), self._cf), rate=self._rx_now.get(("rate", channel), self._Fs),
+                      freq=self._rx_now.get(("freq", channel), self._cf), rate=rate,
                       gaps=tuple(gaps), discarded=discarded, time=when,
-                      events=tuple(events))
+                      events=tuple(events), hw_time=hw_time)
 
     def _stream_time(self, channel, rate, estimate, index):
         """Time of sample `index`. Each delivery estimate is jittery (by a block or more, worse on coarse clocks), so

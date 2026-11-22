@@ -10,6 +10,8 @@ from ..base import Formats
 from ..base.io import RangeError
 from . import sigmf as _sigmf
 
+_EPOCH_PLAUSIBLE = 946684800.0   # 2000-01-01: a radio's clock later than this was set to a date, not counting from 0
+
 class FileSink:
     """Counterpart of File: `FileSink(path, fmt)`, then `write(samples)`.
 
@@ -98,6 +100,8 @@ class FileSink:
 
     def _note(self, meta):
         """What a device's RxMeta says about the block about to be written"""
+        if self.count == 0 and meta.hw_time is not None and meta.hw_time > _EPOCH_PLAUSIBLE:
+            self._datetime = _sigmf.iso(meta.hw_time)   # the radio's clock holds a date (GPS, set_time_now): it's exact
         if self.rate is None:
             self.rate = meta.rate
         elif meta.rate != self.rate and self.sigmf and not self._rate_warned:

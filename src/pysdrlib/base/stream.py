@@ -25,6 +25,9 @@ class RxMeta:
     discarded: samples skipped on purpose (settling after a retune with flush=True) before this block
     time: time.monotonic() at which the first sample was received (estimated from the deliveries, smoothed so it never goes backwards), or None
     freq / rate: what the device was set to for the first sample; events: changes inside the block
+    hw_time: the radio's own clock at the first sample (seconds; UHD's device time, a replayed recording's time), for
+    devices that timestamp their samples; None otherwise. Unlike `time` it has no host jitter, and two radios
+    sharing a clock reference and a time (GPS, PPS) agree on it
     """
     index: int
     count: int
@@ -35,6 +38,7 @@ class RxMeta:
     discarded: int = 0
     time: Optional[float] = None
     events: tuple = ()
+    hw_time: Optional[float] = None
 
     @property
     def dropped(self):
