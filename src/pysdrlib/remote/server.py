@@ -847,7 +847,8 @@ class Server:
         of the radio, when it was picked from the attached ones.
         -> (worker, token) where token is None unless `controlled`"""
         if dtype not in self.types():
-            raise err.NoDevice(f"device type {dtype!r} is not available on this server (have: {', '.join(self.types())})")
+            raise err.NoDevice(f"device type {dtype!r} is not available on this server (have: {', '.join(self.types())})",
+                               reason="no_type")
         module = devices.get(dtype)
         device = module.Device(*init_args, **(init_kwargs or {}))
         device.open(*args, **(kwargs or {}))
@@ -914,7 +915,8 @@ class Server:
         need, want = choose.normalize(need, "need"), choose.normalize(want, "want")
         wish = {**need, **want}     # what to rank by: of radios that meet the need, the nearest to it (and to `want`, which goes further)
         if dtype is not None and dtype not in self.types():
-            raise err.NoDevice(f"device type {dtype!r} is not available on this server (have: {', '.join(self.types())})")
+            raise err.NoDevice(f"device type {dtype!r} is not available on this server (have: {', '.join(self.types())})",
+                               reason="no_type")
         self.scan()     # what is attached now
         reasons, found = [], []
 
@@ -956,9 +958,12 @@ class Server:
             what = ", ".join(f"{k}={v}" for k, v in (("type", dtype), ("serial", serial), ("label", label)) if v is not None)
             what = (what + "; " if what else "") + f"need {need}" if need else what
             if reasons:
-                raise err.NoDevice(f"no radio on this server meets the request ({what}): " + " | ".join(reasons))
+                raise err.NoDevice(f"no radio on this server meets the request ({what}): " + " | ".join(reasons),
+                                   reason="unmet")
+            attached = self.available()
             raise err.NoDevice(f"no radio on this server is free for the request ({what or 'any'}); "
-                               f"attached: {', '.join(i['label'] for i in self.available()) or 'none'}")
+                               f"attached: {', '.join(i['label'] for i in attached) or 'none'}",
+                               reason="none_free" if attached else "none_attached")
         found.sort(key=lambda f: f[:3])
         return [(f[3], f[4], f[5]) for f in found]
 

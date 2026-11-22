@@ -84,6 +84,15 @@ class TcpIq(NativeDevice):
         rate = self.device.rx_rate if self.device is not None else 0.0
         return rate or None
 
+    @property
+    def rate_mismatch(self):
+        """Whether `measured_rate` is more than RATE_TOLERANCE (relatively) from the declared `Fs`, or None while it
+        isn't known. The latest measurement alone: `read` warns (warn.RateMismatch) only after RATE_WINDOWS in a row"""
+        rate = self.measured_rate
+        if rate is None or not self._Fs:
+            return None
+        return abs(rate - self._Fs) > self.RATE_TOLERANCE * self._Fs
+
     def _check_counters(self, *counters, have_samples):
         super()._check_counters(*counters, have_samples=have_samples)
         d = self.device

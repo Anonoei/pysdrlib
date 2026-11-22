@@ -5,7 +5,6 @@ from pathlib import Path
 
 from .. import logger
 from .. import err
-from .. import err as pysdr_err
 from ..base import Formats
 from . import sigmf as _sigmf
 
@@ -41,7 +40,7 @@ class File:
         if path is not None:
             self.set_path(path)
         if self.fmt is None and path is not None:
-            raise ValueError(f"{path}: give the sample format (fmt=...): its extension doesn't name one, and it isn't SigMF")
+            raise err.UnknownFormat(f"{path}: give the sample format (fmt=...): its extension doesn't name one, and it isn't SigMF")
 
     @property
     def rate(self):
@@ -177,7 +176,7 @@ class File:
     def _ensure_open(self, name):
         if self.f is None:
             if self.path is None:
-                raise pysdr_err.NotOpen(f"Cannot call `{name}` before a file is given (set_path)")
+                raise err.NotOpen(f"Cannot call `{name}` before a file is given (set_path)")
             self.open()
 
     def _read(self, count: int):

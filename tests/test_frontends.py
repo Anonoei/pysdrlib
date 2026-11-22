@@ -271,8 +271,8 @@ def test_an_antenna_in_a_frontends_file_has_a_kind_and_a_size(tmp_path):
 
 def test_list_shows_the_antenna_and_its_converter():
     from pysdrlib.remote import cli
-    assert cli.format_antenna(antennas.get("ANT500").describe()) == "ANT500 (Whip / monopole, length 20-88 cm, 50 ohm)"
-    assert cli.format_antenna(antennas.Antenna("D", kind="dish", size=(0.6, 0.6)).describe()) == "D (Parabolic dish, diameter 60 cm)"
-    assert cli.format_antenna({"name": "ANT9"}) == "ANT9" and cli.format_antenna(None) == "none"
+    assert antennas.format_antenna(antennas.get("ANT500").describe()) == "ANT500 (Whip / monopole, length 20-88 cm, 50 ohm)"
+    assert antennas.format_antenna(antennas.Antenna("D", kind="dish", size=(0.6, 0.6)).describe()) == "D (Parabolic dish, diameter 60 cm)"
+    assert antennas.format_antenna({"name": "ANT9"}) == "ANT9" and antennas.format_antenna(None) == "none"
     chain = {"direction": "rx", "port": "RX2", "lo": 9.75e9, "invert": False, "antenna": antennas.get("ANT500").describe()}
     assert cli.format_chain(chain) == "antenna rx RX2: ANT500 (Whip / monopole, length 20-88 cm, 50 ohm), LO 9750 MHz"

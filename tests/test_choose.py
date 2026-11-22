@@ -206,6 +206,31 @@ def test_no_driver_needed_when_the_need_picks_it(server):
 
 
 @pytestmark_zmq
+def test_no_device_says_why_across_the_wire(server, tmp_path, monkeypatch):
+    with pytest.raises(err.NoDevice) as e:
+        connect(server, need={"freq": 50e9})
+    assert e.value.reason == "unmet"
+    with pytest.raises(err.NoDevice) as e:
+        connect(server, "nosuchdriver")
+    assert e.value.reason == "no_type"
+    a, b = connect(server, serial="AAA"), connect(server, serial="BBB")
+    try:
+        with pytest.raises(err.NoDevice) as e:
+            connect(server, need={"freq": 100e6})   # both attached radios have a controller
+        assert e.value.reason == "none_free"
+    finally:
+        a.close()
+        b.close()
+    monkeypatch.setattr("pysdrlib.remote.server.devices.find", lambda *a, **k: [])
+    with Server(f"ipc://{tmp_path}/empty", devices=["sim"], lease=0) as empty:
+        with pytest.raises(err.NoDevice, match="attached: none") as e:
+            pysdrlib.connect(empty.endpoint, need={"freq": 100e6})
+        assert e.value.reason == "none_attached"
+        sdr = pysdrlib.connect(empty.endpoint, "sim", init_kwargs=SIM)   # what to do then: open a type it has
+        sdr.close()
+
+
+@pytestmark_zmq
 def test_a_need_nothing_meets_names_why(server):
     with pytest.raises(err.NoDevice, match=r"sim: .*cannot tune"):
         connect(server, need={"freq": 50e9})

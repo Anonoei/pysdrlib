@@ -93,6 +93,11 @@ def test_discover_and_open_on_a_server(server, monkeypatch):
         assert ctl.is_controller
         hosted = [r for r in pysdrlib.discover(local=False) if r.state == "hosted"]
         assert len(hosted) == 1 and hosted[0].controlled and hosted[0].id == ctl.id
+        assert hosted[0].receiving is False and found[0].receiving is None
+        ctl.initialize(cf=100e6, Fs=1e6)
+        ctl.start_rx()
+        assert [r.receiving for r in pysdrlib.discover(local=False) if r.state == "hosted"] == [True]
+        ctl.stop_rx()
         assert hosted[0].target == f"{where}/{ctl.id}" and "on " + where in hosted[0].label
         viewer = pysdrlib.open(hosted[0])   # attached, as a viewer
         try:

@@ -312,7 +312,8 @@ def connect(address: Optional[str] = None, device: Optional[str] = None, *, clai
     choosing = any(kwargs.get(k) is not None for k in ("serial", "label", "need", "want", "pick"))
     if device is None or (choosing and device not in ids):
         if device is not None and device not in types:
-            raise err.NoDevice(f"{address} cannot open a device of type {device!r} (types: {', '.join(types) or 'none'})")
+            raise err.NoDevice(f"{address} cannot open a device of type {device!r} (types: {', '.join(types) or 'none'})",
+                               reason="no_type")
         dev = RemoteDevice(address, device, **kwargs)
         dev.open()
         return dev
@@ -328,7 +329,7 @@ def connect(address: Optional[str] = None, device: Optional[str] = None, *, clai
         return dev
     if device not in types:
         raise err.NoDevice(f"{address} hosts no device {device!r} and cannot open one of that type "
-                           f"(hosted: {', '.join(ids) or 'none'}; types: {', '.join(types) or 'none'})")
+                           f"(hosted: {', '.join(ids) or 'none'}; types: {', '.join(types) or 'none'})", reason="no_type")
     free = [d["id"] for d in hosted if d["type"] == device and not d["controlled"]]
     if reuse and free:
         return connect(address, free[0], claim=True, **kwargs)

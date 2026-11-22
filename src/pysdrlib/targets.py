@@ -130,7 +130,8 @@ class Radio:
     """A radio `discover` found. target: what `pysdrlib.open` takes to open it. state: "attached" (nobody has it open:
     opening it makes you its controller), "hosted" (a server has it open: you attach to its stream; see `controlled`)
     or "openable" (a kind of device the server can open that isn't a radio it lists: simulated, network, files...).
-    controlled: whether a client controls a hosted one (None otherwise), and `program` which. antennas: what is known of
+    controlled: whether a client controls a hosted one (None otherwise), and `program` which. receiving: whether a
+    hosted one is streaming (None otherwise). antennas: what is known of
     the receive chains ([{"port", "name", "antenna"}]: the antenna's description, or None)"""
     label: str
     target: str
@@ -142,6 +143,7 @@ class Radio:
     controlled: Optional[bool] = None
     program: Optional[str] = None
     antennas: tuple = ()
+    receiving: Optional[bool] = None
     extra: dict = field(default_factory=dict, compare=False)
 
 
@@ -182,6 +184,7 @@ def _remote(server, timeout):
         out.append(Radio(label=label, target=format_target(server, d["id"]), state="hosted", driver=d["type"],
                          serial=serial, server=server, id=d["id"], controlled=bool(d.get("controlled")),
                          program=d.get("program"), antennas=_chains(d.get("chains", [])),
+                         receiving=bool((d.get("state") or {}).get("rx")),
                          extra={k: d.get(k) for k in ("cf", "Fs", "state", "health") if k in d}))
     attached = set()
     for a in listing.get("available", []):

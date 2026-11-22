@@ -7,6 +7,7 @@ A `Chain` (see `pysdrlib.base.caps`) names the antenna fitted to a radio instead
     antennas.get("ANT500").optimal      # [Range(75e6, 1e9)]
     antennas.register(antennas.Antenna("MYDISH", kind="dish", size=(0.6, 0.6), impedance=50, optimal=[Range(10e9, 12e9)]))
     antennas.find_kind("lpda").measures # "boom length"
+    antennas.format_antenna(antennas.get("ANT500").describe())   # "ANT500 (Whip / monopole, length 20-88 cm, 50 ohm)"
 """
 from dataclasses import dataclass, field
 from typing import Optional
@@ -126,3 +127,19 @@ def get(name):
 
 register(Antenna("ANT500", optimal=[Range(75e6, 1e9)], kind="whip", size=(0.20, 0.88), impedance=50.0,
                  doc="telescopic whip, 20 cm to 88 cm, 50 ohm general purpose antenna designed for 75 MHz to 1 GHz"))
+
+
+def format_antenna(info):
+    """One antenna as text, e.g. `ANT500 (Whip / monopole, length 20-88 cm, 50 ohm)`; `info` is `Antenna.describe()`"""
+    if not info:
+        return "none"
+    parts = []
+    if info.get("kind_name"):
+        parts.append(info["kind_name"])
+    size = info.get("size")
+    if size:
+        lo, hi = (f"{v * 100:g}" for v in size)
+        parts.append(f"{info.get('measures') or 'size'} {lo} cm" if lo == hi else f"{info.get('measures') or 'size'} {lo}-{hi} cm")
+    if info.get("impedance"):
+        parts.append(f"{info['impedance']:g} ohm")
+    return info["name"] + (f" ({', '.join(parts)})" if parts else "")

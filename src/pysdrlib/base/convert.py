@@ -16,6 +16,8 @@ from enum import Enum
 
 import numpy as np
 
+from .. import err
+
 try:
     from .lib import samples as _samples
 except ImportError as exc:
@@ -131,6 +133,6 @@ def sample_format(fmt) -> SampleFormat:
     if name.startswith("ci") and name.endswith("t"):
         name = name[:-1]
     if name not in _NAMES:
-        raise ValueError(f"unknown sample format {fmt!r}: one of {', '.join(sorted(_NAMES))} or a SampleFormat")
+        raise err.UnknownFormat(f"unknown sample format {fmt!r}: one of {', '.join(sorted(_NAMES))} or a SampleFormat")
     f = _NAMES[name]
     return f if order == "<" else SampleFormat(f.kind, f.bits, f.storage, f.packed, order)

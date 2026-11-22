@@ -29,7 +29,7 @@ API_PAGES = {
     "pysdrlib": ["pysdrlib"],
     "devices": ["pysdrlib.devices", "pysdrlib.targets"],
     "device": ["pysdrlib.base.device"],
-    "caps": ["pysdrlib.base.caps"],
+    "caps": ["pysdrlib.base.caps", "pysdrlib.base.antennas"],
     "stream": ["pysdrlib.base.stream"],
     "formats": ["pysdrlib.base.formats", "pysdrlib.base.convert"],
     "errors": ["pysdrlib.err", "pysdrlib.warn"],

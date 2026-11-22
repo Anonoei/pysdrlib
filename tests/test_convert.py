@@ -2,6 +2,7 @@
 import numpy as np
 import pytest
 
+from pysdrlib import err
 from pysdrlib.base import convert
 from pysdrlib.base.convert import SampleFormat
 
@@ -224,7 +225,7 @@ class TestNames:
 
     def test_unknown_names_are_refused(self):
         for bad in ("cf8", "ci2", "i16", "complex64"):
-            with pytest.raises(ValueError, match="unknown sample format"):
+            with pytest.raises(err.UnknownFormat, match="unknown sample format"):
                 convert.sample_format(bad)
 
 

@@ -12,7 +12,7 @@ Requests and replies on the C2 and control sockets are single-frame JSON:
 
     request  {"id": int, "op": str, ...op specific}
     reply    {"id": int, "ok": true,  "result": ...}
-             {"id": int, "ok": false, "error": {"type": str, "msg": str}}
+             {"id": int, "ok": false, "error": {"type": str, "msg": str, "reason"?: str}}   (reason: err.NoDevice's)
 
 Sample blocks are 3 frames: [topic, header, payload]. `topic` is the device id (SUB prefix filter) on the RX stream
 and the controller's token on the TX stream, `header` is HEADER (below) and `payload` is `nsamples` interleaved I/Q
@@ -134,7 +134,10 @@ def ok(req_id, result=None, stream=None) -> bytes:
 
 def fail(req_id, exc: BaseException) -> bytes:
     """An error reply to request `req_id`; the client re-raises it as the same pysdrlib error type"""
-    return pack({"id": req_id, "ok": False, "error": {"type": type(exc).__name__, "msg": str(exc)}})
+    error = {"type": type(exc).__name__, "msg": str(exc)}
+    if getattr(exc, "reason", None) is not None:   # err.NoDevice's
+        error["reason"] = exc.reason
+    return pack({"id": req_id, "ok": False, "error": error})
 
 def raise_error(error: dict):
     """Raise the exception described by a reply's `error`"""
@@ -142,7 +145,10 @@ def raise_error(error: dict):
     msg = error.get("msg", "")
     if cls is err.RemoteError and error.get("type"):
         msg = f"{error['type']}: {msg}"
-    raise cls(msg)
+    exc = cls(msg)
+    if error.get("reason") is not None:
+        exc.reason = error["reason"]
+    raise exc
 
 def wire_format(name: str) -> convert.SampleFormat:
     """Name -> SampleFormat, e.g. "int8"."""

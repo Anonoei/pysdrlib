@@ -241,6 +241,13 @@ class TestOpenClose:
         with pytest.raises(err.NotOpen):
             File().next(1)
 
+    def test_a_format_nothing_names_is_unknown_format(self, tmp_path):
+        path = tmp_path / "capture.bin"
+        path.write_bytes(bytes(16))
+        with pytest.raises(err.UnknownFormat, match="give the sample format"):
+            File(path)
+        assert issubclass(err.UnknownFormat, ValueError)
+
 
 class TestExtensions:
     @pytest.mark.parametrize("name, fmt", [("a.cfile", "cf32"), ("a.CF32", "cf32"), ("a.fc32", "cf32"), ("a.cs16", "ci16t"),

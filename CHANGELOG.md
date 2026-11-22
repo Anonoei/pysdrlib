@@ -27,7 +27,7 @@ PyPI.
   - Listening mode (`listen=True`) waits for a client to reconnect (`reconnect_timeout`, default 10 s). A client that
     reconnects takes over the stream, and keepalive drops a dead client in about 5 s.
   - Skips rtl_tcp's 12-byte header (`sdr.rtl_tcp` reports the tuner).
-  - Measures the arrival rate (`sdr.measured_rate`) and warns (`warn.RateMismatch`) when it disagrees with the
+  - Measures the arrival rate (`sdr.measured_rate`, and `sdr.rate_mismatch` against `RATE_TOLERANCE`) and warns (`warn.RateMismatch`) when it disagrees with the
     declared `Fs`.
   - Accepts 4-bit packed (`ci4`) and half-float (`cf16`) streams. `pysdrlib.tcpiq.FORMATS` lists every stream format.
     The format can also be a `Formats` member (`Formats.ci16t`), as File and FileSink take.
@@ -52,6 +52,9 @@ PyPI.
   spike out of the way) and `skip=`.
 - Every device has `is_controller` (always true locally), `id` and `granted` (None locally), so code that handles
   local and remote devices alike doesn't need `getattr`.
+- `RxMeta.next_index` (the stream index just after a block), `RxMeta.follows(prev)` (it starts where `prev`
+  ended, nothing lost or discarded between) and `RxMeta.wall_time` (the radio's clock when it holds a date, else the
+  receive time on the wall clock). `index` is documented as the absolute position across gaps.
 - `find_gain()` finds and sets the highest receive gain that doesn't clip, for one channel or several, local or remote.
 - Gain splitting is cached: a repeated HackRF `set_rx_gain` takes 5 µs instead of 723 µs.
 - The native ring copies samples out with its lock released, so a slow reader no longer holds up the driver's thread.
@@ -63,19 +66,24 @@ PyPI.
 - `pysdrlib.open("file", path=...)` plays a recording as a radio (`loop=`, `realtime=`, seek). `tx_path=` records
   what is transmitted. A server can host either.
 - Big-endian formats (`ci16_be`, `cf32_be`...), 4-bit packed and half-float formats, and `FileSink(scale=True)`.
-- `File.is_open`.
+- `File.is_open`. A file whose format nothing names raises `err.UnknownFormat` (a `ValueError`), as do an
+  unsupported SigMF datatype and an unknown stream format name.
 - The format is taken from the file extension (`.cf32`, `.cu8`, `.cfile`...) when none is given.
 
 ### Finding and opening radios
 
 - `pysdrlib.discover()` lists radios attached here and on servers (`PYSDRLIB_SERVERS`, or zeroconf). Each comes with
   the target string `open()` takes: `[server/]driver[@serial]`. A malformed target raises `ValueError` up front.
+  `Radio.receiving` says whether a hosted radio is streaming.
+- `err.NoDevice.reason` says why a server had no radio for a request: `"none_attached"`, `"none_free"`, `"unmet"` or
+  `"no_type"` (it travels from the server to the client).
 
 ### Command line and remote
 
 - `pysdrlib play REC` describes a recording and shows its power as it plays (`--serve` hosts it like a radio).
 - `pysdrlib client ... rx|watch -o FILE` records in any format, or SigMF.
 - `server --open TYPE:KEY=VALUE` and `client --arg KEY=VALUE` pass arguments to a device's `open()`.
+- `format_antenna` moved from `pysdrlib.remote.cli` to `pysdrlib.base.antennas`, which needs no remote extra.
 - Server metrics: `Client.metrics()`, `pysdrlib client ADDRESS stats`, and a periodic log line per streaming device.
 - `RemoteDevice` forwards every public `Device` method. This fixes `split_rx_gain_db` running on the client.
 

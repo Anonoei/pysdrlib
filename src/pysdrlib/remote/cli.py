@@ -22,6 +22,8 @@ import json
 import sys
 import time
 
+from ..base.antennas import format_antenna
+
 def _number(text):
     """'100e6' -> 100000000.0, '16' -> 16, anything else stays a string"""
     for kind in (int, float):
@@ -343,21 +345,6 @@ def _relay(args):
         pass
     finally:
         server.stop()
-
-def format_antenna(info):
-    """One antenna as text, e.g. `ANT500 (Whip / monopole, length 20-88 cm, 50 ohm)`; `info` is `Antenna.describe()`"""
-    if not info:
-        return "none"
-    parts = []
-    if info.get("kind_name"):
-        parts.append(info["kind_name"])
-    size = info.get("size")
-    if size:
-        lo, hi = (f"{v * 100:g}" for v in size)
-        parts.append(f"{info.get('measures') or 'size'} {lo} cm" if lo == hi else f"{info.get('measures') or 'size'} {lo}-{hi} cm")
-    if info.get("impedance"):
-        parts.append(f"{info['impedance']:g} ohm")
-    return info["name"] + (f" ({', '.join(parts)})" if parts else "")
 
 def format_chain(chain):
     """A chain as one line for `list`: its direction, port, the LO it has and the antenna on it"""

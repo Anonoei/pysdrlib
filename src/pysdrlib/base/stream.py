@@ -18,6 +18,8 @@ class Event:
     value: object
     channel: int = 0
 
+_EPOCH_2000 = 946684800.0   # 2000-01-01 UTC: a radio clock below it counts from power-up, not a date
+
 @dataclass(frozen=True)
 class RxMeta:
     """index: position of the block's first sample in the stream (samples since start_rx, dropped ones counted)
@@ -49,6 +51,27 @@ class RxMeta:
     def dropped(self):
         """Samples lost in or just before this block"""
         return sum(n for _, n in self.gaps)
+
+    @property
+    def next_index(self) -> int:
+        """The stream index just after this block: where the next one starts when nothing is lost or discarded first"""
+        return self.index + self.count + sum(n for at, n in self.gaps if at > 0)
+
+    def follows(self, prev: "RxMeta") -> bool:
+        """Whether this block starts right where `prev` ended (same channel, nothing lost or discarded between). Gaps
+        inside this block don't count: see `gaps`"""
+        return self.channel == prev.channel and self.index == prev.next_index
+
+    @property
+    def wall_time(self) -> Optional[float]:
+        """Best wall-clock time (`time.time()` seconds) of the first sample: `hw_time` when the radio's clock holds a date
+        (after 2000-01-01; a clock counting from 0 since power-up doesn't), else `time` taken to the wall clock, else
+        None"""
+        if self.hw_time is not None and self.hw_time >= _EPOCH_2000:
+            return self.hw_time
+        if self.time is not None:
+            return time.time() - (time.monotonic() - self.time)
+        return None
 
 class RxStream:
     """Fixed-size blocks from a device, receiving started on entry (if it wasn't) and stopped on exit

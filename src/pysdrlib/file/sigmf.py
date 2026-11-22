@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from .. import err as _err
 from ..base import Formats
 
 VERSION = "1.2.0"
@@ -79,7 +80,7 @@ def read(path) -> Meta:
     try:
         fmt = Formats.get(datatype)
     except KeyError as e:
-        raise ValueError(f"{meta_path}: datatype {datatype!r} is not supported: {e}") from None
+        raise _err.UnknownFormat(f"{meta_path}: datatype {datatype!r} is not supported: {e}") from None
     if int(glob.get("core:num_channels", 1)) != 1:
         raise ValueError(f"{meta_path}: {glob['core:num_channels']} channels; only single-channel recordings are supported")
     caps = sorted(raw.get("captures", []), key=lambda c: c.get("core:sample_start", 0))

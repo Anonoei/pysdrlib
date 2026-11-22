@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 import pysdrlib
-from pysdrlib import err
+from pysdrlib import RxMeta, err
 from pysdrlib.base import caps as caps_mod
 from pysdrlib.sim import Sim
 
@@ -106,6 +106,15 @@ class TestRead:
         for prev, m in zip(blocks, blocks[1:]):
             lead = sum(n for at, n in m.gaps if at == 0)
             assert m.index == prev.index + prev.count + sum(n for at, n in prev.gaps if at > 0) + m.discarded + lead
+            assert m.follows(prev) == (lead == 0 and m.discarded == 0)
+
+    def test_wall_time(self):
+        now, mono = time.time(), time.monotonic()
+        meta = lambda **kw: RxMeta(index=0, count=1, freq=1e6, rate=1e6, **kw)
+        assert meta(hw_time=1.8e9, time=mono).wall_time == 1.8e9              # a radio clock that holds a date
+        assert meta(hw_time=12.5, time=mono - 1).wall_time == pytest.approx(now - 1, abs=0.05)   # one counting from 0
+        assert meta(time=mono).wall_time == pytest.approx(now, abs=0.05)
+        assert meta().wall_time is None
 
     def test_stream_starts_and_stops(self):
         s = sim()

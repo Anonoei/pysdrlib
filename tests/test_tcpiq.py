@@ -340,12 +340,13 @@ class TestMeasuredRate:
     """How fast samples arrive is measured, and checks the declared Fs (it never sets it)"""
 
     def test_measured_and_agreeing(self, listening, recwarn):
-        assert listening.measured_rate is None   # nothing arrived yet
+        assert listening.measured_rate is None and listening.rate_mismatch is None   # nothing arrived yet
         listening.set_rx_sample_rate(200e3)
         listening.start_rx()
         sender = paced_sender(listening.port, 200e3, 2.0)
         read_for(listening, 1.8)
         assert listening.measured_rate == pytest.approx(200e3, rel=0.1)
+        assert listening.rate_mismatch is False
         assert listening.get_rx_sample_rate() == 200e3
         assert not [w for w in recwarn if "Fs is declared" in str(w.message)]
         sender.join()
@@ -357,6 +358,7 @@ class TestMeasuredRate:
         with pytest.warns(UserWarning, match="Fs is declared as 1,000,000") as caught:   # warn.RateMismatch
             read_for(listening, 2.8)
         assert len([w for w in caught if "Fs is declared" in str(w.message)]) == 1
+        assert listening.rate_mismatch is True
         assert listening.get_rx_sample_rate() == 1e6   # untouched
         sender.join()
 

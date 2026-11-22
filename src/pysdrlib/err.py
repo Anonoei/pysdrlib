@@ -4,7 +4,7 @@ The ones code usually handles: `NotSupported` (a control this radio doesn't have
 `InvalidValue` (out of range with `sdr.strict`, or always for nonsense), `NoDevice` (nothing to open, or it can't be
 opened), `Timeout` (a `read` with a `timeout`; also a `TimeoutError`), `StreamStalled` (no samples for
 `sdr.stall_timeout`), `Lost` (the radio or its server is gone: reopen), `Dropped` (`on_drop="raise"` and samples were
-lost). From a server: `Busy`, `NotController`, `RemoteError`, `ProtocolError`. Warnings are in `pysdrlib.warn`.
+lost), `UnknownFormat` (a sample format not known or not supported; also a `ValueError`). From a server: `Busy`, `NotController`, `RemoteError`, `ProtocolError`. Warnings are in `pysdrlib.warn`.
 """
 class _Error(Exception):
     """pysdrlib Error"""
@@ -13,7 +13,21 @@ class InvalidValue(_Error):
     """Error thrown when an invalid value is provided"""
 
 class NoDevice(_Error):
-    """Error thrown when unable to connect to device"""
+    """Error thrown when unable to connect to device. `reason` says why, where a server could tell (None otherwise):
+
+    - "none_attached": the server has no radio attached, and nothing it hosts is free (it may still open a type that
+      needs no hardware: `discover` lists those as "openable")
+    - "none_free": it has radios attached, but every one has a controller
+    - "unmet": it has free radios, but none meets `need` (the message says why each was left out)
+    - "no_type": it cannot open a device of the type asked for
+    """
+    def __init__(self, *args, reason: str | None = None):
+        super().__init__(*args)
+        self.reason = reason
+
+class UnknownFormat(_Error, ValueError):
+    """A sample format pysdrlib can't name or doesn't support: a file whose extension and metadata don't say, an
+    unsupported SigMF datatype, or an unknown stream format name. A `ValueError`"""
 
 class NotOpen(_Error):
     """Error thrown when attempting to control device without it open"""
