@@ -90,6 +90,8 @@ PyPI.
 - A viewer whose state is older than the server's (it attached before the controller started receiving) has `read`
   ask the server once instead of raising `err.NotStreaming`.
 - `RemoteDevice` forwards every public `Device` method. This fixes `split_rx_gain_db` running on the client.
+- `pysdrlib.remote.shm` (`ShmWriter`, `ShmReader`, `fit_capacity`) is public API: a complex64 ring in shared memory
+  that any process can write and others read, without a server.
 
 ### Fixes
 
