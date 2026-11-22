@@ -6,7 +6,7 @@
             if m.events: ...                       # the frequency / rate / gain changed inside it (m.events)
 """
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 @dataclass(frozen=True)
@@ -18,13 +18,25 @@ class Event:
     value: object
     channel: int = 0
 
+_EPOCH_2000 = 946684800.0   # 2000-01-01 UTC: a radio clock below it counts from power-up, not a date
+
 @dataclass(frozen=True)
 class RxMeta:
     """index: position of the block's first sample in the stream (samples since start_rx, dropped ones counted)
     gaps: (offset in the block, samples missing just before it), for every place samples were lost
     discarded: samples skipped on purpose (settling after a retune with flush=True) before this block
     time: time.monotonic() at which the first sample was received (estimated from the deliveries, smoothed so it never goes backwards), or None
-    freq / rate: what the device was set to for the first sample; events: changes inside the block
+    freq / rate: what the device was set to for the first sample; events: changes inside the block, each reported once
+    (offset 0: at the first sample, or in a gap just before it; a change a flush skipped past is not an event, the
+    whole block being at the new setting)
+    hw_time: the radio's own clock at the first sample (seconds; UHD's device time, a replayed recording's time), for
+    devices that timestamp their samples; None otherwise. Unlike `time` it has no host jitter, and two radios
+    sharing a clock reference and a time (GPS, PPS) agree on it
+
+    `index` is the absolute position in the stream, across gaps: sample `k` of the block is stream sample
+    `index_at(k)` = `index + k + sum(n for at, n in gaps if 0 < at <= k)` (a gap at offset 0 is already in `index`). The next block's
+    `index` is `index + count + sum(n for at, n in gaps if at > 0)`, plus its own `discarded` and its own gap at
+    offset 0. So a block can be stamped with its position and time straight from `index` and `time`/`hw_time`.
     """
     index: int
     count: int
@@ -35,11 +47,41 @@ class RxMeta:
     discarded: int = 0
     time: Optional[float] = None
     events: tuple = ()
+    hw_time: Optional[float] = None
 
     @property
     def dropped(self):
         """Samples lost in or just before this block"""
         return sum(n for _, n in self.gaps)
+
+    @property
+    def next_index(self) -> int:
+        """The stream index just after this block: where the next one starts when nothing is lost or discarded first"""
+        return self.index + self.count + sum(n for at, n in self.gaps if at > 0)
+
+    def index_at(self, k: int) -> int:
+        """The stream index of the block's sample `k` (0 <= k < count; negative counts from the end, as for a list),
+        counting the samples lost before it inside the block"""
+        if not -self.count <= k < self.count:
+            raise IndexError(f"sample {k} of a block of {self.count}")
+        k %= self.count
+        return self.index + k + sum(n for at, n in self.gaps if 0 < at <= k)
+
+    def follows(self, prev: "RxMeta") -> bool:
+        """Whether this block starts right where `prev` ended (same channel, nothing lost or discarded between). Gaps
+        inside this block don't count: see `gaps`"""
+        return self.channel == prev.channel and self.index == prev.next_index
+
+    @property
+    def wall_time(self) -> Optional[float]:
+        """Best wall-clock time (`time.time()` seconds) of the first sample: `hw_time` when the radio's clock holds a date
+        (after 2000-01-01; a clock counting from 0 since power-up doesn't), else `time` taken to the wall clock, else
+        None"""
+        if self.hw_time is not None and self.hw_time >= _EPOCH_2000:
+            return self.hw_time
+        if self.time is not None:
+            return time.time() - (time.monotonic() - self.time)
+        return None
 
 class RxStream:
     """Fixed-size blocks from a device, receiving started on entry (if it wasn't) and stopped on exit
@@ -48,8 +90,9 @@ class RxStream:
     then (channels, count), aligned; see Device.read). A `timeout` (seconds) bounds each
     block's wait; None waits as long as the device keeps delivering (a stalled device raises err.StreamStalled).
     """
-    def __init__(self, device, count, timeout=None, meta=False, channel=0, flush=True):
+    def __init__(self, device, count, timeout=None, meta=False, channel=0, flush=True, on_drop=None, latest=False):
         self.device, self.count, self.timeout, self.meta, self.channel = device, int(count), timeout, meta, channel
+        self.on_drop, self.latest = on_drop, latest
         self._flush = flush
         self._started = False
 
@@ -68,7 +111,8 @@ class RxStream:
         self._started = False
 
     def read(self):
-        return self.device.read(self.count, timeout=self.timeout, meta=self.meta, channel=self.channel)
+        return self.device.read(self.count, timeout=self.timeout, meta=self.meta, channel=self.channel, on_drop=self.on_drop,
+                                latest=self.latest)
 
     def __iter__(self):
         while self.device.state["rx"]:

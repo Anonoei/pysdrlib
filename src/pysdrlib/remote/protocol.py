@@ -12,7 +12,7 @@ Requests and replies on the C2 and control sockets are single-frame JSON:
 
     request  {"id": int, "op": str, ...op specific}
     reply    {"id": int, "ok": true,  "result": ...}
-             {"id": int, "ok": false, "error": {"type": str, "msg": str}}
+             {"id": int, "ok": false, "error": {"type": str, "msg": str, "reason"?: str}}   (reason: err.NoDevice's)
 
 Sample blocks are 3 frames: [topic, header, payload]. `topic` is the device id (SUB prefix filter) on the RX stream
 and the controller's token on the TX stream, `header` is HEADER (below) and `payload` is `nsamples` interleaved I/Q
@@ -24,12 +24,19 @@ caller complex64. The same goes for the TX stream: the controller sends blocks i
 by default (or any other wire format) and the server decodes whatever the header says. The format may change
 between blocks (the controller can switch it), so it is read from every header.
 
-A client on the same machine as the server can take the samples from shared memory instead (`shm.py`): per streaming
+A client on the same machine as the server can take the samples from shared memory instead (`pysdrlib.shm.ring`): per streaming
 channel the server keeps a ring of complex64 samples in a shared-memory segment that any number of clients read, each at
 its own pace. They subscribe to the topic `shm:<device id>` rather than the device id, and get a *notice* for each
 block published: 3 frames like a block, with FLAG_SHM in the header (channel, index of the first sample, count) and
 the name of the segment as the payload (empty: the server could not make one, so use the other topic). The server
 encodes and sends full blocks only while someone subscribes to the device id.
+
+Changes to the stream (a retune, a new gain, a flush) go to both topics as *events*: FLAG_EVENT in the header and a
+JSON payload `{"seq": n, "events": [[index, kind, value, channel], ...], "discard": index}`, published before any
+sample from after the change. The reply to the call that made the change carries it too (`"stream"`), so the caller
+has it before its next read. A client applies each `seq` once, as a local device would, so `read(meta=True)` reports
+retunes inside a block and `set_rx_freq(..., flush=True)` skips what came before. Blocks and notices are numbered
+separately, each from 0.
 
 Endpoints handed out by the server may contain `{host}`, which the client replaces with the host
 it used to reach the C2 socket (so a server bound to 0.0.0.0 doesn't need to know its own address).
@@ -44,17 +51,17 @@ from ..base import convert
 
 COMPLEX64_LE = np.dtype("<c8")
 
-VERSION = 3
+VERSION = 4   # 4: stream events (FLAG_EVENT, "stream" in replies). Server and client must agree (checked at `hello`)
 
 # version, format kind, bits, storage, flags (FLAG_*), channel, seq, timestamp (server time.time()), nsamples, index
-# (stream index of the first sample). Version 2 (older servers) had no index and a reserved byte for the channel.
+# (stream index of the first sample; NO_INDEX on the TX stream, which needs none)
 HEADER = struct.Struct("<6BQdIQ")
-HEADER_V2 = struct.Struct("<6BQdI")
 NO_INDEX = (1 << 64) - 1
 KINDS = ("int", "uint", "float")
 FLAG_PACKED = 1
 FLAG_BIG_ENDIAN = 2
 FLAG_SHM = 4
+FLAG_EVENT = 8
 SHM_PREFIX = b"shm:"
 
 # Names accepted wherever a wire format is chosen. "native" is resolved per device (see `resolve_wire`).
@@ -83,6 +90,16 @@ _ERRORS = {
     )
 }
 
+def mismatch(version, package, peer_version, peer_package, peer):
+    """Why this side (protocol `version`, pysdrlib `package`) and `peer` ("server" or "client", running protocol
+    `peer_version` and pysdrlib `peer_package`) can't talk, naming the one to update; None when they can"""
+    if peer_version == version:
+        return None
+    me = "client" if peer == "server" else "server"
+    older = peer if peer_version is None or (isinstance(peer_version, int) and peer_version < version) else me
+    return (f"the {peer} runs pysdrlib {peer_package or '(an older version)'} (protocol {peer_version}) and the {me} "
+            f"pysdrlib {package} (protocol {version}): update the {older} (pip install -U pysdrlib)")
+
 def jsonable(obj):
     """json.dumps default: numpy scalars/arrays and a few containers"""
     if isinstance(obj, np.generic):
@@ -107,13 +124,20 @@ def unpack(data: bytes) -> dict:
         raise err.ProtocolError("message must be an object")
     return msg
 
-def ok(req_id, result=None) -> bytes:
-    """A success reply to request `req_id`"""
-    return pack({"id": req_id, "ok": True, "result": result})
+def ok(req_id, result=None, stream=None) -> bytes:
+    """A success reply to request `req_id`. stream: the `change` the request made to the receive stream, if any (the
+    caller applies it before its next read, rather than wait for it on the stream)"""
+    msg = {"id": req_id, "ok": True, "result": result}
+    if stream is not None:
+        msg["stream"] = stream
+    return pack(msg)
 
 def fail(req_id, exc: BaseException) -> bytes:
     """An error reply to request `req_id`; the client re-raises it as the same pysdrlib error type"""
-    return pack({"id": req_id, "ok": False, "error": {"type": type(exc).__name__, "msg": str(exc)}})
+    error = {"type": type(exc).__name__, "msg": str(exc)}
+    if getattr(exc, "reason", None) is not None:   # err.NoDevice's
+        error["reason"] = exc.reason
+    return pack({"id": req_id, "ok": False, "error": error})
 
 def raise_error(error: dict):
     """Raise the exception described by a reply's `error`"""
@@ -121,7 +145,10 @@ def raise_error(error: dict):
     msg = error.get("msg", "")
     if cls is err.RemoteError and error.get("type"):
         msg = f"{error['type']}: {msg}"
-    raise cls(msg)
+    exc = cls(msg)
+    if error.get("reason") is not None:
+        exc.reason = error["reason"]
+    raise exc
 
 def wire_format(name: str) -> convert.SampleFormat:
     """Name -> SampleFormat, e.g. "int8"."""
@@ -168,22 +195,36 @@ def unpack_notice(header: bytes, payload):
         raise err.ProtocolError("not a shared-memory notice")
     return seq, timestamp, channel, index, count, bytes(payload).decode()
 
-def unpack_block(header: bytes, payload) -> tuple[int, float, np.ndarray]:
-    """-> (seq, timestamp, complex64 samples). See unpack_block_ex for the channel and index"""
-    seq, timestamp, samples, _, _ = unpack_block_ex(header, payload)
-    return seq, timestamp, samples
+def change(seq: int, events, discard: int) -> dict:
+    """A change to the receive stream (see the module docs): `events` are (index, kind, value, channel) as `Device`
+    records them, `discard` the stream index before which samples are settling or flushed, `seq` numbers the changes of
+    a device (a client applies each once: it may get one both in a reply and on the stream)"""
+    return {"seq": int(seq), "events": [list(e) for e in events], "discard": int(discard)}
 
-def unpack_block_ex(header: bytes, payload):
+def pack_event(timestamp: float, change: dict):
+    """-> (header bytes, payload bytes): a `change` on the RX stream. Sent on both topics, ahead of any sample published
+    after it"""
+    return HEADER.pack(VERSION, KINDS.index("float"), 32, 32, FLAG_EVENT, 0, change["seq"], timestamp, 0,
+                       change["discard"]), pack(change)
+
+def is_event(header: bytes) -> bool:
+    """Whether a message on the RX stream is an event (`pack_event`) rather than samples or a notice"""
+    return len(header) == HEADER.size and bool(header[4] & FLAG_EVENT)
+
+def unpack_event(payload) -> dict:
+    """The `change` an event message carries"""
+    return unpack(bytes(payload))
+
+def unpack_block(header: bytes, payload):
     """-> (seq, timestamp, complex64 samples, channel, index of the first sample or None)"""
-    if len(header) == HEADER.size:
-        version, kind, bits, storage, flags, channel, seq, timestamp, n, index = HEADER.unpack(header)
-    elif len(header) == HEADER_V2.size:
-        version, kind, bits, storage, flags, channel, seq, timestamp, n = HEADER_V2.unpack(header)
-        index = NO_INDEX
-    else:
+    if len(header) != HEADER.size:
         raise err.ProtocolError("bad block header")
-    if version not in (2, VERSION) or kind >= len(KINDS):
-        raise err.ProtocolError(f"unsupported block (version {version}, format kind {kind})")
+    version, kind, bits, storage, flags, channel, seq, timestamp, n, index = HEADER.unpack(header)
+    if version != VERSION:
+        raise err.ProtocolError(f"a block of protocol {version}; this pysdrlib speaks {VERSION}: run the same "
+                                "pysdrlib version on the server and the client")
+    if kind >= len(KINDS):
+        raise err.ProtocolError(f"unsupported block (format kind {kind})")
     try:
         fmt = convert.SampleFormat(KINDS[kind], bits, storage, bool(flags & FLAG_PACKED),
                                    ">" if flags & FLAG_BIG_ENDIAN else "<")
@@ -199,4 +240,4 @@ def unpack_block_ex(header: bytes, payload):
 
 def is_readonly(method: str) -> bool:
     """Methods a viewer (no controller token) may call"""
-    return method.startswith("get_")
+    return method.startswith(("get_", "split_"))

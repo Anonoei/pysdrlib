@@ -2,29 +2,30 @@
 
 `pysdrlib.File` and `pysdrlib.FileSink` read and write these. Pick one by name:
 
-    File("capture.cfile", "cf64")        # a GNU Radio .cfile: float32 I, float32 Q, repeating
-    FileSink("out.bin", "ci16t")         # int8 I, int8 Q, repeating
+    File("capture.cfile", "cf32")        # a GNU Radio .cfile: float32 I, float32 Q, repeating
+    FileSink("out.bin", "ci8")           # int8 I, int8 Q, repeating
 
 ## Reading the names
 
-    <kind><bits><variant>
+    <c><kind><bits><variant>
 
 | Part | Meaning |
 | --- | --- |
+| `c` | **c**omplex: samples are interleaved `I, Q, I, Q, ...` |
 | `ui` | **u**nsigned **i**nteger |
 | `i` | signed integer |
 | `f` | floating point |
-| `c` before `i` or `f` | **c**omplex: samples are interleaved `I, Q, I, Q, ...` |
-| bits | Size of **one value** for real formats, but of **a whole complex sample** (I and Q together) for complex ones |
-| `t` / `o` | Signed integers only: **t**wo's complement or **o**ne's complement |
+| bits | Size of **one value**: for a complex format, of I (or Q) alone, as in SigMF |
+| `t` / `o` | Signed integers: **t**wo's complement (the default: `ci8` is `ci8t`) or **o**ne's complement |
 
-The bit count is the gotcha. `f32` is one float32, so a complex sample of two float32 is **`cf64`**, not `cf32`:
-`cf32` is two *float16*. In the same way `ci16t` is two int8 and `ci32t` is two int16.
+So `cf32` is two float32 (numpy `complex64`, a GNU Radio `.cfile`), `ci8` two int8 and `cui8` two uint8 (an RTL-SDR
+`.cu8`). Before pysdrlib 0.5 the bits counted the whole complex sample: what was `cf64` is now `cf32`, `ci16t` is `ci8t`.
 
 ## The formats
 
 "C type" is what one value (real formats) or one I/Q pair (complex) looks like in memory. Everything is
-little-endian.
+little-endian, except the `_be` formats: each format wider than a byte (not one's complement) also comes big-endian
+(network order), as `<name>_be`: `ci16_be`, `cf32_be`, `ui16_be`... Read, they come back in this machine's order.
 
 | Name | Bytes | Per value | C type | Range (per value) |
 | --- | --- | --- | --- | --- |
@@ -36,16 +37,22 @@ little-endian.
 | `f16` | 2 | IEEE half | `_Float16` (C23; GCC/Clang) | +-65504 |
 | `f32` | 4 | IEEE single | `float` | unbounded |
 | `f64` | 8 | IEEE double | `double` | unbounded |
-| `ci8t` | 1 | I, Q: 4-bit two's complement | one byte: I in the high nibble, Q in the low | -8 to 7 |
-| `ci16t` | 2 | I, Q: `int8_t` | `struct { int8_t i, q; }` | -128 to 127 |
-| `ci32t` | 4 | I, Q: `int16_t` | `struct { int16_t i, q; }` | -32768 to 32767 |
-| `cf32` | 4 | I, Q: `_Float16` | `struct { _Float16 i, q; }` | +-65504 |
-| `cf64` | 8 | I, Q: `float` | `float _Complex` (C++ `std::complex<float>`) | unbounded |
-| `cf128` | 16 | I, Q: `double` | `double _Complex` (C++ `std::complex<double>`) | unbounded |
+| `ci4t` | 1 | I, Q: 4-bit two's complement | one byte: I in the high nibble, Q in the low | -8 to 7 |
+| `ci8t` | 2 | I, Q: `int8_t` | `struct { int8_t i, q; }` | -128 to 127 |
+| `ci16t` | 4 | I, Q: `int16_t` | `struct { int16_t i, q; }` | -32768 to 32767 |
+| `ci32t` | 8 | I, Q: `int32_t` | `struct { int32_t i, q; }` | -2^31 to 2^31 - 1 (read as float32) |
+| `cui8` | 2 | I, Q: `uint8_t` | `struct { uint8_t i, q; }` | 0 to 255 |
+| `cui16` | 4 | I, Q: `uint16_t` | `struct { uint16_t i, q; }` | 0 to 65535 |
+| `cf16` | 4 | I, Q: `_Float16` | `struct { _Float16 i, q; }` | +-65504 |
+| `cf32` | 8 | I, Q: `float` | `float _Complex` (C++ `std::complex<float>`) | unbounded |
+| `cf64` | 16 | I, Q: `double` | `double _Complex` (C++ `std::complex<double>`) | unbounded |
+
+Each two's complement name also works without its `t` (`i8`, `ci8`, ...): `Formats["ci8"] is Formats.ci8t`.
 
 `Formats.<name>.bytes` is the size in bytes of one element (one complex sample for the complex formats) and `.bits` the
-same in bits. The 4-bit formats have no byte-sized element, so they report 1 byte: for `i4t`/`i4o` that byte holds two
-values, and `ci8t` is one I/Q pair per byte (I in the high nibble). Read and write 4-bit values an even count at a time.
+size of one value in bits. The 4-bit formats have no byte-sized value, so they report 1 byte: for `i4t`/`i4o` that byte
+holds two values, and `ci4t` is one I/Q pair per byte (I in the high nibble). Read and write 4-bit values an even count
+at a time.
 
 ### Two's complement and one's complement
 Two's complement is what C integers use: `-x` is `~x + 1`, there is one zero, and the range has one more negative than
@@ -54,45 +61,44 @@ all-ones (`0xFF`) is a "negative zero" that reads as 0. It is read into the matc
 and written back the same way. You'll only need `i4o`/`i8o`/`i16o` for hardware or files that use them.
 
 ## What reading and writing do
-- **Nothing is scaled** unless you ask. A `ci16t` file of full-scale samples reads back as values from -128 to 127, not
-  -1 to 1. `File(path, fmt, scale=True)` (or `Formats.<name>.scale(samples)`) gives the `[-1, 1]` that devices return;
-  `Formats.<name>.full_scale` is the value that maps to 1.0.
+- **Nothing is scaled** unless you ask. A `ci8t` file of full-scale samples reads back as values from -128 to 127, not
+  -1 to 1. `File(path, fmt, scale=True)` (or `Formats.<name>.scale(samples)`) gives the `[-1, 1]` that devices return
+  (an unsigned format is centred first: `cui8` mid-scale 127.5 is 0); `Formats.<name>.full_scale` is the value that
+  maps to 1.0.
 - **Real formats** read as their natural numpy type (`i16t` -> `int16`, `f32` -> `float32`).
-  **Complex formats** read as `complex64`, except `cf128`, which reads as `complex128`.
+  **Complex formats** read as `complex64`, except `cf64`, which reads as `complex128`.
 - **Writing** accepts any array-like. Floats written to an integer format are rounded to the nearest integer. A value
   the format can't hold (out of range, or NaN/infinity in an integer format) raises `ValueError`; nothing wraps.
   `FileSink(..., clip=True)` saturates instead. Complex input is split into I and Q.
 - **A sample is never split across reads.** For complex formats `count` is in samples, not values.
-- There is no unsigned complex format. A file of unsigned 8-bit I/Q (RTL-SDR's `.cu8`) reads as `ui8` values you
-  de-interleave yourself: `x = (raw[0::2] - 127.5) + 1j * (raw[1::2] - 127.5)`.
 
 ## The same formats elsewhere
 
-How each `Formats` member is written in C, GNU Radio and numpy. For complex integer and half-float formats numpy has
-no complex type to match, so the on-disk layout is `<dtype>` pairs (`np.fromfile(path, "<int8").reshape(-1, 2)`);
+How each `Formats` member is written in SigMF, C, GNU Radio and numpy. For complex integer and half-float formats numpy
+has no complex type to match, so the on-disk layout is `<dtype>` pairs (`np.fromfile(path, "<int8").reshape(-1, 2)`);
 `File` returns them as `complex64`. A dash means there is no standard type to name.
 
-| pysdrlib | C | GNU Radio | numpy |
-| --- | --- | --- | --- |
-| `ui8` | `uint8_t` | unsigned byte (`uchar`) | `uint8` |
-| `ui16` | `uint16_t` | - | `uint16` |
-| `ui32` | `uint32_t` | - | `uint32` |
-| `i8t` | `int8_t` | byte (`int8`) | `int8` |
-| `i16t` | `int16_t` | short (`int16`) | `int16` |
-| `i32t` | `int32_t` | int (`int32`) | `int32` |
-| `i4t` | two values per `uint8_t` | - | unpack into `int8` |
-| `i8o` | `uint8_t` holding a one's complement value | - | `int8` after conversion |
-| `i16o` | `uint16_t` holding a one's complement value | - | `int16` after conversion |
-| `i4o` | two values per `uint8_t` | - | unpack into `int8` |
-| `f16` | `_Float16` | - | `float16` |
-| `f32` | `float` | float (`float32`) | `float32` |
-| `f64` | `double` | - | `float64` |
-| `ci8t` | one `uint8_t`: I and Q nibbles | - | unpack into `complex64` |
-| `ci16t` | `struct { int8_t i, q; }` | complex byte (`sc8`) | `int8` pairs |
-| `ci32t` | `struct { int16_t i, q; }` | complex short (`sc16`) | `int16` pairs |
-| `cf32` | `struct { _Float16 i, q; }` | - | `float16` pairs |
-| `cf64` | `float _Complex` (C++ `std::complex<float>`) | complex float (`gr_complex`, a `.cfile`) | `complex64` |
-| `cf128` | `double _Complex` (C++ `std::complex<double>`) | - | `complex128` |
+| pysdrlib | SigMF | C | GNU Radio | numpy |
+| --- | --- | --- | --- | --- |
+| `ui8` | `ru8` | `uint8_t` | unsigned byte (`uchar`) | `uint8` |
+| `ui16` | `ru16_le` | `uint16_t` | - | `uint16` |
+| `ui32` | `ru32_le` | `uint32_t` | - | `uint32` |
+| `i8t` | `ri8` | `int8_t` | byte (`int8`) | `int8` |
+| `i16t` | `ri16_le` | `int16_t` | short (`int16`) | `int16` |
+| `i32t` | `ri32_le` | `int32_t` | int (`int32`) | `int32` |
+| `i4t` `i4o` `i8o` `i16o` | - | packed or one's complement in `uint8_t` / `uint16_t` | - | `int8` / `int16` after conversion |
+| `f16` | - | `_Float16` | - | `float16` |
+| `f32` | `rf32_le` | `float` | float (`float32`) | `float32` |
+| `f64` | `rf64_le` | `double` | - | `float64` |
+| `ci4t` | - | one `uint8_t`: I and Q nibbles | - | unpack into `complex64` |
+| `ci8t` | `ci8` | `struct { int8_t i, q; }` | complex byte (`sc8`) | `int8` pairs |
+| `ci16t` | `ci16_le` | `struct { int16_t i, q; }` | complex short (`sc16`) | `int16` pairs |
+| `ci32t` | `ci32_le` | `struct { int32_t i, q; }` | - | `int32` pairs |
+| `cui8` | `cu8` | `struct { uint8_t i, q; }` | - | `uint8` pairs |
+| `cui16` | `cu16_le` | `struct { uint16_t i, q; }` | - | `uint16` pairs |
+| `cf16` | - | `struct { _Float16 i, q; }` | - | `float16` pairs |
+| `cf32` | `cf32_le` | `float _Complex` (C++ `std::complex<float>`) | complex float (`gr_complex`, a `.cfile`) | `complex64` |
+| `cf64` | `cf64_le` | `double _Complex` (C++ `std::complex<double>`) | - | `complex128` |
 
 ## Not the same as `pysdrlib.base.convert`
 `Formats` describes *files*, with no scaling. `pysdrlib.base.convert.SampleFormat` describes the *raw stream a device
@@ -106,44 +112,68 @@ import numpy as np
 from . import io as IO
 
 class Formats(Enum):
-    """The sample formats `File` and `FileSink` understand, by name (`Formats["cf64"]`, `Formats.ls()`).
+    """The sample formats `File` and `FileSink` understand, by name (`Formats["cf32"]`, `Formats.ls()`).
 
     Each member can `read` and `write` a file object directly too. See the module documentation
     (`pysdrlib.base.formats`) for what every name means and how it is laid out in memory.
     """
     # Integer
-    ui8 = IO.ui8_t
-    ui16 = IO.ui16_t
-    ui32 = IO.ui32_t
+    ui8 = IO.Layout("u", 8)
+    ui16 = IO.Layout("u", 16)
+    ui32 = IO.Layout("u", 32)
 
-    i4t = IO.i4_t
-    i8t = IO.i8_t
-    i16t = IO.i16_t
-    i32t = IO.i32_t
+    i4t = IO.Layout("i", 4)
+    i8t = IO.Layout("i", 8)
+    i16t = IO.Layout("i", 16)
+    i32t = IO.Layout("i", 32)
 
-    i4o = IO.i4_o
-    i8o = IO.i8_o
-    i16o = IO.i16_o
+    i4o = IO.Layout("i", 4, ones=True)
+    i8o = IO.Layout("i", 8, ones=True)
+    i16o = IO.Layout("i", 16, ones=True)
 
     # Float
-    f16 = IO.f16
-    f32 = IO.f32
-    f64 = IO.f64
-    # Complex
-    ci8t = IO.ci8_t
-    ci16t = IO.ci16_t
-    ci32t = IO.ci32_t
+    f16 = IO.Layout("f", 16)
+    f32 = IO.Layout("f", 32)
+    f64 = IO.Layout("f", 64)
 
-    cf32 = IO.cf32
-    cf64 = IO.cf64
-    cf128 = IO.cf128
+    # Complex
+    ci4t = IO.Layout("i", 4, cplx=True)
+    ci8t = IO.Layout("i", 8, cplx=True)
+    ci16t = IO.Layout("i", 16, cplx=True)
+    ci32t = IO.Layout("i", 32, cplx=True)
+    cui8 = IO.Layout("u", 8, cplx=True)
+    cui16 = IO.Layout("u", 16, cplx=True)
+
+    cf16 = IO.Layout("f", 16, cplx=True)
+    cf32 = IO.Layout("f", 32, cplx=True)
+    cf64 = IO.Layout("f", 64, cplx=True)
+
+    # Big-endian (network order), for values wider than a byte
+    ui16_be = IO.Layout("u", 16, big=True)
+    ui32_be = IO.Layout("u", 32, big=True)
+    i16t_be = IO.Layout("i", 16, big=True)
+    i32t_be = IO.Layout("i", 32, big=True)
+    f16_be = IO.Layout("f", 16, big=True)
+    f32_be = IO.Layout("f", 32, big=True)
+    f64_be = IO.Layout("f", 64, big=True)
+    ci16t_be = IO.Layout("i", 16, cplx=True, big=True)
+    ci32t_be = IO.Layout("i", 32, cplx=True, big=True)
+    cui16_be = IO.Layout("u", 16, cplx=True, big=True)
+    cf16_be = IO.Layout("f", 16, cplx=True, big=True)
+    cf32_be = IO.Layout("f", 32, cplx=True, big=True)
+    cf64_be = IO.Layout("f", 64, cplx=True, big=True)
+
+    # Two's complement is the default: the same members without the `t` (aliases, not listed by `ls`)
+    i4, i8, i16, i32 = i4t, i8t, i16t, i32t
+    ci4, ci8, ci16, ci32 = ci4t, ci8t, ci16t, ci32t
+    i16_be, i32_be, ci16_be, ci32_be = i16t_be, i32t_be, ci16t_be, ci32t_be
 
     def read(self, io, count):
-        """Input as format"""
+        """`count` elements (-1: to the end) from a file object"""
         return self.value.read(io, count)
 
     def write(self, io, data):
-        """Output as format"""
+        """Write samples (any array-like) in this format"""
         try:
             self.value.write(io, data)
         except IO.RangeError as e:
@@ -153,6 +183,7 @@ class Formats(Enum):
         """(lo, hi) of the values `write` accepts per component (I or Q), or None if unbounded"""
         return self.value.limits()
 
+    @property
     def integer(self):
         """True if components are stored as integers"""
         return self.value.integer()
@@ -166,34 +197,89 @@ class Formats(Enum):
     def scale(self, samples):
         """Samples as `read` gives them, scaled the way a device's are: float32 (complex64 for complex formats) with
         full scale at +-1. An unsigned integer format is centred first (mid-scale is zero). A float format keeps its
-        values; `cf128` and `f64` stay double precision"""
+        values; `cf64` and `f64` stay double precision"""
         x = np.asarray(samples)
         if x.dtype.kind != "c" and x.dtype != np.float64:
             x = x.astype(np.float32)
         offset = self.value.offset()
-        return ((x - offset) if offset else x) / x.real.dtype.type(self.full_scale)
+        if offset:
+            x = x - (x.dtype.type(offset * (1 + 1j)) if x.dtype.kind == "c" else x.dtype.type(offset))
+        return x / x.real.dtype.type(self.full_scale)
+
+    def unscale(self, samples):
+        """The inverse of `scale`: samples with full scale at +-1 (a device's) as this format stores them, ready for
+        `write` (integer formats are rounded there; +1.0 is one step past the largest signed value, see FileSink's clip)"""
+        x = np.asarray(samples)
+        if self.value.kind == "f":
+            return x
+        x = x * x.real.dtype.type(self.full_scale) if x.dtype.kind in "fc" else x.astype(np.float32) * np.float32(self.full_scale)
+        offset = self.value.offset()
+        if offset:
+            x = x + (x.dtype.type(offset * (1 + 1j)) if x.dtype.kind == "c" else x.dtype.type(offset))
+        return x
 
     @property
     def bits(self):
-        """Return size of format in bits"""
-        return self.value.SIZE
+        """Size of one value (I or Q of a complex format) in bits"""
+        return self.value.bits
 
     @property
     def bytes(self):
-        """Return size of format in bytes (at least 1: 4-bit formats are I/Q, one pair per byte)"""
-        return self.value.bytes()
+        """Size of one element in bytes (a complex sample: I and Q). At least 1: 4-bit values come two to a byte"""
+        return self.value.bytes
+
     @property
     def is_complex(self):
-        if issubclass(self.value, IO.ComplexFormat):
-            return True
-        return False
+        return self.value.cplx
 
     @classmethod
     def ls(cls):
-        """Names of every format"""
+        """Names of every format (without the aliases)"""
         return [fmt.name for fmt in cls]
 
+    @property
+    def sigmf(self):
+        """The SigMF `core:datatype` of this format ("cf32_le", "ci8", "cu8"...), or None where SigMF has none (4-bit,
+        one's complement, float16)"""
+        return _TO_SIGMF.get(self.name)
+
     @classmethod
-    def get(cls, name: str):
-        """The format called `name`, e.g. `Formats.get("cf64")`; the same as `Formats[name]`"""
-        return cls[name]
+    def from_extension(cls, path):
+        """The format a file's extension conventionally means (".cfile", ".cf32" and ".fc32" -> cf32, ".cs16" -> ci16t,
+        ".cu8" -> cui8, ...; see `EXTENSIONS`), or None"""
+        name = EXTENSIONS.get(str(path).rsplit(".", 1)[-1].lower()) if "." in str(path) else None
+        return cls[name] if name else None
+
+    @classmethod
+    def get(cls, name):
+        """The format called `name`: one of `ls()` or an alias (`Formats.get("cf32")`, the same as `Formats["cf32"]`), or
+        a SigMF datatype ("cf32_le", "ci16_le", "cu8"). A member is returned as it is. Raises KeyError for an unknown
+        name"""
+        if isinstance(name, cls):
+            return name
+        if name in cls.__members__:
+            return cls[name]
+        if name in _FROM_SIGMF:
+            return cls[_FROM_SIGMF[name]]
+        raise KeyError(f"unknown format {name!r}: one of {', '.join(cls.ls())}, or a SigMF datatype "
+                         f"({', '.join(sorted(_FROM_SIGMF))})")
+
+# File extensions in common use (GNU Radio, SDR#, gqrx, rtl_sdr, inspectrum...) -> format
+EXTENSIONS = {
+    "cfile": "cf32", "cf32": "cf32", "fc32": "cf32", "cf64": "cf64", "fc64": "cf64",
+    "cs32": "ci32t", "ci32": "ci32t", "sc32": "ci32t",
+    "cs16": "ci16t", "ci16": "ci16t", "sc16": "ci16t",
+    "cs8": "ci8t", "ci8": "ci8t", "sc8": "ci8t",
+    "cu8": "cui8", "cu16": "cui16",
+}
+
+# SigMF `core:datatype` of each format SigMF can describe (8-bit types have no byte order)
+_TO_SIGMF = {
+    "cf32": "cf32_le", "cf64": "cf64_le", "ci8t": "ci8", "ci16t": "ci16_le", "ci32t": "ci32_le",
+    "cui8": "cu8", "cui16": "cu16_le",
+    "f32": "rf32_le", "f64": "rf64_le", "i8t": "ri8", "i16t": "ri16_le", "i32t": "ri32_le",
+    "ui8": "ru8", "ui16": "ru16_le", "ui32": "ru32_le",
+}
+_TO_SIGMF |= {f"{name}_be": _TO_SIGMF[name].replace("_le", "_be")
+              for name in ("cf32", "cf64", "ci16t", "ci32t", "cui16", "f32", "f64", "i16t", "i32t", "ui16", "ui32")}
+_FROM_SIGMF = {v: k for k, v in _TO_SIGMF.items()} | {"cu16": "cui16", "cu16_be": "cui16_be"}

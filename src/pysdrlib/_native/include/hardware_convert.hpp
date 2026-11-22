@@ -2,15 +2,16 @@
 
 // Raw samples <-> complex64, for every layout a SampleFormat can describe. This is the one implementation
 // of the conversion: the devices' receive path (hardware_rx.hpp) and pysdrlib.base.convert both use it.
-// This is where the per-width types live, like hardware_numpy.hpp does for numpy dtypes; nothing else
-// generic names them.
+// This is where the per-width types live; nothing else generic names them.
 //
 //     decode_samples(fmt, raw, count, out)    raw -> complex64 in [-1, 1]
 //     encode_samples(fmt, in, count, raw)     complex64 in [-1, 1] -> raw, rounded to nearest and clamped
 //
 // Compile with -ffp-contract=off so the arithmetic matches pysdrlib's numpy reference (tests/reference)
 // to the last bit on every CPU, and -fno-trapping-math so the clamps in the encoder can be vectorised
-// (nothing here depends on floating-point exceptions).
+// (nothing here depends on floating-point exceptions). Never -ffast-math, -Ofast or /fp:fast: the rounding by
+// (x + 12582912.0f) - 12582912.0f (1.5 * 2^23, which leaves x rounded to an integer, ties to even) is folded away
+// to x by any compiler allowed to reassociate.
 //
 // The hot loops are compiled for several instruction sets and the CPU picks one when the library loads
 // (HW_SIMD), the way numpy does it, so a generic wheel still uses AVX2 where there is any.
@@ -45,8 +46,9 @@ using cfloat = std::complex<float>;
 // Throws std::invalid_argument for a layout the conversion cannot handle
 inline void check_format(const SampleFormat& f) {
     bool ok;
-    if (f.packed) ok = f.kind == SampleKind::Int && f.bits == 12 && f.storage_bits == 12;
-    else if (f.kind == SampleKind::Float) ok = f.bits == f.storage_bits && (f.storage_bits == 32 || f.storage_bits == 64);
+    if (f.packed) ok = f.kind == SampleKind::Int && (f.bits == 12 || f.bits == 4) && f.storage_bits == f.bits;
+    else if (f.kind == SampleKind::Float)
+        ok = f.bits == f.storage_bits && (f.storage_bits == 16 || f.storage_bits == 32 || f.storage_bits == 64);
     else ok = (f.storage_bits == 8 || f.storage_bits == 16 || f.storage_bits == 32 || f.storage_bits == 64)
               && f.bits >= 1 && f.bits <= f.storage_bits;
     if (!ok) throw std::invalid_argument("unsupported sample format");
@@ -77,6 +79,58 @@ inline void store(unsigned char* p, size_t i, T v) {
     std::memcpy(b, &v, sizeof(T));
     if (Big != host_big_endian) std::reverse(b, b + sizeof(T));
     std::memcpy(p + i * sizeof(T), b, sizeof(T));
+}
+
+// ---- IEEE half <-> float, in integer arithmetic (no _Float16 or F16C needed), rounding to nearest even as numpy ---- //
+inline float half_to_float(uint16_t h) {
+    const uint32_t sign = static_cast<uint32_t>(h & 0x8000u) << 16;
+    const uint32_t exp = (h >> 10) & 0x1Fu, man = h & 0x3FFu;
+    uint32_t bits;
+    if (exp == 0) {
+        if (man == 0) {
+            bits = sign;
+        } else {   // subnormal: man * 2^-24, exact in float
+            const float v = static_cast<float>(man) * 5.9604644775390625e-8f;
+            std::memcpy(&bits, &v, sizeof bits);
+            bits |= sign;
+        }
+    } else if (exp == 31) {
+        bits = sign | 0x7F800000u | (man << 13);   // inf, NaN (payload kept)
+    } else {
+        bits = sign | ((exp + 112) << 23) | (man << 13);
+    }
+    float out;
+    std::memcpy(&out, &bits, sizeof out);
+    return out;
+}
+
+inline uint16_t float_to_half(float x) {
+    uint32_t f;
+    std::memcpy(&f, &x, sizeof f);
+    const uint16_t sign = static_cast<uint16_t>((f >> 16) & 0x8000u);
+    const uint32_t a = f & 0x7FFFFFFFu;
+    if (a >= 0x7F800000u) {   // inf, or NaN: kept a NaN (quiet), with what of its payload fits
+        return a == 0x7F800000u ? sign | 0x7C00u : sign | 0x7E00u | static_cast<uint16_t>((a >> 13) & 0x3FFu);
+    }
+    if (a >= 0x477FF000u) return sign | 0x7C00u;   // >= 65520 rounds to inf
+    if (a < 0x38800000u) {   // below 2^-14: a subnormal half (or zero): a * 2^24, rounded to even
+        float v;
+        std::memcpy(&v, &a, sizeof v);
+        const float r = (v * 16777216.0f + 12582912.0f) - 12582912.0f;   // < 2^10: exact, ties to even
+        return sign | static_cast<uint16_t>(r);
+    }
+    const uint32_t rounded = a + 0xFFFu + ((a >> 13) & 1u);   // round the 13 bits dropped to nearest even
+    return sign | static_cast<uint16_t>((rounded - 0x38000000u) >> 13);   // rebias the exponent 127 -> 15
+}
+
+template <bool Big>
+HW_SIMD inline void half_in(const unsigned char* src, size_t count, float* out) {
+    for (size_t i = 0; i < count; ++i) out[i] = half_to_float(load<uint16_t, Big>(src, i));
+}
+
+template <bool Big>
+inline void half_out(const float* in, size_t count, unsigned char* dst) {
+    for (size_t i = 0; i < count; ++i) store<uint16_t, Big>(dst, i, float_to_half(in[i]));
 }
 
 // ---- raw -> float ---- //
@@ -155,7 +209,8 @@ template <bool Big>
 inline void decode(const SampleFormat& f, const unsigned char* src, size_t count, float* o) {
     const size_t n = 2 * count;   // components
     if (f.kind == SampleKind::Float) {   // already in range: no scaling
-        if (f.storage_bits == 32) copy_in<float, Big>(src, n, o);
+        if (f.storage_bits == 16) half_in<Big>(src, n, o);
+        else if (f.storage_bits == 32) copy_in<float, Big>(src, n, o);
         else copy_in<double, Big>(src, n, o);
         return;
     }
@@ -186,7 +241,8 @@ template <bool Big>
 inline void encode(const SampleFormat& f, const float* in, size_t count, unsigned char* dst) {
     const size_t n = 2 * count;
     if (f.kind == SampleKind::Float) {
-        if (f.storage_bits == 32) cast_out<float, Big>(in, n, dst);
+        if (f.storage_bits == 16) half_out<Big>(in, n, dst);
+        else if (f.storage_bits == 32) cast_out<float, Big>(in, n, dst);
         else cast_out<double, Big>(in, n, dst);
         return;
     }
@@ -242,13 +298,38 @@ HW_SIMD inline void encode_packed12(const float* x, size_t count, unsigned char*
     }
 }
 
+// Signed 4-bit, I and Q in one byte: I in the high nibble, Q in the low (as the ci4 file format)
+HW_SIMD inline void decode_packed4(const unsigned char* src, size_t count, float* o) {
+    const float scale = 1.0f / 8.0f;
+    for (size_t i = 0; i < count; ++i) {
+        const int b = src[i];
+        o[2 * i] = static_cast<float>(((b >> 4) ^ 0x8) - 0x8) * scale;
+        o[2 * i + 1] = static_cast<float>(((b & 0x0F) ^ 0x8) - 0x8) * scale;
+    }
+}
+
+HW_SIMD inline void encode_packed4(const float* x, size_t count, unsigned char* dst) {
+    for (size_t i = 0; i < count; ++i) {
+        int c[2];
+        for (int k = 0; k < 2; ++k) {   // clamp, then round to even (see round_out_small)
+            float y = x[2 * i + k] * 8.0f;
+            y = y > -8.0f ? y : -8.0f;   // NaN -> -8
+            y = y < 7.0f ? y : 7.0f;
+            y = (y + 12582912.0f) - 12582912.0f;
+            c[k] = static_cast<int>(y) & 0x0F;
+        }
+        dst[i] = static_cast<unsigned char>((c[0] << 4) | c[1]);
+    }
+}
+
 }  // namespace detail
 
 // `count` complex samples at `src` (in layout `f`) -> complex64 in [-1, 1] at `out`.
 inline void decode_samples(const SampleFormat& f, const unsigned char* src, size_t count, cfloat* out) {
     float* o = reinterpret_cast<float*>(out);
     if (f.packed) {
-        detail::decode_packed12(src, count, o);
+        if (f.bits == 4) detail::decode_packed4(src, count, o);
+        else detail::decode_packed12(src, count, o);
     } else if (f.big_endian) {
         detail::decode<true>(f, src, count, o);
     } else {
@@ -261,7 +342,8 @@ inline void decode_samples(const SampleFormat& f, const unsigned char* src, size
 inline void encode_samples(const SampleFormat& f, const cfloat* in, size_t count, unsigned char* dst) {
     const float* x = reinterpret_cast<const float*>(in);
     if (f.packed) {
-        detail::encode_packed12(x, count, dst);
+        if (f.bits == 4) detail::encode_packed4(x, count, dst);
+        else detail::encode_packed12(x, count, dst);
     } else if (f.big_endian) {
         detail::encode<true>(f, x, count, dst);
     } else {

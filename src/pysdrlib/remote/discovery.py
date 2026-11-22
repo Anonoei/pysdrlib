@@ -44,9 +44,14 @@ def _local_networks():
             for adapter in ifaddr.get_adapters() for ip in adapter.ips if isinstance(ip.ip, str)]
 
 def _reachable_first(addresses):
-    """`addresses` with the ones on a network this machine is on first (a server on several networks announces them all)"""
-    nets = _local_networks()
-    return sorted(addresses, key=lambda a: not any(ipaddress.ip_address(a) in n for n in nets))
+    """`addresses` with the ones on a network this machine is on first (a server on several networks announces them all),
+    and loopback last: a server never announces one (see `_addresses`), so it is another record's, merged in by the mDNS
+    cache for the same host name, and the server need not be listening there"""
+    nets = [n for n in _local_networks() if not n.is_loopback]
+    def rank(a):
+        ip = ipaddress.ip_address(a)
+        return (ip.is_loopback, not any(ip in n for n in nets))
+    return sorted(addresses, key=rank)
 
 def _addresses(endpoint):
     """-> (addresses to announce, port) for a bound C2 endpoint; NotAdvertisable when nobody else could reach it"""

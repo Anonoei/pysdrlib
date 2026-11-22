@@ -8,6 +8,7 @@
 #include <string>
 
 #include "hardware_convert.hpp"
+#include "hardware_pybind.hpp"
 #include "hardware_ring.hpp"
 #include "hardware_shm.hpp"
 
@@ -58,10 +59,40 @@ private:
     std::unique_ptr<ShmRing> ring_;
 };
 
+// A device with no hardware: everything a native driver has (the receive queues, conversion and counters of
+// HardwareDevice) and nothing else. Whatever owns it feeds it with `_dispatch_rx`, as a driver's streaming thread does:
+// pysdrlib.sim, so the simulated radio runs on the same receive path as a real one.
+class NullDevice : public HardwareDevice<void*> {
+public:
+    NullDevice() { handle_ = this; }
+    void set_format(const SampleFormat& f) {
+        if (rx_[0].enabled()) throw py::value_error("set the format before the first set_rx_buffer");
+        check_format(f);
+        format_ = f;
+    }
+    void close() override { handle_ = nullptr; streaming_ = false; }
+    SampleFormat rx_sample_format() const override { return format_; }
+    void start_rx() override { require(); streaming_ = true; }
+    void stop_rx() override { streaming_ = false; }
+    bool is_streaming() const override { return streaming_; }
+
+protected:
+    HardwareError not_open_error() const override { return HardwareError(-1, "the device is closed"); }
+
+private:
+    SampleFormat format_{SampleKind::Int, 8, 8, false};
+    std::atomic<bool> streaming_{false};
+};
+
 }  // namespace
 
 PYBIND11_MODULE(_samples, m) {
     m.doc() = "Sample conversion and ring buffer (pybind11)";
+
+    hw::bind_device<NullDevice>(m, "NullDevice")
+        .def("set_format", [](NullDevice& d, const std::string& kind, int bits, int storage, bool packed) {
+            d.set_format(make_format(kind, bits, storage, packed, false));
+        }, "The layout of the raw samples `_dispatch_rx` is given (default int8), before the first set_rx_buffer");
 
     // raw bytes in `kind/bits/storage/packed/big_endian` layout -> complex64 in [-1, 1]. `valid` is how many
     // bytes of `raw` count (default all); a trailing partial sample is ignored.

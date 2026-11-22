@@ -81,18 +81,21 @@ class TestClient:
             sdr.stop_rx()
         assert y.dtype == np.complex64 and np.array_equal(y, x[:65536])
 
-    def test_other_sample_formats_and_split_samples(self, server):
+    @pytest.mark.parametrize("name", ["ci16", "ci8", "cu8", "cu16", "ci32", "cf64", "ci16_be", "ci4", "cf16", "cf16_be"])
+    def test_other_sample_formats_and_split_samples(self, server, name):
+        fmt = convert.sample_format(name)
         x = (0.5 * tone(40_000)).astype(np.complex64)
-        raw = convert.INT16.from_complex64(x).tobytes()
-        server["payload"] = raw[:1001]   # ends mid-sample on purpose: whole samples only reach the ring
-        sdr = TcpIq(sample_format=convert.INT16)
-        sdr.open(host="127.0.0.1", port=server["port"])
+        raw = fmt.from_complex64(x).tobytes()
+        cut = 250 * fmt.bytes_per_sample + 1
+        server["payload"] = raw[:cut]   # ends mid-sample on purpose: whole samples only reach the ring
+        sdr = pysdrlib.open("tcpiq", host="127.0.0.1", port=server["port"], sample_format=name)
+        assert sdr.SAMPLE_FORMAT == fmt
         sdr.initialize(cf=1e6, Fs=1e6)
         sdr.start_rx()
         y = sdr.read(250, timeout=2.0)
         sdr.stop_rx()
         sdr.close()
-        assert len(y) == 250 and np.allclose(y, x[:250], atol=2 / 32768)
+        assert len(y) == 250 and np.allclose(y, x[:250], atol=2 / fmt.full_scale + 1e-6)
 
     def test_end_of_stream_is_noticed(self, server):
         server["payload"] = tone(1000).tobytes()
@@ -102,7 +105,11 @@ class TestClient:
         sdr.initialize(cf=1e6, Fs=1e6)
         sdr.start_rx()
         assert wait_for(lambda: sdr.eof)
-        assert len(sdr.read(1000, timeout=1.0)) == 1000
+        assert len(sdr.read(1000, timeout=1.0)) == 1000   # what arrived is read first
+        t = time.monotonic()
+        with pytest.raises(err.Lost, match="server closed"):
+            sdr.read(1000, timeout=5.0)
+        assert time.monotonic() - t < 2.0   # at once, not after the timeout
         sdr.stop_rx()
         sdr.close()
 
@@ -186,3 +193,222 @@ class TestServer:
             assert wait_for(lambda: sdr.connections == 1)
             sdr.close()   # joins the thread; must not hang
         assert not sdr.state["open"]
+
+
+def rtl_header(tuner=5, gains=29):
+    return b"RTL0" + tuner.to_bytes(4, "big") + gains.to_bytes(4, "big")
+
+
+@pytest.fixture
+def pieces():
+    """A TCP server that sends its `chunks` to the first client one at a time, a pause between them (so the receiver
+    sees them split), then holds the connection"""
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    state = {"chunks": []}
+
+    def serve():
+        try:
+            conn, _ = srv.accept()
+        except OSError:
+            return
+        with conn:
+            for chunk in state["chunks"]:
+                conn.sendall(chunk)
+                time.sleep(0.03)
+            time.sleep(0.5)
+
+    threading.Thread(target=serve, daemon=True).start()
+    state["port"] = srv.getsockname()[1]
+    yield state
+    srv.close()
+
+
+class TestRtlTcpHeader:
+    """rtl_tcp starts its stream with 12 bytes of dongle info: skipped, not read as samples"""
+
+    def read_cu8(self, port, count):
+        sdr = pysdrlib.open("tcpiq", host="127.0.0.1", port=port, sample_format="cu8")
+        try:
+            sdr.initialize(cf=100e6, Fs=1e6)
+            sdr.start_rx()
+            y = sdr.read(count, timeout=2.0)
+            sdr.stop_rx()
+            return y, sdr.rtl_tcp
+        finally:
+            sdr.close()
+
+    @pytest.mark.parametrize("split", [None, (1, 3, 5), (12,), (4, 9)], ids=["whole", "bytewise", "header-alone", "into-samples"])
+    def test_skipped(self, pieces, split):
+        x = (0.5 * tone(1000)).astype(np.complex64)
+        data = rtl_header() + convert.UINT8.from_complex64(x).tobytes()
+        cuts = [0, *np.cumsum(split or ()).tolist(), len(data)]
+        pieces["chunks"] = [data[a:b] for a, b in zip(cuts, cuts[1:]) if b > a]
+        y, info = self.read_cu8(pieces["port"], 1000)
+        np.testing.assert_array_equal(y, convert.UINT8.to_complex64(data[12:]))
+        assert info == {"tuner": "R820T", "tuner_type": 5, "gain_count": 29}
+
+    def test_a_stream_without_it_is_untouched(self, pieces):
+        data = b"RT" + bytes(range(256)) * 4   # starts like the magic, then isn't
+        pieces["chunks"] = [data[:1], data[1:3], data[3:]]
+        y, info = self.read_cu8(pieces["port"], len(data) // 2)
+        np.testing.assert_array_equal(y, convert.UINT8.to_complex64(data))
+        assert info is None
+
+    def test_listening_each_client(self, listening):
+        for tuner in (1, 6):
+            with client(listening) as c:
+                c.sendall(rtl_header(tuner, 14) + tone(5000).tobytes())
+                if tuner == 1:
+                    listening.start_rx()
+                assert wait_for(lambda: listening.rtl_tcp is not None and listening.rtl_tcp["tuner_type"] == tuner)
+            assert wait_for(lambda: listening.peer is None)
+        listening.stop_rx()
+
+
+class TestReconnect:
+    """Listening: a client that drops is waited for, and the stream goes on when it (or another) connects"""
+
+    def test_streams_again_after_the_client_reconnects(self, listening):
+        x = tone(20_000)
+        listening.start_rx()
+        with client(listening) as c:
+            c.sendall(x[:10_000].tobytes())
+            first = listening.read(10_000, timeout=2.0)
+        assert wait_for(lambda: listening.peer is None)   # dropped: waiting
+        assert listening.state["rx"]
+        with client(listening) as c:
+            c.sendall(x[10_000:].tobytes())
+            second = listening.read(10_000, timeout=2.0)
+        np.testing.assert_array_equal(np.concatenate([first, second]), x)
+        assert listening.connections == 2 and listening.reconnects == 0
+        listening.stop_rx()
+
+    def test_a_read_waits_through_the_gap(self, listening):
+        listening.start_rx()
+        got = {}
+        reader = threading.Thread(target=lambda: got.update(x=listening.read(5000, timeout=5.0)))
+        reader.start()
+        time.sleep(0.3)   # nobody connected yet
+        with client(listening) as c:
+            c.sendall(tone(5000).tobytes())
+            reader.join(5)
+        assert len(got["x"]) == 5000
+        listening.stop_rx()
+
+    def test_a_reconnecting_client_takes_over_a_dead_connection(self, listening):
+        listening.start_rx()
+        stale = client(listening)   # connected, then silent: as a connection whose client vanished
+        try:
+            assert wait_for(lambda: listening.peer is not None)
+            old = listening.peer
+            with client(listening) as c:
+                c.sendall(tone(5000).tobytes())
+                y = listening.read(5000, timeout=2.0)
+                assert listening.peer != old and listening.reconnects == 1
+            np.testing.assert_array_equal(y, tone(5000))
+        finally:
+            stale.close()
+        listening.stop_rx()
+
+
+def paced_sender(port, rate, seconds, chunk=2000, hold=0.0):
+    """A client that sends cf32 at `rate` samples/s, in real time, for `seconds`, then stays connected `hold` seconds"""
+    def send():
+        x = tone(chunk).tobytes()
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as c:
+            t0 = time.monotonic()
+            for i in range(int(rate * seconds / chunk)):
+                delay = t0 + i * chunk / rate - time.monotonic()
+                if delay > 0:
+                    time.sleep(delay)
+                c.sendall(x)
+            time.sleep(hold)
+    t = threading.Thread(target=send, daemon=True)
+    t.start()
+    return t
+
+
+def read_for(sdr, seconds):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        sdr.read(1000, timeout=0.2)
+
+
+class TestMeasuredRate:
+    """How fast samples arrive is measured, and checks the declared Fs (it never sets it)"""
+
+    def test_measured_and_agreeing(self, listening, recwarn):
+        assert listening.measured_rate is None and listening.rate_mismatch is None   # nothing arrived yet
+        listening.set_rx_sample_rate(200e3)
+        listening.start_rx()
+        sender = paced_sender(listening.port, 200e3, 2.0)
+        read_for(listening, 1.8)
+        assert listening.measured_rate == pytest.approx(200e3, rel=0.1)
+        assert listening.rate_mismatch is False
+        assert listening.get_rx_sample_rate() == 200e3
+        assert not [w for w in recwarn if "Fs is declared" in str(w.message)]
+        sender.join()
+
+    def test_a_mismatch_is_warned_once(self, listening):
+        listening.RATE_WINDOWS = 1
+        listening.start_rx()   # declared 1 MS/s; the sender streams 200 kS/s
+        sender = paced_sender(listening.port, 200e3, 3.0)
+        with pytest.warns(UserWarning, match="Fs is declared as 1,000,000") as caught:   # warn.RateMismatch
+            read_for(listening, 2.8)
+        assert len([w for w in caught if "Fs is declared" in str(w.message)]) == 1
+        assert listening.rate_mismatch is True
+        assert listening.get_rx_sample_rate() == 1e6   # untouched
+        sender.join()
+
+    def test_unknown_once_nothing_arrives(self, listening):
+        listening.start_rx()
+        sender = paced_sender(listening.port, 200e3, 1.5, hold=4.0)
+        assert wait_for(lambda: listening.measured_rate, timeout=3.0)   # still connected, sending
+        assert wait_for(lambda: listening.measured_rate is None, timeout=4.0)   # still connected, silent
+        assert listening.peer is not None
+        sender.join()
+
+    def test_a_client_leaving_forgets_it(self, listening):
+        listening.start_rx()
+        paced_sender(listening.port, 200e3, 1.5).join()
+        assert wait_for(lambda: listening.peer is None)
+        assert listening.measured_rate is None
+
+    def test_lost_when_nobody_reconnects_in_time(self):
+        sdr = pysdrlib.open("tcpiq", listen=True, host="127.0.0.1", port=0, reconnect_timeout=0.3)
+        try:
+            sdr.initialize(cf=100e6, Fs=1e6)
+            sdr.start_rx()
+            with client(sdr) as c:
+                c.sendall(tone(5000).tobytes())
+                sdr.read(5000, timeout=2.0)
+            t = time.monotonic()
+            with pytest.raises(err.Lost, match="has not reconnected"):
+                sdr.read(5000, timeout=5.0)
+            assert time.monotonic() - t < 2.0
+            with client(sdr) as c:   # still listening: a client that comes later is read
+                c.sendall(tone(5000).tobytes())
+                np.testing.assert_array_equal(sdr.read(5000, timeout=2.0), tone(5000))
+        finally:
+            sdr.close()
+
+    def test_no_timeout_before_the_first_client_or_when_none(self):
+        for limit in (0.2, None):
+            sdr = pysdrlib.open("tcpiq", listen=True, host="127.0.0.1", port=0, reconnect_timeout=limit)
+            try:
+                sdr.initialize(cf=100e6, Fs=1e6)
+                sdr.start_rx()
+                if limit is None:   # a client came and went
+                    with client(sdr) as c:
+                        c.sendall(tone(100).tobytes())
+                        sdr.read(100, timeout=2.0)
+                    assert wait_for(lambda: sdr.peer is None)
+                with pytest.raises(err.Timeout):   # waited, not Lost
+                    sdr.read(100, timeout=0.6)
+            finally:
+                sdr.close()
+
+    def test_default_is_ten_seconds(self, listening):
+        assert listening.reconnect_timeout == 10.0

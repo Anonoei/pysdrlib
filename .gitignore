@@ -37,6 +37,9 @@ logs/
 # Benchmark baselines/runs are per machine
 .benchmarks/
 
-# Built documentation
-docs/
+# Built by tools/builder.py -d (CI/CD publishes site/); generated from the code by tools/gen_docs.py
+site/
+docs/api/
+docs/llms.txt
+docs/llms-full.txt
 

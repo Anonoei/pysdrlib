@@ -68,15 +68,13 @@ void HackRFDevice::close() {
     tx_[0].close();                    // wake blocked writers; the callback then sends silence
     tx_active_ = false;
     int result = hackrf_close(h);   // joins the streaming thread
-    rx_callback_ = nullptr;         // only safe to drop once no thread can call it
     hackrf_check(result, "hackrf_close");
 }
 
 int HackRFDevice::rx_trampoline(hackrf_transfer* transfer) {
     auto* self = static_cast<HackRFDevice*>(transfer->rx_ctx);
     if (!self) return -1;
-    return self->dispatch_rx(transfer->buffer, static_cast<size_t>(transfer->valid_length),
-                             static_cast<size_t>(transfer->buffer_length));
+    return self->dispatch_rx(transfer->buffer, static_cast<size_t>(transfer->valid_length));
 }
 
 void HackRFDevice::start_rx() {

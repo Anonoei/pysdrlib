@@ -79,7 +79,7 @@ class TestExtensionBuild:
 
     def test_uses_the_shared_hardware_headers(self, ext):
         depends = " ".join(ext.get().depends)
-        assert all(h in depends for h in ("hardware_wrapper.hpp", "hardware_numpy.hpp", "hardware_pybind.hpp"))
+        assert all(h in depends for h in ("hardware_wrapper.hpp", "hardware_pybind.hpp"))
 
     def test_optional_only_on_windows(self, ext, monkeypatch):
         assert ext.get().optional == (sys.platform == "win32")

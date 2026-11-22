@@ -1,6 +1,6 @@
 """The native receive path (driver thread -> C++ queue -> get_samples) together with the rest of pysdrlib:
 the File reader and the remote server/client. Each device in tests/devices.py runs against the real
-extension's queue, fed through its `_simulate_rx` hook, so no hardware is needed (the `hardware` test
+extension's queue, fed through its `_dispatch_rx` hook, so no hardware is needed (the `hardware` test
 streams a real device through a server).
 """
 import threading
@@ -9,7 +9,6 @@ import time
 import numpy as np
 import pytest
 
-import pysdrlib
 from pysdrlib import err
 from pysdrlib.base import Formats
 from pysdrlib.file import File
@@ -20,16 +19,16 @@ from devices import SAMPLES, FakeDevice, fake_lib
 class Queue:
     """The extension's device with its USB side stubbed out. The receive path (`set_rx_buffer`, `read_rx`,
     `rx_stats`...) is the extension's own: conversion, queue and counters in C++. `feed` plays the driver
-    delivering a transfer, on a native thread. Tuning, gain and streaming calls go to a fake driver."""
-    RECEIVE_PATH = ("set_rx_buffer", "reset_rx_stats", "read_rx", "read_rx_indexed", "wait_rx", "rx_stats", "rx_available",
-                    "rx_slots", "read_rx_into", "rx_counters")
+    delivering a transfer, as its streaming thread does. Tuning, gain and streaming calls go to a fake driver."""
+    RECEIVE_PATH = ("set_rx_buffer", "reset_rx_stats", "read_rx", "wait_rx", "rx_stats", "rx_slots", "read_rx_into",
+                    "rx_counters")
 
     def __init__(self, spec):
         self._native = spec.native.device()
         self._fake = FakeDevice(spec.fake_returns, spec.device_class.SAMPLE_FORMAT)
 
     def feed(self, raw):
-        self._native._simulate_rx(raw, len(raw), len(raw))
+        self._native._dispatch_rx(raw)
 
     def __getattr__(self, name):
         return getattr(self._native if name in self.RECEIVE_PATH else self._fake, name)
@@ -46,7 +45,7 @@ def sdr(spec):
 
 class TestFile:
     def test_a_capture_reads_back_exactly(self, sdr, spec, tmp_path):
-        """What get_samples returns, written as a capture (cf64: two float32, i.e. complex64), is what File reads"""
+        """What get_samples returns, written as a capture (cf32: two float32, i.e. complex64), is what File reads"""
         sdr.start_rx()
         data, _ = spec.raw()
         for _ in range(40):
@@ -54,12 +53,12 @@ class TestFile:
         captured = sdr.get_samples()
         assert captured.dtype == np.complex64 and len(captured) == 40 * len(SAMPLES)
 
-        path = tmp_path / "capture.cf64"
+        path = tmp_path / "capture.cf32"
         with open(path, "wb") as f:
-            Formats.cf64.write(f, captured)
+            Formats.cf32.write(f, captured)
         capture = File()
         capture.set_path(path)
-        capture.set_fmt("cf64")
+        capture.set_fmt("cf32")
         capture.open()
         try:
             np.testing.assert_array_equal(capture.next(len(captured)), captured)
@@ -70,12 +69,12 @@ class TestFile:
         sdr.start_rx()
         sdr.device.feed(spec.raw()[0] * 100)
         captured = sdr.get_samples()
-        path = tmp_path / "capture.cf64"
+        path = tmp_path / "capture.cf32"
         with open(path, "wb") as f:
-            Formats.cf64.write(f, captured)
+            Formats.cf32.write(f, captured)
         capture = File()
         capture.set_path(path)
-        capture.set_fmt("cf64")
+        capture.set_fmt("cf32")
         capture.open()
         blocks = list(capture.forward(40))
         capture.close()
@@ -89,7 +88,6 @@ from pysdrlib.remote import RemoteDevice, Server  # noqa: E402
 @pytest.fixture
 def served(spec, monkeypatch):
     """A server hosting the device, over a fake driver whose queue is swapped for the extension's real one"""
-    from devices import fake_lib
     monkeypatch.setattr(spec.device_module, "lib", fake_lib(spec))
     with Server("tcp://127.0.0.1:0", devices=[spec.name], lease=0) as server:
         worker, _ = server.open_device(spec.name)

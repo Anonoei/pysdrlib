@@ -113,7 +113,7 @@ def test_strings_from_a_command_line_are_understood():
 def test_the_cli_parses_a_span_and_a_flag():
     from pysdrlib.remote import cli
     assert cli._need("freq=430e6:440e6") == ("freq", [430e6, 440e6])
-    assert cli._need("tx=true") == ("tx", "true")
+    assert cli._need("tx=true") == ("tx", True)   # a flag is a bool (choose.normalize takes either)
     assert choose.normalize(dict([cli._need("freq=430e6:440e6"), cli._need("tx=true")])) == {"freq": [430e6, 440e6], "tx": True}
 
 
@@ -202,6 +202,31 @@ def test_no_driver_needed_when_the_need_picks_it(server):
         assert sdr.granted["rate"] == 10e6
         sdr.initialize(cf=433e6, Fs=10e6)
     finally:
+        sdr.close()
+
+
+@pytestmark_zmq
+def test_no_device_says_why_across_the_wire(server, tmp_path, monkeypatch):
+    with pytest.raises(err.NoDevice) as e:
+        connect(server, need={"freq": 50e9})
+    assert e.value.reason == "unmet"
+    with pytest.raises(err.NoDevice) as e:
+        connect(server, "nosuchdriver")
+    assert e.value.reason == "no_type"
+    a, b = connect(server, serial="AAA"), connect(server, serial="BBB")
+    try:
+        with pytest.raises(err.NoDevice) as e:
+            connect(server, need={"freq": 100e6})   # both attached radios have a controller
+        assert e.value.reason == "none_free"
+    finally:
+        a.close()
+        b.close()
+    monkeypatch.setattr("pysdrlib.remote.server.devices.find", lambda *a, **k: [])
+    with Server(f"ipc://{tmp_path}/empty", devices=["sim"], lease=0) as empty:
+        with pytest.raises(err.NoDevice, match="attached: none") as e:
+            pysdrlib.connect(empty.endpoint, need={"freq": 100e6})
+        assert e.value.reason == "none_attached"
+        sdr = pysdrlib.connect(empty.endpoint, "sim", init_kwargs=SIM)   # what to do then: open a type it has
         sdr.close()
 
 

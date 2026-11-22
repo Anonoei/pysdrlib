@@ -1,0 +1,118 @@
+# Documentation site: guides in docs/, the API reference from the package docstrings (mkdocstrings, read statically:
+# no compiled extension or vendor library is needed). `python tools/builder.py -d` writes docs/api/ and the llms files, then
+# builds into site/.
+[project]
+site_name = "pysdrlib"
+site_description = "Python wrappers for hardware SDRs: every radio has the same API, and samples are always complex64"
+site_url = "https://anonoei.github.io/pysdrlib/"
+repo_url = "https://github.com/Anonoei/pysdrlib"
+repo_name = "Anonoei/pysdrlib"
+docs_dir = "docs"
+site_dir = "site"
+nav = [
+  { "Home" = "index.md" },
+  { "Guides" = [
+    "guide/installing.md",
+    "guide/receiving.md",
+    "guide/controls.md",
+    "guide/files.md",
+    "guide/remote.md",
+    "guide/custom-drivers.md",
+  ] },
+  { "Examples" = "examples.md" },
+  { "API" = [
+    "api/index.md",
+    "api/pysdrlib.md",
+    "api/devices.md",
+    "api/device.md",
+    "api/caps.md",
+    "api/stream.md",
+    "api/formats.md",
+    "api/errors.md",
+    "api/file.md",
+    "api/remote.md",
+    "api/sim.md",
+    "api/shm.md",
+    "api/native.md",
+    "api/testing.md",
+    "api/contributing.md",
+    "api/scaffold.md",
+    { "Drivers" = [
+      "api/rtl_sdr.md",
+      "api/hackrf.md",
+      "api/uhd.md",
+      "api/bladerf.md",
+      "api/extio.md",
+      "api/tcpiq.md",
+    ] },
+  ] },
+  { "Contributing" = "contributing.md" },
+  { "Roadmap" = "roadmap.md" },
+  { "Changelog" = "changelog.md" },
+]
+
+[project.theme]
+language = "en"
+features = [
+  "content.code.copy",
+  "navigation.footer",
+  "navigation.indexes",
+  "navigation.instant",
+  "navigation.path",
+  "navigation.sections",
+  "navigation.top",
+  "navigation.tracking",
+  "search.highlight",
+]
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme)"
+toggle.icon = "lucide/sun-moon"
+toggle.name = "Switch to light mode"
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to system preference"
+
+[project.markdown_extensions]
+admonition = {}
+attr_list = {}
+def_list = {}
+footnotes = {}
+md_in_html = {}
+tables = {}
+toc.permalink = true
+pymdownx.arithmatex.generic = true
+pymdownx.details = {}
+pymdownx.highlight.anchor_linenums = true
+pymdownx.highlight.pygments_lang_class = true
+pymdownx.inlinehilite = {}
+pymdownx.tasklist.custom_checkbox = true
+pymdownx.superfences.custom_fences = [
+  { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" },
+]
+# Guides embed the tested example scripts (--8<-- "examples/x.py"); a missing file fails the build
+pymdownx.snippets.base_path = ["."]
+pymdownx.snippets.check_paths = true
+
+[project.plugins.mkdocstrings.handlers.python]
+paths = ["src"]
+inventories = ["https://docs.python.org/3/objects.inv", "https://numpy.org/doc/stable/objects.inv"]
+
+[project.plugins.mkdocstrings.handlers.python.options]
+docstring_style = "google"
+members_order = "source"
+filters = ["!^_"]
+show_submodules = false
+show_root_heading = true
+show_root_full_path = true
+show_signature_annotations = true
+separate_signature = true
+merge_init_into_class = true
+summary = true

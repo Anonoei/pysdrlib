@@ -6,7 +6,6 @@ devices, which must refuse a second channel.
 import numpy as np
 import pytest
 
-import pysdrlib
 from pysdrlib import err
 
 from devices import BY_NAME, SAMPLES, fake_lib

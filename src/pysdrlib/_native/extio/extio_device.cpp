@@ -66,20 +66,19 @@ void ExtIODevice::close() {
     if (!handle_) return;
     RadioHandlerClass* handler = handle_;
     handle_ = nullptr;
-    handler->Stop();    // joins the streaming threads, so nothing can call rx_callback_ after this
+    handler->Stop();    // joins the streaming threads, so nothing can call dispatch_rx after this
     handler->Close();   // powers the hardware down; needs fx3_ still alive
     delete handler;
     delete fx3_;
     fx3_ = nullptr;
     streaming_ = false;
-    rx_callback_ = nullptr;
     rf_gain_.reset();
     if_gain_.reset();
 }
 
 void ExtIODevice::rx_trampoline(void* context, const float* data, uint32_t length) {
     const size_t bytes = static_cast<size_t>(length) * 2 * sizeof(float);   // `length` counts I/Q pairs
-    static_cast<ExtIODevice*>(context)->dispatch_rx(data, bytes, bytes);
+    static_cast<ExtIODevice*>(context)->dispatch_rx(data, bytes);
 }
 
 void ExtIODevice::start_rx() {

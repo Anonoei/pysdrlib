@@ -36,7 +36,7 @@ class TestProtocol:
     def test_block_roundtrip(self):
         x = (np.arange(10) + 1j * np.arange(10)).astype(np.complex64)
         header, payload = protocol.pack_block(7, 1.5, x)
-        seq, ts, y = protocol.unpack_block(header, memoryview(payload).cast("B"))
+        seq, ts, y, _, _ = protocol.unpack_block(header, memoryview(payload).cast("B"))
         assert seq == 7 and ts == 1.5 and y.dtype == np.complex64 and np.array_equal(x, y)
 
     @pytest.mark.parametrize("name", list(protocol.WIRE_FORMATS))
@@ -45,7 +45,7 @@ class TestProtocol:
         rng = np.random.default_rng(0)
         x = (rng.uniform(-0.9, 0.9, 1000) + 1j * rng.uniform(-0.9, 0.9, 1000)).astype(np.complex64)
         header, payload = protocol.pack_block(3, 0.0, x, fmt)
-        seq, _, y = protocol.unpack_block(header, memoryview(payload).cast("B"))
+        seq, _, y, _, _ = protocol.unpack_block(header, memoryview(payload).cast("B"))
         assert seq == 3 and y.dtype == np.complex64 and y.shape == x.shape
         assert np.max(np.abs(x - y)) <= 1.5 / fmt.full_scale if fmt.kind != "float" else np.array_equal(x, y)
         assert memoryview(payload).nbytes == 1000 * fmt.bytes_per_sample
@@ -57,6 +57,12 @@ class TestProtocol:
             x = fmt.to_complex64(raw)
             header, payload = protocol.pack_block(0, 0.0, x, fmt)
             assert np.array_equal(protocol.unpack_block(header, memoryview(payload).cast("B"))[2], x), fmt
+
+    def test_event_roundtrip(self):
+        change = protocol.change(4, [(1000, "freq", 101e6, 0)], 1500)
+        header, payload = protocol.pack_event(2.0, change)
+        assert protocol.is_event(header) and protocol.unpack_event(payload) == change
+        assert not protocol.is_event(protocol.pack_block(0, 0.0, np.zeros(4, np.complex64))[0])
 
     def test_unknown_wire_format(self):
         with pytest.raises(ValueError, match="unknown wire format"):
@@ -156,6 +162,17 @@ class TestOwnership:
         assert dev.state["open"]        # a viewer closing doesn't close the device
         assert dev.get_rx_freq() == 50e6
 
+    def test_a_viewer_that_attached_before_the_start_reads_once_it_starts(self, server, dev):
+        dev.initialize(cf=50e6, Fs=1e6)
+        with RemoteDevice(server.endpoint, id=dev.id) as v:
+            assert not v.state["rx"]
+            with pytest.raises(err.NotStreaming, match="hasn't started it"):
+                v.read(1000, timeout=1)
+            dev.start_rx()                       # the viewer's state is now older than the server's
+            assert not v.state["rx"]
+            assert v.read(100_000, timeout=10).size == 100_000
+            assert v.state["rx"]
+
     def test_multiple_viewers_each_get_samples(self, server, dev):
         dev.initialize(Fs=1e6)
         dev.start_rx()
@@ -190,6 +207,39 @@ class TestOwnership:
     def test_attach_unknown(self, server):
         with pytest.raises(err.NoDevice):
             RemoteDevice(server.endpoint, id="sim-99").open()
+
+
+class TestVersions:
+    def test_mismatch_names_the_side_to_update(self):
+        assert protocol.mismatch(4, "0.5.0", 4, "0.4.9", "server") is None
+        assert "update the client" in protocol.mismatch(4, "0.5.0", 3, "0.4.0", "client")
+        assert "update the server" in protocol.mismatch(4, "0.4.0", 5, "0.5.0", "client")
+        assert "update the server" in protocol.mismatch(5, "0.5.0", 4, "0.4.0", "server")
+        assert "update the client" in protocol.mismatch(4, "0.4.0", 5, "0.5.0", "server")
+
+    def test_hello_shares_versions(self, server):
+        with Client(server.endpoint) as c:
+            assert c.info["version"] == protocol.VERSION and c.info["pysdrlib"] == pysdrlib.__version__
+
+    def test_server_refuses_another_version(self, server):
+        from pysdrlib.remote.client import _Channel
+        c2 = _Channel(server.endpoint, 5.0)
+        try:
+            with pytest.raises(err.ProtocolError, match="update the client"):
+                c2.request("hello", version=protocol.VERSION - 1, pysdrlib="0.0.1")
+            with pytest.raises(err.ProtocolError, match="update the server"):
+                c2.request("hello", version=protocol.VERSION + 1, pysdrlib="9.9.9")
+            assert c2.request("hello")["version"] == protocol.VERSION   # a client from before versions were sent
+        finally:
+            c2.close()
+
+    def test_client_refuses_an_old_server(self, server, monkeypatch):
+        monkeypatch.setattr(protocol, "VERSION", protocol.VERSION + 1)   # this client is newer than the server...
+        monkeypatch.setattr(server, "_dispatch", lambda msg, real=server._dispatch: dict(   # ... which doesn't check
+            real({k: v for k, v in msg.items() if k not in ("version", "pysdrlib")}), version=protocol.VERSION - 1)
+            if msg.get("op") == "hello" else real(msg))
+        with pytest.raises(err.ProtocolError, match="update the server"):
+            Client(server.endpoint)
 
 
 class TestServer:
@@ -391,6 +441,83 @@ class TestCli:
         cli(["client", server.endpoint, "watch", worker.id, "-n", "30000", "-o", str(out_file)])
         assert np.fromfile(out_file, dtype=np.complex64).size == 30000
 
+    def test_rx_records_sigmf_in_any_format(self, server, tmp_path, capsys):
+        out = tmp_path / "cap.sigmf"
+        cli(["client", server.endpoint, "rx", "sim", "--freq", "433e6", "--rate", "1e6", "-n", "100000", "-f", "ci8",
+             "-o", str(out)])
+        assert "wrote 100,000 samples" in capsys.readouterr().out
+        f = pysdrlib.File(out, scale=True)
+        assert f.fmt is pysdrlib.Formats.ci8t and f.max_samp == 100_000
+        assert f.rate == 1e6 and f.freq == 433e6 and f.meta.raw["global"]["core:hw"].startswith("sim")
+        with f:
+            x = f.next(4096)
+        assert 0.4 < np.abs(x).mean() < 0.6   # sim's tone, at half scale, survived the trip through int8
+
+        raw = tmp_path / "cap.cu8"
+        cli(["client", server.endpoint, "rx", "sim", "--rate", "1e6", "-t", "0.2", "-f", "cu8", "--sigmf", "-o", str(raw)])
+        assert pysdrlib.File(tmp_path / "cap.cu8.sigmf-data").fmt is pysdrlib.Formats.cui8
+        with pytest.raises(SystemExit, match="unknown format"):
+            cli(["client", server.endpoint, "rx", "sim", "-n", "10", "-f", "cx99", "-o", str(raw)])
+
+    def test_open_arguments(self, tmp_path, capsys):
+        """--arg (client) and --open TYPE:KEY=VALUE (server) reach the device's open(): here a recording"""
+        from pysdrlib.remote import cli as rcli
+        assert rcli._open_spec("file:path=/x/cap.sigmf, loop=true,rate=2e6") == \
+            ("file", {"path": "/x/cap.sigmf", "loop": True, "rate": 2e6})
+        assert rcli._open_spec("sim") == ("sim", {})
+        rec = tmp_path / "rec.sigmf"
+        with pysdrlib.FileSink(rec, "cf32", rate=1e6, freq=144e6) as out:
+            out.write(np.full(10_000, 0.5, np.complex64))
+        with Server("tcp://127.0.0.1:0", devices=["file"], lease=0) as s:
+            out = tmp_path / "copy.sigmf"
+            cli(["client", s.endpoint, "rx", "file", "--arg", f"path={rec}", "--arg", "loop=true", "-n", "25000",
+                 "-o", str(out)])
+            assert "cf=144,000,000" in capsys.readouterr().out
+            f = pysdrlib.File(out)
+            assert f.max_samp == 25_000 and f.freq == 144e6 and f.rate == 1e6
+            dtype, kwargs = rcli._open_spec(f"file:path={rec},loop=false")
+            worker, _ = s.open_device(dtype, kwargs=kwargs)
+            assert worker.device.loop is False and worker.device.length == 10_000
+
+    def test_stats(self, server, capsys):
+        dev = pysdrlib.device("remote", server.endpoint, "sim", transport="zmq", program="stats test")
+        dev.open()
+        try:
+            dev.initialize(cf=100e6, Fs=1e6)
+            dev.start_rx()
+            dev.read(50_000, timeout=5)
+            with Client(server.endpoint) as c:
+                m = c.metrics()["devices"][dev.id]
+                assert c.metrics(dev.id)["devices"].keys() == {dev.id}
+            assert m["streaming"] and m["controlled"] and m["program"] == "stats test"
+            assert m["rx"]["samples"] >= 50_000 and m["rx"]["bytes"] > 50_000 * 2 and m["rx"]["socket_subscribers"] == 1
+            assert m["device"]["samples"] >= m["rx"]["samples"] and m["device"]["dropped"] == 0
+            assert m["control"]["calls"] >= 3 and m["control"]["errors"] == 0
+            cli(["client", server.endpoint, "stats"])
+            out = capsys.readouterr().out
+            assert f"{dev.id} (sim, controlled by stats test, streaming" in out and "subscribers: 1 socket" in out
+            cli(["client", server.endpoint, "stats", dev.id, "--json"])
+            assert '"rx_samples"' not in capsys.readouterr().out   # the shaped metrics, not the raw counters
+            dev.stop_rx()
+        finally:
+            dev.close()
+        with pytest.raises(SystemExit, match="no hosted device"):
+            cli(["client", server.endpoint, "stats", "sim-99"])
+
+    def test_the_server_logs_stats(self, caplog):
+        import logging
+        with Server("tcp://127.0.0.1:0", devices=["sim"], lease=0, stats_interval=0.2) as s:
+            dev = pysdrlib.device("remote", s.endpoint, "sim")
+            dev.open()
+            dev.initialize(cf=100e6, Fs=1e6)
+            dev.start_rx()
+            with caplog.at_level(logging.INFO, logger="pysdrlib.remote.server"):
+                t = time.monotonic()
+                while time.monotonic() - t < 0.6:
+                    dev.read(10_000, timeout=5)
+            dev.close()
+        assert any("MS/s published" in r.getMessage() and "shm subscriber" in r.getMessage() for r in caplog.records)
+
     def test_errors_are_one_line(self, server):
         with pytest.raises(SystemExit, match="no hosted device"):
             cli(["client", server.endpoint, "info", "sim-42"])
@@ -495,6 +622,65 @@ class TestGenericControlsRemotely:
         finally:
             dev.stop_rx()
         assert (a.index, b.index) == (0, 1000) and a.freq == 100e6
+
+    def test_retune_is_marked_and_flush_skips_the_old_samples(self, dev):
+        # as on a local device (test_generic_api): the server's changes reach the client in the stream
+        dev.initialize(cf=100e6, Fs=1e6)
+        dev.start_rx()
+        try:
+            dev.read(1000, timeout=5)
+            dev.set_rx_freq(101e6)
+            _, m = dev.read(200_000, timeout=5, meta=True)
+            dev.set_rx_freq(102e6, flush=True)
+            _, m2 = dev.read(1000, timeout=5, meta=True)
+        finally:
+            dev.stop_rx()
+        changes = [e for e in m.events if e.kind == "freq"]
+        assert (changes and changes[0].value == 101e6 and m.freq == 100e6) or m.freq == 101e6
+        assert m2.freq == 102e6 and not m2.events and m2.dropped == 0
+        assert m2.index >= m.index + 200_000
+
+    def test_sweep_runs_on_the_client(self, dev):
+        dev.initialize(cf=100e6, Fs=1e6)
+        steps = list(dev.sweep(100e6, 103e6, 1e6, 2000, timeout=5, meta=True))
+        assert [f for f, _, _ in steps] == [100e6, 101e6, 102e6, 103e6]
+        assert all(m.freq == f and not m.events and len(x) == 2000 for f, x, m in steps)
+        assert all(b.index > a.index for (_, _, a), (_, _, b) in zip(steps, steps[1:]))
+        assert not dev.state["rx"]
+
+    def test_hardware_time_reaches_the_client(self, dev):
+        dev.initialize(cf=100e6, Fs=1e6)
+        t = time.time()
+        dev.start_rx()
+        try:
+            metas = [dev.read(5000, timeout=5, meta=True)[1] for _ in range(3)]
+        finally:
+            dev.stop_rx()
+        assert abs(metas[0].hw_time - t) < 2.0 and not metas[0].events
+        assert [round(b.hw_time - a.hw_time, 6) for a, b in zip(metas, metas[1:])] == [0.005, 0.005]
+
+    def test_a_new_stream_forgets_the_last_ones_flush(self, dev):
+        dev.initialize(cf=100e6, Fs=1e6)
+        dev.start_rx()
+        dev.read(50_000, timeout=5)
+        dev.set_rx_freq(101e6, flush=True)
+        dev.read(1000, timeout=5)
+        dev.stop_rx()
+        dev.start_rx()
+        try:
+            _, m = dev.read(1000, timeout=5, meta=True)
+        finally:
+            dev.stop_rx()
+        assert m.index == 0 and m.discarded == 0 and m.freq == 101e6
+
+    def test_every_device_method_reaches_the_hosted_driver(self, dev):
+        # the gain split is the hosted driver's (its GAIN_RESERVE / GAIN_BALANCE), not RemoteDevice's defaults
+        local = pysdrlib.device("sim")
+        local.open()
+        try:
+            assert dev.split_rx_gain_db(30) == local.split_rx_gain_db(30)
+        finally:
+            local.close()
 
     def test_reading_is_not_a_remote_call(self, dev):
         for name in ("read", "read_into", "stream", "flush"):
@@ -646,13 +832,15 @@ class TestTransmitRemotely:
             dev.start_tx()
 
 
-def test_blocks_carry_the_channel_and_index_and_older_ones_still_read():
+def test_blocks_carry_the_channel_and_index_and_other_versions_are_refused():
     header, payload = protocol.pack_block(7, 1.5, np.ones(4, np.complex64), channel=1, index=1234)
-    seq, t, x, channel, index = protocol.unpack_block_ex(header, payload)
+    seq, t, x, channel, index = protocol.unpack_block(header, payload)
     assert (seq, channel, index, len(x)) == (7, 1, 1234, 4)
-    old = protocol.HEADER_V2.pack(2, 2, 32, 32, 0, 0, 3, 0.0, 4)   # a version 2 server's block
-    seq, _, x, channel, index = protocol.unpack_block_ex(old, payload)
-    assert (seq, channel, index, len(x)) == (3, 0, None, 4)
+    old = protocol.HEADER.pack(protocol.VERSION - 1, 2, 32, 32, 0, 0, 3, 0.0, 4, 0)
+    with pytest.raises(err.ProtocolError, match="same pysdrlib version"):
+        protocol.unpack_block(old, payload)
+    with pytest.raises(err.ProtocolError):
+        protocol.unpack_block(header[:-8], payload)   # the shorter header of protocol 2
 
 
 class TestOverload:
@@ -674,3 +862,92 @@ class TestOverload:
                 assert time.monotonic() - t0 < 2.0
             finally:
                 dev.close()
+
+def test_a_recording_is_served_like_a_radio(tmp_path):
+    """pysdrlib.open("file", ...) on the server: its captures reach the client as retunes"""
+    path = tmp_path / "rec.sigmf"
+    with pysdrlib.FileSink(path, "cf32", rate=1e6, freq=100e6) as out:
+        out.write(np.full(20_000, 0.25, np.complex64))
+        out.retune(101e6)
+        out.write(np.full(20_000, 0.5, np.complex64))
+    with Server("tcp://127.0.0.1:0", devices=["file"], lease=0) as s:
+        d = pysdrlib.device("remote", s.endpoint, "file")
+        d.open(path=str(path), loop=True)
+        try:
+            d.initialize()
+            assert d.get_rx_freq() == 100e6 and d.get_rx_sample_rate() == 1e6
+            d.start_rx()
+            x, m = d.read(30_000, timeout=5, meta=True)
+            d.stop_rx()
+        finally:
+            d.close()
+    assert m.index == 0 and m.freq == 100e6
+    assert [(e.offset, e.value) for e in m.events] == [(20_000, 101e6)]
+    assert np.allclose(x[:20_000], 0.25) and np.allclose(x[20_000:], 0.5)
+
+
+class TestLatestAndLost:
+    """read(latest=True) and a lost or stalled server-side radio, seen from a client"""
+
+    def test_latest(self, dev):
+        dev.initialize(Fs=1e6)
+        dev.start_rx()
+        dev.read(4096, timeout=2.0)
+        time.sleep(0.3)
+        _, m = dev.read(4096, timeout=2.0, meta=True, latest=True)
+        assert m.discarded > 100_000
+        dev.stop_rx()
+
+    def test_radio_lost_on_the_server(self, server, dev):
+        dev.initialize(Fs=1e6)
+        dev.start_rx()
+        dev.read(4096, timeout=2.0)
+        dev.stall_timeout = 0.3
+        server.workers[dev.id].device.disconnect()
+        with pytest.raises(err.Lost, match="gone"):
+            dev.read(10_000_000, timeout=10.0)
+
+    def test_radio_stalled_on_the_server(self, server, dev):
+        dev.initialize(Fs=1e6)
+        dev.start_rx()
+        dev.read(4096, timeout=2.0)
+        dev.stall_timeout = 0.3
+        server.workers[dev.id].device.stall()
+        with pytest.raises(err.StreamStalled, match="stopped delivering") as e:
+            dev.read(10_000_000, timeout=10.0)
+        assert not isinstance(e.value, err.Lost)
+
+    def test_server_gone(self):
+        s = Server("tcp://127.0.0.1:0", devices=["sim"], lease=0).start()
+        d = pysdrlib.device("remote", s.endpoint, "sim", timeout=1.0)
+        d.open()
+        d.initialize(Fs=1e6)
+        d.start_rx()
+        d.read(4096, timeout=2.0)
+        d.stall_timeout = 0.3
+        s.stop()
+        t = time.monotonic()
+        with pytest.raises(err.Lost, match="answer|no longer hosts"):
+            d.read(10_000_000)   # no timeout: it would wait forever
+        assert time.monotonic() - t < 5.0
+        try:
+            d.close()
+        except (TimeoutError, err._Error):
+            pass
+
+    def test_hosted_status_has_health(self, server, dev):
+        with Client(server.endpoint) as c:
+            assert c.list()[0]["health"] == "ok"
+
+
+def test_find_gain_remotely(server):
+    d = pysdrlib.device("remote", server.endpoint, "sim", init_kwargs={"tones": [[125_000, -20]], "gain_ref": 32})
+    d.open()
+    try:
+        d.initialize(Fs=1e6)
+        span = d.caps.gain_range("rx")
+        f = d.find_gain(count=8192, timeout=2.0)
+        assert f * (span.hi - span.lo) + span.lo == pytest.approx(52, abs=3)   # a -20 dBFS tone at 32 dB clips above 52
+        assert d.get_rx_gain() == pytest.approx(f)
+    finally:
+        d.close()

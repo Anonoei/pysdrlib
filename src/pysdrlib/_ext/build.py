@@ -15,7 +15,6 @@ import sys
 import time
 from pathlib import Path
 
-from . import utils
 
 NOT_DRIVERS = ("__init__", "utils", "build", "stubs")
 

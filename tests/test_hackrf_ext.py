@@ -132,25 +132,24 @@ class TestHardware:
 
     def test_stream_rate(self):
         """10 MS/s of int8 I/Q is 20 MB/s"""
-        got = [0]
         dev = hackrf.open()
         try:
             dev.set_sample_rate(10_000_000)
             dev.set_freq(100_000_000)
-            dev.set_rx_callback(lambda buf, valid, buflen: got.__setitem__(0, got[0] + len(buf)) or 0)
+            dev.set_rx_buffer(1 << 23)
             dev.start_rx()
             time.sleep(0.5)
             dev.stop_rx()
+            got = dev.rx_stats()["samples"]
         finally:
             dev.close()
-        assert got[0] > 2_000_000
+        assert got > 1_000_000
 
-    def test_callback_return_nonzero_stops_the_stream(self):
+    def test_no_queue_stops_the_stream(self):
         dev = hackrf.open()
         try:
             dev.set_sample_rate(10_000_000)
-            dev.set_rx_callback(lambda *a: 1)
-            dev.start_rx()
+            dev.start_rx()   # no set_rx_buffer: dispatch_rx tells libhackrf to stop
             time.sleep(0.3)
             assert not dev.is_streaming()
         finally:

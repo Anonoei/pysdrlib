@@ -56,13 +56,12 @@ void RTLSDRDevice::close() {
     stop_stream();                  // joins the streaming thread
     rtlsdr_dev_t* h = handle_;
     handle_ = nullptr;
-    rx_callback_ = nullptr;         // only safe to drop once no thread can call it
     rtlsdr_check(rtlsdr_close(h), "rtlsdr_close");
 }
 
 void RTLSDRDevice::rx_trampoline(unsigned char* buf, uint32_t len, void* ctx) {
     auto* self = static_cast<RTLSDRDevice*>(ctx);
-    if (self->dispatch_rx(buf, len, len) != 0 && self->handle_)
+    if (self->dispatch_rx(buf, len) != 0 && self->handle_)
         rtlsdr_cancel_async(self->handle_);   // the callback asked to stop
 }
 

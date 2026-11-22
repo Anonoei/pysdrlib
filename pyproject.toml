@@ -4,9 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pysdrlib"
-version = "0.4.6"
+version = "0.5.0"
 description = "wrapper for hardware SDRs"
 readme = "README.md"
+license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
 authors = [
@@ -32,7 +33,11 @@ dependencies = ["numpy"]
 
 [project.optional-dependencies]
 remote = ["pyzmq", "zeroconf"]
-dev = ["setuptools", "pyzmq", "zeroconf", "twine", "build", "pybind11", "bumpver", "pytest", "pdoc3", "matplotlib", "pybind11-stubgen"]
+test = ["pytest", "pybind11>=2.13", "setuptools>=77.0", "pysdrlib[remote]"]
+docs = ["zensical>=0.1.3", "mkdocstrings-python>=2.0"]
+# setuptools, numpy and pybind11: build_ext -i runs without build isolation; pybind11-stubgen: the extensions' .pyi
+dev = ["pysdrlib[remote,test,docs]", "twine", "build", "bumpver", "setuptools>=77.0", "numpy", "pybind11>=2.13",
+       "pybind11-stubgen", "matplotlib"]
 
 [project.scripts]
 pysdrlib = "pysdrlib.cli:main"
@@ -46,7 +51,7 @@ Source = "https://github.com/anonoei/pysdrlib"
 
 
 [tool.bumpver]
-current_version = "0.4.6"
+current_version = "0.5.0"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message = "bump version {old_version} -> {new_version}"
 tag_message = "{new_version}"

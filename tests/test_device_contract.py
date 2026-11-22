@@ -30,6 +30,9 @@ class TestOpenClose:
             sdr.open()
         assert not sdr.state["open"]
 
+    def test_local_devices_answer_what_remote_ones_add(self, sdr):
+        assert sdr.is_controller and sdr.id is None and sdr.granted is None
+
     def test_close(self, sdr):
         sdr.close()
         assert not sdr.state["open"] and sdr.device.names()[-1] == "close"
@@ -117,11 +120,10 @@ class TestCaps:
 
 class TestRx:
     def test_start_queues_in_the_driver_before_streaming(self, sdr):
-        """Samples are converted and queued by the extension's own thread, never by a Python callback"""
+        """Samples are converted and queued by the extension's own thread""" 
         sdr.start_rx()
         names = sdr.device.names()
         assert sdr.state["rx"] and names.index("set_rx_buffer") < names.index("reset_rx_stats") < names.index("start_rx")
-        assert sdr.device.rx_callback is None and "set_rx_callback" not in names
         sdr.stop_rx()
         assert not sdr.state["rx"] and "stop_rx" in sdr.device.names()
 

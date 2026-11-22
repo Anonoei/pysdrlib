@@ -1,31 +1,35 @@
 """Wrapper for processing files"""
 
-import os
 from pathlib import Path
 
-import numpy as np
 
 from .. import logger
-from .. import err as pysdr_err
+from .. import err
 from ..base import Formats
-from . import err
+from . import sigmf as _sigmf
 
 class File:
     """Read samples from a file like a device: `File(path, fmt)`, then `next`, `forward`, `seek`...
 
-    `fmt` names one of `pysdrlib.Formats` (e.g. `"cf64"`, `"ci16t"`; see `pysdrlib.base.formats`). Samples are returned as stored,
+    `fmt` names one of `pysdrlib.Formats` (e.g. `"cf32"`, `"ci8"`; see `pysdrlib.base.formats`). Samples are returned as stored,
     unless `scale=True`: then complex64 (or float32) with full scale at +-1, like a device's (see `Formats.scale`).
     Usable as a context manager, which opens and closes it:
 
-        with File("capture.cfile", "cf64") as f:      # cf64: two float32 per sample
+        with File("capture.cfile", "cf32") as f:      # cf32: two float32 per sample
             for block in f.forward(8192, partial=True):
                 ...
+
+    A SigMF recording ("x.sigmf-meta", "x.sigmf-data", "x.sigmf", or just "x") needs no `fmt`: it comes from the metadata, with `rate`, `freq` and the rest in `meta`.
+    Nor does a file whose extension names its format (".cfile", ".cf32", ".cs16", ".cu8"...; see `Formats.from_extension`).
+    Reading past the end raises `pysdrlib.err.Overflow` (or, with `partial=True`, returns what is left). Reading opens the
+    file if it isn't open yet.
     """
     def __init__(self, path=None, fmt: str | None = None, scale: bool = False):
         self.log = logger.new("device.File")
         self.scale = scale   # return samples scaled to +-1, like a device (otherwise as stored)
         self.fmt: Formats = None # type: ignore
         self.path: Path = None # type: ignore
+        self.meta: _sigmf.Meta | None = None   # a SigMF recording's metadata
         self.count = 8192
         self.cur_samp = 0
         self.max_samp = 0
@@ -35,6 +39,22 @@ class File:
             self.set_fmt(fmt)
         if path is not None:
             self.set_path(path)
+        if self.fmt is None and path is not None:
+            raise err.UnknownFormat(f"{path}: give the sample format (fmt=...): its extension doesn't name one, and it isn't SigMF")
+
+    @property
+    def rate(self):
+        """Sample rate of a SigMF recording (None: not recorded, or not SigMF)"""
+        return self.meta.rate if self.meta else None
+    @property
+    def freq(self):
+        """Centre frequency of the first sample of a SigMF recording (None: not recorded, or not SigMF)"""
+        return self.meta.freq if self.meta else None
+
+    @property
+    def is_open(self) -> bool:
+        """Whether the file is open (`open`, or the first read); `close` keeps the position for the next"""
+        return self.f is not None
 
     def __str__(self):
         return f"File ({self.cur_samp}/{self.max_samp},{self.fmt.name}): {self.path}"
@@ -76,7 +96,7 @@ class File:
     def set_fmt(self, fmt: str):
         """Set the sample format by name (a `pysdrlib.Formats` member); the file length in samples follows"""
         self.log.trace("set_fmt(%s)", fmt)
-        self.fmt = Formats[fmt]
+        self.fmt = Formats.get(fmt)
         if not self._fsize == 0:
             self.max_samp = self._fsize // self.fmt.bytes
     def get_fmt(self):
@@ -84,10 +104,19 @@ class File:
         return self.fmt
 
     def set_path(self, path):
-        """Set the file to read. Raises `FileNotFoundError` if it doesn't exist"""
+        """Set the file to read. Raises `FileNotFoundError` if it doesn't exist. A SigMF recording's metadata is read,
+        and sets the format if none was given"""
         self.log.trace("set_path(%s)", path)
-        if not isinstance(path, Path):
-            path = Path(path)
+        path = Path(path)
+        data, meta = _sigmf.paths(path)
+        self.meta = None
+        if _sigmf.is_sigmf(path) or (not path.exists() and meta.is_file()):
+            path = data
+            self.meta = _sigmf.read(meta)
+            if self.fmt is None:
+                self.fmt = self.meta.fmt
+        elif self.fmt is None:
+            self.fmt = Formats.from_extension(path)
         self.path = path
         self._fsize = path.stat().st_size
         if self.fmt is not None:
@@ -146,7 +175,9 @@ class File:
 
     def _ensure_open(self, name):
         if self.f is None:
-            raise pysdr_err.NotOpen(f"Cannot call `{name}` when file isn't open")
+            if self.path is None:
+                raise err.NotOpen(f"Cannot call `{name}` before a file is given (set_path)")
+            self.open()
 
     def _read(self, count: int):
         """Read <count> samples at the current position (does not touch cur_samp)"""

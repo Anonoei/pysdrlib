@@ -92,6 +92,14 @@ class TestHosting:
             near.relay(far.endpoint, far.radio.id, name="c", control=True)   # unless it was insisted on
 
 
+def catch_up(ctl, viewers, count=4096):
+    """Viewers read from where they joined (their subscription takes a moment to reach the server), the controller from
+    the stream's start: bring the controller up to them, so all of them read the same stretch"""
+    start = max(v.read(count, timeout=5, meta=True)[1].index for v in viewers)
+    while ctl.read(count, timeout=5, meta=True)[1].index + count < start:
+        pass
+
+
 class TestSharing:
     def test_any_number_of_local_programs_cost_the_far_server_one_subscriber(self, far, near):
         worker = near.relay(far.endpoint, far.radio.id)
@@ -102,12 +110,15 @@ class TestSharing:
         viewers = [local(near, worker.id) for _ in range(3)]
         try:
             assert all(v._shm_mode for v in viewers) and ctl._shm_mode
-            time.sleep(0.05)
-            got = [dict(zip(*self._read(dev))) for dev in (ctl, *viewers)]
+            catch_up(ctl, viewers)
+            reads = [self._read(dev) for dev in (ctl, *viewers)]
+            got = [dict(zip(index, samples)) for index, samples, _ in reads]
+            seen = [(min(i, default=None), max(i, default=None), len(i), blocks) for i, _, blocks in reads]
             assert far.radio._subs == {far.radio.id.encode(): 1}              # four programs here, one connection there
             for other in got[1:]:                                              # and the same samples
                 common = sorted(set(got[0]) & set(other))
-                assert len(common) > 1000 and all(got[0][i] == other[i] for i in common[::97])
+                assert len(common) > 1000, f"(first, last, kept, [(index, gaps)]) per reader: {seen}"
+                assert all(got[0][i] == other[i] for i in common[::97])
         finally:
             for v in viewers:
                 v.close()
@@ -115,13 +126,14 @@ class TestSharing:
 
     @staticmethod
     def _read(dev, blocks=12, count=4096):
-        index, samples = [], []
+        index, samples, seen = [], [], []
         for _ in range(blocks):
             x, m = dev.read(count, timeout=5, meta=True)
+            seen.append((m.index, m.gaps))
             if not m.gaps:
                 index.extend(range(m.index, m.index + count))
                 samples.extend(x.tolist())
-        return index, samples
+        return index, samples, seen
 
     def test_the_far_device_is_told_what_the_local_controller_asks(self, far, near):
         worker = near.relay(far.endpoint, far.radio.id)

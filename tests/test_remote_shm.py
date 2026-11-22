@@ -1,4 +1,4 @@
-"""Several clients on one radio through shared memory (pysdrlib.remote.shm), against a server hosting the simulated device.
+"""Several clients on one radio through shared memory (pysdrlib.shm), against a server hosting the simulated device.
 
 The simulated device's tone is phase-continuous, so the sample at a stream index is the same for every client: what
 two clients read at the same index must be equal, however and whenever they got it.
@@ -13,7 +13,8 @@ import pytest
 
 import pysdrlib
 from pysdrlib import err
-from pysdrlib.remote import Server, shm
+from pysdrlib import shm
+from pysdrlib.remote import Server
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="ZeroMQ has no ipc:// transport on Windows")
 
@@ -56,6 +57,14 @@ def collect(dev, blocks, count=4096):
     return got
 
 
+def catch_up(ctl, viewers, count=4096):
+    """Viewers read from where they joined (their subscription takes a moment to reach the server), the controller from
+    the stream's start: bring the controller up to them, so all of them read the same stretch"""
+    start = max(v.read(count, timeout=5, meta=True)[1].index for v in viewers)
+    while ctl.read(count, timeout=5, meta=True)[1].index + count < start:
+        pass
+
+
 class TestTransport:
     def test_a_local_client_uses_shared_memory(self, server):
         dev = open_sim(server)
@@ -74,6 +83,33 @@ class TestTransport:
             assert not dev._shm_mode and len(dev.read(4096, timeout=5)) == 4096 and not dev._rings
         finally:
             dev.close()
+
+    @pytest.mark.parametrize("transport", ["shm", "zmq"])
+    def test_a_flush_and_retune_reach_controller_and_viewer(self, server, transport):
+        dev = open_sim(server, transport=transport)
+        try:
+            dev.initialize(cf=100e6, Fs=10e6)
+            dev.start_rx()
+            watcher = view(server, dev.id, transport=transport)
+            try:
+                dev.read(8192, timeout=5)
+                watcher.read(8192, timeout=5)
+                dev.set_rx_freq(103e6, flush=True)
+                _, m = dev.read(4096, timeout=5, meta=True)
+                seen = []   # the viewer reads on (it may be behind) until its blocks are at the new frequency
+                for _ in range(200):
+                    _, w = watcher.read(4096, timeout=5, meta=True)
+                    seen.append(w)
+                    if w.freq == 103e6:
+                        break
+            finally:
+                watcher.close()
+        finally:
+            dev.close()
+        assert m.freq == 103e6 and not m.events and m.discarded > 0
+        assert seen[-1].freq == 103e6
+        # until then its blocks were at the old frequency; the flush skipped the settling there too
+        assert all(w.freq == 100e6 for w in seen[:-1]) and seen[-1].index >= m.index - m.discarded
 
     def test_a_bad_transport_is_refused(self, server):
         with pytest.raises(ValueError):
@@ -112,7 +148,7 @@ class TestSharing:
             ctl.start_rx()
             a, b = view(server, ctl.id), view(server, ctl.id)
             assert a._shm_mode and b._shm_mode
-            time.sleep(0.05)
+            catch_up(ctl, (a, b))
             got_ctl, got_a, got_b = collect(ctl, 30), collect(a, 10), collect(b, 20)
             assert len(server.workers[ctl.id]._rings) == 1                  # one copy, three readers
             assert server.workers[ctl.id]._subs[b"shm:" + ctl.id.encode()] == 3
@@ -237,7 +273,7 @@ class TestFallback:
 class TestAnotherProcess:
     READER = """
 import sys, numpy as np
-from pysdrlib.remote import shm
+from pysdrlib import shm
 r = shm.ShmReader(sys.argv[1])
 out = np.empty(1000, np.complex64)
 n, first = r.read(out, 0)

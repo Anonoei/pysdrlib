@@ -1,7 +1,7 @@
 """Performance guard rails for pysdrlib's own overhead.
 
 Deselected by default; run with:   pytest -m benchmark
-(or `python tests/bench/run.py --check` to compare against this machine's recorded baseline).
+(or `python tools/bench/run.py --check` to compare against this machine's recorded baseline).
 
 These assert properties that hold on any machine: overhead ratios against bare numpy, and real-time
 headroom relative to the HackRF's 20 MS/s maximum. Limits are several times looser than what is
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent / "bench"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "bench"))
 import suite  # noqa: E402
 
 pytestmark = pytest.mark.benchmark
@@ -59,8 +59,8 @@ def test_overhead_vs_floor(results, name, limit):
     ("convert.float32", 10),
     ("formats.read.i8o", 20),      # was 2.6x before the one's-complement fast path
     ("formats.read.i16o", 20),
-    ("formats.read.ci8t", 5),
-    ("formats.read.ci16t", 10),
+    ("formats.read.ci4t", 5),
+    ("formats.read.ci8t", 10),
 ])
 def test_realtime_headroom(results, name, limit):
     assert results[name]["realtime_x"] > limit, suite.format_row(name, results[name])
@@ -111,7 +111,7 @@ def test_no_regression_vs_baseline(results):
     import json
     path = Path(__file__).resolve().parents[1] / ".benchmarks" / "baseline.json"
     if not path.exists():
-        pytest.skip("no baseline; run tests/bench/run.py --update-baseline")
+        pytest.skip("no baseline; run tools/bench/run.py --update-baseline")
     base = json.load(open(path))
     cur = {"meta": {}, "results": results}
     bad = [r for r in suite.compare(base, cur, 0.35) if r[1] == "regression"]

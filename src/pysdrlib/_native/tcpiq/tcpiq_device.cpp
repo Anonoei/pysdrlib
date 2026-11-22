@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <algorithm>
 #include <cstring>
 
 // ---- sockets, the same on every platform from here on ---- //
@@ -35,6 +36,7 @@ static void sockets_init() {
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -64,6 +66,12 @@ namespace {
 constexpr size_t CHUNK_BYTES = 1 << 18;     // one read
 constexpr int RCVBUF_BYTES = 4 << 20;       // the kernel's buffer: room for a burst while the thread converts
 constexpr int POLL_MS = 100;                // how soon the thread notices a stop
+// The arrival rate: measured over windows of RATE_WINDOW, after RATE_WARMUP of a stream (or after a pause longer than
+// RATE_GAP) is skipped; reported as unknown once nothing has arrived for RATE_STALE
+constexpr auto RATE_WINDOW = std::chrono::milliseconds(1000);
+constexpr auto RATE_WARMUP = std::chrono::milliseconds(250);
+constexpr auto RATE_GAP = std::chrono::milliseconds(500);
+constexpr auto RATE_STALE = std::chrono::milliseconds(2000);
 
 struct AddrInfo {
     addrinfo* list = nullptr;
@@ -85,6 +93,30 @@ void resolve(AddrInfo& out, const std::string& host, uint16_t port, bool passive
 void set_rcvbuf(sock_t s) {
     int size = RCVBUF_BYTES;
     setsockopt(s, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&size), sizeof(size));
+}
+
+// A client that vanishes without closing (crashed, its network dropped) is noticed within ~KEEPALIVE_IDLE + 3 *
+// KEEPALIVE_INTERVAL seconds, so a listening device goes back to waiting for one, instead of on a dead connection
+constexpr int KEEPALIVE_IDLE = 2, KEEPALIVE_INTERVAL = 1, KEEPALIVE_COUNT = 3;
+
+void set_keepalive(sock_t s) {
+    int on = 1;
+    setsockopt(s, SOL_SOCKET, SO_KEEPALIVE, reinterpret_cast<const char*>(&on), sizeof(on));
+#if defined(TCP_KEEPIDLE)
+    int idle = KEEPALIVE_IDLE;
+    setsockopt(s, IPPROTO_TCP, TCP_KEEPIDLE, reinterpret_cast<const char*>(&idle), sizeof(idle));
+#elif defined(TCP_KEEPALIVE)   // macOS
+    int idle = KEEPALIVE_IDLE;
+    setsockopt(s, IPPROTO_TCP, TCP_KEEPALIVE, reinterpret_cast<const char*>(&idle), sizeof(idle));
+#endif
+#if defined(TCP_KEEPINTVL)
+    int interval = KEEPALIVE_INTERVAL;
+    setsockopt(s, IPPROTO_TCP, TCP_KEEPINTVL, reinterpret_cast<const char*>(&interval), sizeof(interval));
+#endif
+#if defined(TCP_KEEPCNT)
+    int count = KEEPALIVE_COUNT;
+    setsockopt(s, IPPROTO_TCP, TCP_KEEPCNT, reinterpret_cast<const char*>(&count), sizeof(count));
+#endif
 }
 
 std::string addr_text(const sockaddr* sa, socklen_t len) {
@@ -157,6 +189,7 @@ void TcpIqDevice::open_connect(const std::string& host, uint16_t port, double ti
         set_rcvbuf(s);
         int err = connect_within(s, ai, timeout);
         if (err == 0) {
+            set_keepalive(s);   // a server that vanishes without closing (host off, network gone) fails recv in ~5 s
             auto* c = new TcpIqConn;
             c->client = s;
             port_ = local_port(s);
@@ -167,8 +200,8 @@ void TcpIqDevice::open_connect(const std::string& host, uint16_t port, double ti
             format_ = format;
             listening_ = false;
             eof_ = false;
-            carry_ = 0;
-            buf_.assign(CHUNK_BYTES + format.bytes_per_sample(), 0);
+            buf_.assign(CHUNK_BYTES + format.bytes_per_sample() + RTL_HEADER, 0);
+            new_stream();
             handle_ = c;
             return;
         }
@@ -203,6 +236,7 @@ void TcpIqDevice::open_listen(const std::string& host, uint16_t port, const Samp
             sock_close(s);
             continue;
         }
+        set_blocking(s, false);   // a client that resets between poll and accept must not block accept (BSD, macOS)
         port_ = local_port(s);
         auto* c = new TcpIqConn;
         c->listener = s;
@@ -210,8 +244,10 @@ void TcpIqDevice::open_listen(const std::string& host, uint16_t port, const Samp
         listening_ = true;
         eof_ = false;
         connections_ = 0;
-        carry_ = 0;
-        buf_.assign(CHUNK_BYTES + format.bytes_per_sample(), 0);
+        replaced_ = 0;
+        dropped_at_ = 0;
+        buf_.assign(CHUNK_BYTES + format.bytes_per_sample() + RTL_HEADER, 0);
+        new_stream();
         handle_ = c;
         stop_ = false;
         io_ = std::thread([this] { io_loop(); });   // accepts and drains from now until close()
@@ -230,7 +266,6 @@ void TcpIqDevice::close() {
     if (c->listener != NO_SOCKET) sock_close(c->listener);
     delete c;
     streaming_ = false;
-    rx_callback_ = nullptr;   // only safe to drop once no thread can call it
     std::lock_guard<std::mutex> plock(peer_mutex_);
     peer_.clear();
 }
@@ -243,6 +278,7 @@ void TcpIqDevice::start_rx() {
     if (listening_) return;   // the thread is already reading
     if (io_.joinable()) io_.join();   // a stream that ended by itself
     if (eof_) return;
+    rate_reset();   // what queued in the kernel while not reading arrives as a burst
     stop_ = false;
     io_ = std::thread([this] { io_loop(); });
 }
@@ -268,53 +304,172 @@ std::string TcpIqDevice::peer() const {
     return peer_;
 }
 
+static int64_t now_ns() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+double TcpIqDevice::disconnected_for() const {
+    const int64_t at = dropped_at_;
+    return at ? (now_ns() - at) / 1e9 : -1.0;
+}
+
 void TcpIqDevice::drop_client() {
     sock_close(handle_->client);
     handle_->client = NO_SOCKET;
-    carry_ = 0;
+    dropped_at_ = now_ns();
+    new_stream();
     std::lock_guard<std::mutex> lock(peer_mutex_);
     peer_.clear();
 }
 
+// A connection's stream starts: nothing carried, and its first bytes are checked for an rtl_tcp header
+void TcpIqDevice::new_stream() {
+    rate_reset();
+    carry_ = 0;
+    head_len_ = 0;
+    sniffing_ = true;
+    rtl_seen_ = false;
+}
+
+// rtl_tcp (librtlsdr's server) starts its stream with 12 bytes of "dongle info": "RTL0", then the tuner type and the
+// number of gain steps (big-endian uint32). They are not samples: the first bytes of a stream are held back until they
+// show whether they are that header (then dropped) or samples (then put back in front). `got` new bytes are at the
+// start of buf_ (nothing is carried yet); returns how many bytes of samples are there now
+size_t TcpIqDevice::sniff_header(size_t got) {
+    static const char magic[4] = {'R', 'T', 'L', '0'};
+    const size_t held = head_len_;
+    const size_t take = std::min(RTL_HEADER - head_len_, got);
+    std::memcpy(head_ + head_len_, buf_.data(), take);
+    head_len_ += take;
+    if (std::memcmp(head_, magic, std::min<size_t>(head_len_, 4)) != 0) {   // samples: put what was held in front
+        sniffing_ = false;
+        if (held) {
+            std::memmove(buf_.data() + held, buf_.data(), got);
+            std::memcpy(buf_.data(), head_, held);
+        }
+        return held + got;
+    }
+    if (head_len_ < RTL_HEADER) return 0;   // (so far) a header: wait for the rest of it
+    sniffing_ = false;
+    auto be32 = [this](size_t at) {
+        return (uint32_t(head_[at]) << 24) | (uint32_t(head_[at + 1]) << 16) | (uint32_t(head_[at + 2]) << 8) | head_[at + 3];
+    };
+    rtl_tuner_ = be32(4);
+    rtl_gains_ = be32(8);
+    rtl_seen_ = true;
+    if (take < got) std::memmove(buf_.data(), buf_.data() + take, got - take);
+    return got - take;
+}
+
+void TcpIqDevice::rate_reset() {
+    rate_t0_ = clock::time_point{};
+    rate_warm_ = false;
+    rate_bytes_ = 0;
+    rx_rate_ = 0.0;
+}
+
+// `bytes` of samples arrived
+void TcpIqDevice::rate_count(size_t bytes) {
+    const auto now = clock::now();
+    const bool paused = rate_t0_ != clock::time_point{} && now - rate_last_ > RATE_GAP;
+    rate_last_ = now;
+    rate_last_ns_ = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+    if (rate_t0_ == clock::time_point{} || paused) {   // the first bytes, or the first after a pause: start over
+        rate_t0_ = now;                                  // (the warm-up, or the window, from here)
+        rate_bytes_ = 0;
+        return;
+    }
+    if (!rate_warm_) {
+        if (now - rate_t0_ < RATE_WARMUP) return;
+        rate_warm_ = true;
+        rate_t0_ = now;
+        return;
+    }
+    rate_bytes_ += bytes;
+    const std::chrono::duration<double> dt = now - rate_t0_;
+    if (now - rate_t0_ >= RATE_WINDOW) {
+        rx_rate_ = static_cast<double>(rate_bytes_) / format_.bytes_per_sample() / dt.count();
+        ++rate_windows_;
+        rate_t0_ = now;
+        rate_bytes_ = 0;
+    }
+}
+
+double TcpIqDevice::rx_rate() const {
+    const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now().time_since_epoch()).count();
+    if (now - rate_last_ns_ > std::chrono::duration_cast<std::chrono::nanoseconds>(RATE_STALE).count()) return 0.0;
+    return rx_rate_;
+}
+
 // `got` new bytes are in buf_ after the carried ones: queue the whole samples (while receiving), keep a split one
 void TcpIqDevice::receive(size_t got) {
+    if (sniffing_) {
+        got = sniff_header(got);
+        if (!got) return;
+    }
+    rate_count(got);
     const size_t bps = format_.bytes_per_sample();
     const size_t total = carry_ + got;
     const size_t whole = total - total % bps;
     if (whole && streaming_) {
-        if (dispatch_rx(buf_.data(), whole, whole) != 0) streaming_ = false;   // the callback asked to stop
+        if (dispatch_rx(buf_.data(), whole) != 0) streaming_ = false;   // no queue to take it
     }
     carry_ = total - whole;
     if (carry_) std::memmove(buf_.data(), buf_.data() + whole, carry_);
 }
 
+// Listening: take a client waiting on the listener. One already connected is dropped for it: a sender that reconnects
+// does so because its connection died, though this end may not have noticed yet
+bool TcpIqDevice::accept_client(TcpIqConn* c) {
+    sockaddr_storage from{};
+    socklen_t len = sizeof(from);
+    sock_t s = accept(c->listener, reinterpret_cast<sockaddr*>(&from), &len);
+    if (s == NO_SOCKET) return false;
+    if (c->client != NO_SOCKET) {
+        drop_client();
+        ++replaced_;
+    }
+    set_blocking(s, true);
+    set_rcvbuf(s);
+    set_keepalive(s);
+    c->client = s;
+    new_stream();
+    {
+        std::lock_guard<std::mutex> lock(peer_mutex_);
+        peer_ = addr_text(reinterpret_cast<sockaddr*>(&from), len);
+    }
+    dropped_at_ = 0;
+    ++connections_;
+    return true;
+}
+
 void TcpIqDevice::io_loop() {
     TcpIqConn* c = handle_;   // valid until close(), which joins this thread first
     while (!stop_) {
-        pollfd p{};
-        p.events = POLLIN;
         if (c->client == NO_SOCKET) {   // listening, no client: wait for one
+            pollfd p{};
             p.fd = c->listener;
-            if (sock_poll(&p, 1, POLL_MS) <= 0) continue;
-            sockaddr_storage from{};
-            socklen_t len = sizeof(from);
-            sock_t s = accept(c->listener, reinterpret_cast<sockaddr*>(&from), &len);
-            if (s == NO_SOCKET) continue;
-            set_blocking(s, true);
-            set_rcvbuf(s);
-            c->client = s;
-            carry_ = 0;
-            {
-                std::lock_guard<std::mutex> lock(peer_mutex_);
-                peer_ = addr_text(reinterpret_cast<sockaddr*>(&from), len);
-            }
-            ++connections_;
+            p.events = POLLIN;
+            if (sock_poll(&p, 1, POLL_MS) > 0) accept_client(c);
             continue;
         }
-        p.fd = c->client;
-        int r = sock_poll(&p, 1, POLL_MS);
+        pollfd p[2]{};
+        p[0].fd = c->client;
+        p[0].events = POLLIN;
+        unsigned n_fds = 1;
+        if (listening_) {   // and for a client reconnecting
+            p[1].fd = c->listener;
+            p[1].events = POLLIN;
+            n_fds = 2;
+        }
+        int r = sock_poll(p, n_fds, POLL_MS);
         if (r == 0) continue;
         if (r < 0 && interrupted(sock_errno())) continue;
+        if (r > 0 && listening_ && (p[1].revents & POLLIN)) {
+            accept_client(c);
+            continue;
+        }
+        if (r > 0 && !(p[0].revents & (POLLIN | POLLHUP | POLLERR))) continue;   // only the listener had an event
         long n = -1;
         if (r > 0) {
             n = static_cast<long>(recv(c->client, reinterpret_cast<char*>(buf_.data() + carry_),
@@ -325,9 +480,9 @@ void TcpIqDevice::io_loop() {
             }
             if (n < 0 && interrupted(sock_errno())) continue;
         }
-        // the other end closed, or the connection failed
+        // the other end closed, or the connection failed (or keepalive found it dead)
         if (listening_) {
-            drop_client();   // and accept the next
+            drop_client();   // and wait for the next, or the same one reconnecting
             continue;
         }
         eof_ = true;

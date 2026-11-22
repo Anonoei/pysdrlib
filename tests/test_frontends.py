@@ -147,6 +147,17 @@ def test_another_antenna_port_changes_the_chain_and_retunes(sim):
     assert sim.seen[-1] == 1e9 and sim.get_rx_freq() == 2e9     # the same frequency over the air, through the other chain
 
 
+def test_antenna_info_names_each_port_chain_and_antenna(sim):
+    sim.caps.chains = [Chain(port="A", lo=12e9, invert=True, antenna="ANT500", name="mirror"), Chain(lo=0.0, name="direct")]
+    info = sim.rx_antenna_info()
+    assert [(i["port"], i["chain"], i["inverted"], i["selected"]) for i in info] == \
+        [("A", "mirror", True, None), ("B", "direct", False, None)]       # B: the chain for any port; none selected yet
+    assert antennas.format_antenna(info[0]["antenna"]).startswith("ANT500 (") and info[1]["antenna"] is None
+    sim.set_rx_antenna("B")
+    assert [i["selected"] for i in sim.rx_antenna_info()] == [False, True]
+    assert sim.tx_antenna_info() == [{"port": None, "chain": None, "antenna": None, "inverted": False, "selected": True}]
+
+
 # --- the server's file --- #
 def test_a_frontends_file(tmp_path):
     path = tmp_path / "f.toml"
@@ -271,8 +282,8 @@ def test_an_antenna_in_a_frontends_file_has_a_kind_and_a_size(tmp_path):
 
 def test_list_shows_the_antenna_and_its_converter():
     from pysdrlib.remote import cli
-    assert cli.format_antenna(antennas.get("ANT500").describe()) == "ANT500 (Whip / monopole, length 20-88 cm, 50 ohm)"
-    assert cli.format_antenna(antennas.Antenna("D", kind="dish", size=(0.6, 0.6)).describe()) == "D (Parabolic dish, diameter 60 cm)"
-    assert cli.format_antenna({"name": "ANT9"}) == "ANT9" and cli.format_antenna(None) == "none"
+    assert antennas.format_antenna(antennas.get("ANT500").describe()) == "ANT500 (Whip / monopole, length 20-88 cm, 50 ohm)"
+    assert antennas.format_antenna(antennas.Antenna("D", kind="dish", size=(0.6, 0.6)).describe()) == "D (Parabolic dish, diameter 60 cm)"
+    assert antennas.format_antenna({"name": "ANT9"}) == "ANT9" and antennas.format_antenna(None) == "none"
     chain = {"direction": "rx", "port": "RX2", "lo": 9.75e9, "invert": False, "antenna": antennas.get("ANT500").describe()}
     assert cli.format_chain(chain) == "antenna rx RX2: ANT500 (Whip / monopole, length 20-88 cm, 50 ohm), LO 9750 MHz"

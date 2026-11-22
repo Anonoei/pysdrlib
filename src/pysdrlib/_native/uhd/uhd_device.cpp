@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <sstream>
 
 #include "hardware_convert.hpp"
@@ -85,7 +86,6 @@ void UHDDevice::close() {
     stop_rx();
     ushim* s = handle_;
     handle_ = nullptr;
-    rx_callback_ = nullptr;   // no thread can call it now
     ushim_close(s);
 }
 
@@ -178,6 +178,7 @@ void UHDDevice::rx_loop(size_t max_samps) {
         const double rate = rx_rate_.load();
         if (rx_clock_moved_.exchange(false)) have_time = false;
         if (ushim_rx_time(s, &t) != 0 || rate <= 0) { have_time = false; return; }
+        bool restamp = !have_time;
         if (have_time) {
             const double missing = (t - next_time) * rate;
             if (missing > 0.5 && missing < 60 * rate) {
@@ -185,7 +186,10 @@ void UHDDevice::rx_loop(size_t max_samps) {
                 for (size_t k = 0; k < n; k++) skip_rx(lost, k);
                 rx_lost_ += lost;
             }
+            restamp = std::abs(missing) > 0.5;   // the count and the clock parted: readers extrapolate from here
         }
+        if (restamp)
+            for (size_t k = 0; k < n; k++) stamp_rx(t, k);
         next_time = t + static_cast<double>(got) / rate;
         have_time = true;
     };
@@ -193,7 +197,7 @@ void UHDDevice::rx_loop(size_t max_samps) {
         if (!got) return true;
         account(got);
         for (size_t k = 0; k < n; k++)
-            if (dispatch_rx(bufs[k].data(), got * 4, bufs[k].size() * sizeof(int16_t), k) != 0) return false;
+            if (dispatch_rx(bufs[k].data(), got * 4, k) != 0) return false;
         return true;
     };
     std::chrono::steady_clock::time_point drain_until{};

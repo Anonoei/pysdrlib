@@ -7,17 +7,22 @@
     pysdrlib client tcp://host:5555 rx --serial <serial> --program myapp -o out.cfile -t 5
     pysdrlib client tcp://host:5555 rx --need freq=433e6 --need rate=2e6 --freq 433.92e6 --rate 10e6 -o out.cfile -t 5
     pysdrlib client tcp://host:5555 watch <driver>-0 -o out.cfile -t 5
+    pysdrlib client tcp://host:5555 rx <driver> --freq 433.92e6 --rate 2e6 -f ci8 -o capture.sigmf -t 10
     pysdrlib client tcp://host:5555 tx <driver> -i out.cfile --freq 915e6 --rate 2e6 --tx-gain 0 --tx-wire int8
     pysdrlib client tcp://host:5555 set <driver>-0 rx_freq=101e6 rx_lna_gain=16
     pysdrlib relay tcp://host:5555 <driver>-0 --bind tcp://127.0.0.1:5556      # programs here share one connection to it
 
-Recordings and transmit files are raw complex64 (GNU Radio `.cfile`).
+Recordings are raw complex64 (GNU Radio `.cfile`) by default; `-f` picks another format (ci16, ci8, cu8...), and an
+output ending in `.sigmf` (or `--sigmf`) records SigMF, with the rate, frequency, retunes and lost samples in its
+metadata. Transmit files are raw complex64.
 --rx-wire / --tx-wire choose the format samples cross the network in (native = the device's own layout).
 """
 import argparse
 import json
 import sys
 import time
+
+from ..base.antennas import format_antenna
 
 def _number(text):
     """'100e6' -> 100000000.0, '16' -> 16, anything else stays a string"""
@@ -40,7 +45,9 @@ def add_parsers(sub):
     s.add_argument("--bind", default="tcp://127.0.0.1:5555", help="C2 endpoint (default %(default)s; use tcp://0.0.0.0:5555 to serve the network)")
     s.add_argument("--port-range", type=_port_range, help="LOW-HIGH ports for per-device sockets (default: any free port)")
     s.add_argument("--devices", help="comma separated device types clients may open (default: all)")
-    s.add_argument("--open", action="append", default=[], metavar="TYPE", help="open a device at startup, uncontrolled until a client claims it (repeatable)")
+    s.add_argument("--open", action="append", default=[], metavar="TYPE[:KEY=VALUE,...]",
+                   help="open a device at startup, uncontrolled until a client claims it; KEY=VALUE pairs go to its open() "
+                        "(e.g. file:path=cap.sigmf,loop=true or tcpiq:host=10.0.0.5,port=1234) (repeatable)")
     s.add_argument("--frontends", metavar="FILE", help="JSON (or TOML) file saying what sits between each radio and the air (LNB or converter LO, tx chain, antenna), so clients ask for over-the-air frequencies; see pysdrlib.remote.frontends")
     s.add_argument("--wire", "--rx-wire", dest="wire", default="native", help="default RX wire format: native (device's own sample layout, default), complex64, int8, int16, ...")
     s.add_argument("--lease", type=float, default=15.0, help="seconds a silent controller keeps control, 0 = forever (default %(default)s)")
@@ -51,6 +58,8 @@ def add_parsers(sub):
     s.add_argument("--uhd-log", metavar="LEVEL", help="how much of UHD's own console log to show: trace, debug, info, warning, error, fatal or off "
                    "(default: warning, or UHD_LOG_CONSOLE_LEVEL if set)")
     s.add_argument("--log-timestamps", action="store_true", help="prefix log lines with a time (default off: journald adds one)")
+    s.add_argument("--stats-interval", type=float, default=60.0, metavar="S",
+                   help="seconds between log lines per streaming device: rate published, subscribers, drops; 0 = none (default %(default)s)")
     s.add_argument("-v", "--verbose", action="store_true", help="also log debug detail")
 
     y = sub.add_parser("relay", help="host a device of another server here, so programs on this machine share one connection to it")
@@ -62,6 +71,7 @@ def add_parsers(sub):
     y.add_argument("--name", help="the id the device has here (default: the far device's)")
     y.add_argument("--bind", default="tcp://127.0.0.1:5556", help="where local programs connect (default %(default)s)")
     y.add_argument("--timeout", type=float, default=5.0, help="seconds the far server may take to answer")
+    y.add_argument("--stats-interval", type=float, default=60.0, metavar="S", help="seconds between stats log lines; 0 = none (default %(default)s)")
     y.add_argument("--lease", type=float, default=15.0, help="seconds a silent local controller keeps control, 0 = forever (default %(default)s)")
     y.add_argument("--no-shm", dest="shm", action="store_false", help="don't offer programs on this machine the samples in shared memory")
     y.add_argument("-v", "--verbose", action="store_true")
@@ -80,6 +90,10 @@ def add_parsers(sub):
 
     cmd.add_parser("list", help="device types and hosted devices")
 
+    m = cmd.add_parser("stats", help="what each hosted device has published, to whom, and what was lost")
+    m.add_argument("device", nargs="?", help="just this hosted device")
+    m.add_argument("--json", action="store_true", help="all of it, as JSON")
+
     i = cmd.add_parser("info", help="capabilities of a hosted device")
     i.add_argument("device")
 
@@ -89,6 +103,8 @@ def add_parsers(sub):
     _record_args(r)
     r.add_argument("--rx-wire", "--wire", dest="rx_wire", help="RX wire format for this device (default: the server's)")
     r.add_argument("--init", action="append", default=[], metavar="KEY=VALUE", help="device constructor argument (repeatable)")
+    r.add_argument("--arg", action="append", default=[], metavar="KEY=VALUE",
+                   help="argument to the device's open(), e.g. path=cap.sigmf for `file`, host=... for `tcpiq` (repeatable)")
     r.add_argument("--freq", type=_number)
     r.add_argument("--rate", type=_number)
     r.add_argument("--rx-gain", type=_number)
@@ -113,6 +129,7 @@ def add_parsers(sub):
     t.add_argument("--loop", action="store_true", help="repeat the file until Ctrl+C")
     t.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="device specific setter, e.g. tx_if_gain=0 (repeatable)")
     t.add_argument("--init", action="append", default=[], metavar="KEY=VALUE", help="device constructor argument (repeatable)")
+    t.add_argument("--arg", action="append", default=[], metavar="KEY=VALUE", help="argument to the device's open() (repeatable)")
 
 def build_parser():
     """A parser of just the remote commands, for `main` here"""
@@ -138,15 +155,34 @@ def _choice(args, **want):
     return dict(program=args.program, serial=args.serial, label=args.label, need=need or None, want=want or None)
 
 def _record_args(p):
-    p.add_argument("-o", "--output", required=True, help="file to write raw complex64 to")
+    p.add_argument("-o", "--output", required=True,
+                   help="file to record to; a name ending in .sigmf records SigMF (NAME.sigmf-data and NAME.sigmf-meta)")
+    p.add_argument("-f", "--format", default="cf32",
+                   help="sample format of the file (default %(default)s: two float32, a GNU Radio .cfile): see pysdrlib.Formats, "
+                        "e.g. ci16, ci8, cu8; integer formats saturate at full scale")
+    p.add_argument("--sigmf", action="store_true", help="record SigMF whatever the output's name")
     p.add_argument("-n", "--samples", type=int, help="stop after this many samples")
     p.add_argument("-t", "--time", type=float, help="stop after this many seconds")
+
+def _value(text):
+    """A command line value: a number, true/false, none, or the text"""
+    lower = text.strip().lower()
+    if lower in ("true", "false"):
+        return lower == "true"
+    if lower == "none":
+        return None
+    return _number(text)
 
 def _setting(item):
     key, eq, value = item.partition("=")
     if not eq:
         raise SystemExit(f"expected KEY=VALUE, got {item!r}")
-    return key.strip(), _number(value)
+    return key.strip(), _value(value)
+
+def _open_spec(spec):
+    """`TYPE[:KEY=VALUE,...]` -> (type, {key: value})"""
+    dtype, _, rest = spec.partition(":")
+    return dtype.strip(), dict(_setting(item) for item in rest.split(",") if item.strip())
 
 def _need(item):
     """`--need KEY=VALUE`: freq may be a span `LOW:HIGH` (Hz); tx is true or false (checked by `choose.normalize`)"""
@@ -162,25 +198,34 @@ def _apply(dev, settings):
         print(f"{name}({value}) -> {getattr(dev, name)(value)}")
 
 def _record(dev, args):
+    """Record the stream to `args.output` until -n samples or -t seconds (or Ctrl-C). The RxMeta of every block goes to
+    the sink: a SigMF recording gets the rate, frequency, retunes and lost samples"""
+    from ..file import FileSink
+    from ..base import Formats
     if args.samples is None and args.time is None:
         raise SystemExit("give a stop condition: -n SAMPLES and/or -t SECONDS")
+    try:
+        fmt = Formats.get(args.format)
+    except KeyError as e:
+        raise SystemExit(f"error: {e.args[0]}")
+    rate = dev.get_rx_sample_rate() or 1e6
     total = 0
     start = time.monotonic()
-    with open(args.output, "wb") as f:
+    sink = FileSink(args.output, fmt.name, clip=True, scale=True, sigmf=True if args.sigmf else None, hw=dev.id)
+    with sink:
         try:
-            while True:
-                if args.samples is not None and total >= args.samples:
-                    break
+            while args.samples is None or total < args.samples:
                 if args.time is not None and time.monotonic() - start >= args.time:
                     break
-                samples = dev.get_samples(timeout=0.25)
-                if args.samples is not None:
-                    samples = samples[:args.samples - total]
-                samples.tofile(f)
-                total += samples.size
+                count = CHUNK_SAMPLES if args.samples is None else min(CHUNK_SAMPLES, args.samples - total)
+                x, m = dev.read(count, timeout=args.timeout + count / rate, meta=True)
+                sink.write(x, meta=m)
+                total += len(x)
         except KeyboardInterrupt:
             pass
-    print(f"wrote {total:,} samples to {args.output}" + (f" ({dev.dropped_blocks} blocks dropped)" if dev.dropped_blocks else ""))
+    lost = f" ({dev.dropped_blocks} blocks dropped)" if dev.dropped_blocks else ""
+    clipped = f", {sink.clipped:,} clipped" if sink.clipped else ""
+    print(f"wrote {total:,} samples to {sink.path}{' (SigMF)' if sink.sigmf else ''}{clipped}{lost}")
 
 CHUNK_SAMPLES = 65536
 
@@ -238,7 +283,7 @@ def _serve(args, log):
     try:
         server = Server(args.bind, port_range=args.port_range, devices=devices, lease=args.lease, wire=args.wire, shm=args.shm,
                         scan_interval=args.scan_interval, frontends=args.frontends, advertise=args.advertise,
-                        name=args.advertise_name)
+                        name=args.advertise_name, stats_interval=args.stats_interval)
     except NotAdvertisable as e:
         raise SystemExit(f"--advertise: {e}")
     except ValueError as e:     # a frontends file that cannot be read or is wrong
@@ -251,8 +296,9 @@ def _serve(args, log):
     except Exception:
         log.exception("looking for radios failed")
     try:
-        for dtype in args.open:
-            server.open_device(dtype)
+        for spec in args.open:
+            dtype, kwargs = _open_spec(spec)
+            server.open_device(dtype, kwargs=kwargs)
     except Exception as e:
         server.stop()
         raise SystemExit(f"failed to open device: {e}")
@@ -278,7 +324,8 @@ def _relay(args):
     if (args.device is None) == (args.open is None):
         raise SystemExit("error: give the id of a device on the far server, or --open TYPE")
     try:
-        server = Server(args.bind, lease=args.lease, shm=args.shm, advertise=args.advertise, name=args.advertise_name, kind="relay")
+        server = Server(args.bind, lease=args.lease, shm=args.shm, advertise=args.advertise, name=args.advertise_name, kind="relay",
+                        stats_interval=args.stats_interval)
     except ValueError as e:
         raise SystemExit(f"error: {e}")
     try:
@@ -298,21 +345,6 @@ def _relay(args):
         pass
     finally:
         server.stop()
-
-def format_antenna(info):
-    """One antenna as text, e.g. `ANT500 (Whip / monopole, length 20-88 cm, 50 ohm)`; `info` is `Antenna.describe()`"""
-    if not info:
-        return "none"
-    parts = []
-    if info.get("kind_name"):
-        parts.append(info["kind_name"])
-    size = info.get("size")
-    if size:
-        lo, hi = (f"{v * 100:g}" for v in size)
-        parts.append(f"{info.get('measures') or 'size'} {lo} cm" if lo == hi else f"{info.get('measures') or 'size'} {lo}-{hi} cm")
-    if info.get("impedance"):
-        parts.append(f"{info['impedance']:g} ohm")
-    return info["name"] + (f" ({', '.join(parts)})" if parts else "")
 
 def format_chain(chain):
     """A chain as one line for `list`: its direction, port, the LO it has and the antenna on it"""
@@ -365,20 +397,51 @@ def run_discover(args):
             except Exception as e:
                 print(f"  cannot ask it: {e}")
 
+def print_stats(metrics):
+    """`client stats`: one paragraph per hosted device"""
+    print(f"server up {metrics['uptime']:.0f}s")
+    if not metrics["devices"]:
+        print("  no hosted devices")
+    for dev_id, m in metrics["devices"].items():
+        rx, dev, tx = m["rx"], m["device"] or {}, m["tx"]
+        who = f"controlled by {m['program'] or 'a client'}" if m["controlled"] else "uncontrolled"
+        print(f"  {dev_id} ({m['type']}, {who}, {'streaming' if m['streaming'] else 'idle'}, up {m['uptime']:.0f}s)")
+        print(f"    rx: {rx['samples']:,} samples published, {rx['bytes'] / 1e6:,.1f} MB in {rx['blocks']:,} blocks "
+              f"({rx['wire']}); subscribers: {rx['socket_subscribers']} socket, {rx['shm_subscribers']} shm")
+        if dev:
+            print(f"    device: {dev.get('samples', 0):,} delivered, {dev.get('dropped', 0):,} dropped, "
+                  f"{dev.get('missing', 0):,} missing, {dev.get('stalls', 0)} stalls" if "error" not in dev
+                  else f"    device: {dev['error']}")
+        if "upstream" in m:
+            print(f"    upstream: {m['upstream']['id']} of {m['upstream']['address']}, "
+                  f"{m['upstream']['dropped_blocks']:,} blocks lost on the way")
+        if tx["samples"] or tx["refused"] or tx["device"]:
+            print(f"    tx: {tx['samples']:,} samples in {tx['blocks']:,} blocks, {tx['refused']:,} refused"
+                  + (f", device {tx['device']}" if tx["device"] else ""))
+        print(f"    control: {m['control']['calls']:,} calls, {m['control']['errors']:,} failed")
+
 def run_client(args):
-    """`pysdrlib client`: list, info, rx, watch, set and tx"""
-    import pysdrlib
+    """`pysdrlib client`: list, info, stats, rx, watch, set and tx"""
     from .client import Client, RemoteDevice
     if args.cmd == "list":
         with Client(args.address, args.timeout) as c:
             print_list(c)
+    elif args.cmd == "stats":
+        with Client(args.address, args.timeout) as c:
+            metrics = c.metrics(args.device)
+        if args.json:
+            print(json.dumps(metrics, indent=2))
+        else:
+            print_stats(metrics)
     elif args.cmd == "info":
         with RemoteDevice(args.address, id=args.device, timeout=args.timeout) as dev:
             print(json.dumps(dev.capabilities, indent=2))
     elif args.cmd == "rx":
-        with RemoteDevice(args.address, args.type, timeout=args.timeout, wire=args.rx_wire,
-                          init_kwargs=dict(_setting(i) for i in args.init),
-                          **_choice(args, freq=args.freq, rate=args.rate)) as dev:
+        dev = RemoteDevice(args.address, args.type, timeout=args.timeout, wire=args.rx_wire,
+                           init_kwargs=dict(_setting(i) for i in args.init),
+                           **_choice(args, freq=args.freq, rate=args.rate))
+        dev.open(**dict(_setting(a) for a in args.arg))
+        with dev:
             dev.initialize(cf=args.freq, Fs=args.rate, rx_gain=args.rx_gain)
             _apply(dev, [_setting(s) for s in args.set])
             print(f"{dev.id}: cf={dev.get_rx_freq():,.0f} Fs={dev.get_rx_sample_rate():,.0f} wire={dev.wire}")
@@ -398,9 +461,11 @@ def run_client(args):
             finally:
                 dev.release()
     elif args.cmd == "tx":
-        with RemoteDevice(args.address, args.type, timeout=args.timeout, tx_wire=args.tx_wire,
-                          init_kwargs=dict(_setting(i) for i in args.init),
-                          **_choice(args, freq=args.freq, rate=args.rate)) as dev:
+        dev = RemoteDevice(args.address, args.type, timeout=args.timeout, tx_wire=args.tx_wire,
+                           init_kwargs=dict(_setting(i) for i in args.init),
+                           **_choice(args, freq=args.freq, rate=args.rate))
+        dev.open(**dict(_setting(a) for a in args.arg))
+        with dev:
             dev.initialize(cf=args.freq, Fs=args.rate, tx_gain=args.tx_gain)
             _apply(dev, [_setting(x) for x in args.set])
             print(f"{dev.id}: cf={dev.get_rx_freq():,.0f} Fs={dev.get_rx_sample_rate():,.0f} tx_wire={dev.tx_wire_name}")

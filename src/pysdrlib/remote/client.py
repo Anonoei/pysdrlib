@@ -14,6 +14,7 @@ method of the hosted device (e.g. its per-stage gain setters) is reachable by na
 """
 import collections
 import functools
+import inspect
 import socket
 import threading
 import time
@@ -26,14 +27,15 @@ from .. import logger
 from ..base import caps as _caps
 from ..base import convert
 from ..base.device import Device
-from ..base.stream import RxMeta
 from ..base.watchdog import StreamStats
 from . import choose
 from . import protocol
-from . import shm
+from .. import shm
 
 DEFAULT_TIMEOUT = 5.0
 PULL_LIMIT = 256   # blocks taken from the socket per call (its receive high-water mark)
+STALL_TIMEOUT = 2.0   # seconds without samples before `read` asks the server why (RemoteDevice.stall_timeout)
+PROBE_TIMEOUT = 2.0   # seconds to wait for its answer before the server counts as gone
 
 
 def _rx_synced(method):
@@ -65,6 +67,10 @@ class _Channel:
         self._lock = threading.Lock()
 
     def request(self, op, **fields):
+        return self.exchange(op, **fields).get("result")
+
+    def exchange(self, op, **fields) -> dict:
+        """`request`, returning the whole reply (its `result`, and the `stream` change a call made)"""
         with self._lock:
             self._id += 1
             req_id = self._id
@@ -79,10 +85,20 @@ class _Channel:
                     break
         if not msg.get("ok"):
             protocol.raise_error(msg.get("error", {}))
-        return msg.get("result")
+        return msg
 
     def close(self):
         self.sock.close(0)
+
+
+def _hello(c2, address):
+    """The server's `hello` (its protocol version, lease, device types); `err.ProtocolError` unless it speaks ours"""
+    from .. import __version__
+    info = c2.request("hello", version=protocol.VERSION, pysdrlib=__version__)   # a server refuses a version not its own
+    why = protocol.mismatch(protocol.VERSION, __version__, info.get("version"), info.get("pysdrlib"), "server")
+    if why:   # a server from before it checked
+        raise err.ProtocolError(f"{address}: {why}")
+    return info
 
 
 class Client:
@@ -90,9 +106,7 @@ class Client:
     def __init__(self, address: str, timeout=DEFAULT_TIMEOUT):
         self.address = address
         self._c2 = _Channel(address, timeout)
-        self.info = self._c2.request("hello")
-        if self.info.get("version") != protocol.VERSION:
-            raise err.ProtocolError(f"server speaks protocol {self.info.get('version')}, this is {protocol.VERSION}")
+        self.info = _hello(self._c2, address)
 
     def types(self):
         """Device types the server can open"""
@@ -106,6 +120,10 @@ class Client:
         """Radios attached to the server's machine as of its last scan: dicts with `driver`, `label`, `serial`, `index` and
         `hosted` (the id of the device that has it open, or None)"""
         return self._c2.request("list").get("available", [])
+
+    def metrics(self, device=None):
+        """What the server's devices (or the one with id `device`) have passed since hosted: see `Server.metrics`"""
+        return self._c2.request("metrics", device=device)
 
     def candidates(self, device=None, serial=None, label=None, need=None, want=None):
         """The server's radios that fit the request, best first, without opening any (see `Server.candidates`); raises
@@ -184,6 +202,7 @@ class RemoteDevice(Device):
         self._rx_lock = threading.RLock()   # guards the receive state below (see `_rx_synced`)
         self._shm_mode = False      # samples come from shared memory (see `_subscribe`)
         self._rings = {}            # channel -> shm.ShmReader of the stream's ring
+        self._retired = collections.deque(maxlen=32)   # names of the rings closed (an old stream's)
         self._pos = {}              # channel -> stream index of the next sample to read from its ring
         self._from_start = False    # this client started the stream: read its rings from their first sample
         self._host = _host_of(address)
@@ -192,8 +211,12 @@ class RemoteDevice(Device):
         self._sub = None
         self._last_seq = None
         self._bufs = {}             # channel -> deque of [index of first sample, samples] received, not yet read
+        self._changes_seen = set()  # `seq` of the stream changes applied (see `_apply_change`)
         self._rx_last = {}          # channel -> index after the last sample received
         self._rx_time = None        # time.monotonic() of the last block
+        self._idle_since = None     # time.monotonic() a read first found nothing, with no block yet (see `_rx_idle`)
+        self._probed = 0.0          # time.monotonic() the server was last asked how the device is
+        self.stall_timeout = STALL_TIMEOUT   # seconds without samples before `read` asks the server why; None: never
         self._tx = None             # PUSH socket for TX blocks (the controller's)
         self._tx_seq = 0
         self._beat = None
@@ -223,6 +246,7 @@ class RemoteDevice(Device):
             return
         self._c2 = _Channel(self.address, self.timeout)
         try:
+            lease = _hello(self._c2, self.address)["lease"]
             if self.id is None:
                 res = self._c2.request("open", type=self.type, args=list(args), kwargs=kwargs,
                                        init_args=self._init[0], init_kwargs=self._init[1], wire=self._wire,
@@ -231,12 +255,10 @@ class RemoteDevice(Device):
                 self.id = res["device"]
                 self.type = res.get("type", self.type)
                 self.granted = res.get("granted")
-                lease = res["lease"]
             else:
                 if args or kwargs:
                     raise ValueError("an attached device is already open; open() takes no arguments")
                 res = self._c2.request("attach", device=self.id, program=self.program)
-                lease = self._c2.request("hello")["lease"]
             self._endpoints = res["endpoints"]
             self._connect(res["endpoints"])
             self.capabilities = self._ctrl.request("capabilities")
@@ -294,6 +316,7 @@ class RemoteDevice(Device):
 
     def _close_rings(self):
         for reader in self._rings.values():
+            self._retired.append(reader.name)   # a notice of it still on its way must not bring it back
             reader.close()
         self._rings.clear()
         self._pos.clear()
@@ -388,7 +411,11 @@ class RemoteDevice(Device):
         self._ensure_open(method)
         if method == "start_rx":   # what is still queued belongs to the last stream
             self._drop_received()
-        result = self._ctrl.request("call", method=method, args=list(args), kwargs=kwargs, token=self.token)
+        reply = self._ctrl.exchange("call", method=method, args=list(args), kwargs=kwargs, token=self.token)
+        result = reply.get("result")
+        if reply.get("stream"):   # what the call changed in the stream: known before the next read
+            with self._rx_lock:
+                self._apply_change(reply["stream"])
         if method in ("set_rx_freq", "get_rx_freq"):
             self._cf = result
         elif method in ("set_rx_sample_rate", "get_rx_sample_rate"):
@@ -396,6 +423,14 @@ class RemoteDevice(Device):
         elif method in _SYNC_AFTER:
             self.refresh()
         return result
+
+    def _rx_not_started(self):
+        if not self.is_controller and self.state["open"]:   # a viewer: the controller may have started it since
+            self.refresh()
+            if self.state["rx"]:
+                return
+            raise err.NotStreaming(f"{self.id} isn't receiving on the server: its controller hasn't started it")
+        super()._rx_not_started()
 
     def refresh(self):
         """Update `state`, `CF` and `Fs` from the server (a viewer sees what the controller does)"""
@@ -405,8 +440,8 @@ class RemoteDevice(Device):
         self._cf = status["cf"]
         self._Fs = status["Fs"]
         self.wire = status["wire"]
-        self._rx_channels = tuple(status.get("rx_channels", (0,)))   # older servers: channel 0
-        self._tx_channels = tuple(status.get("tx_channels", (0,)))
+        self._rx_channels = tuple(status["rx_channels"])
+        self._tx_channels = tuple(status["tx_channels"])
         return status
 
     def set_wire(self, fmt="native"):
@@ -458,16 +493,8 @@ class RemoteDevice(Device):
     def caps(self):
         """The hosted device's capabilities (fetched once per connection)"""
         if self.__dict__.get("_remote_caps") is None:
-            try:
-                self._remote_caps = _caps.from_json(self._call("get_caps"))
-            except AttributeError as exc:   # inside a property it would read as "no attribute 'caps'"
-                raise err.NotSupported(f"the server at {self.address} runs a pysdrlib without capabilities "
-                                       f"(update it): {exc}") from None
+            self._remote_caps = _caps.from_json(self._call("get_caps"))
         return self._remote_caps
-
-    def set_setting(self, name, value, channel=0):
-        """Apply one of the hosted device's `settings()`"""
-        return self._call("set_setting", name, value, channel)
 
     # --- samples --- #
     # The server publishes every channel it streams in blocks tagged with the channel and the index of their first
@@ -483,20 +510,52 @@ class RemoteDevice(Device):
                 break
             wait = 0
             _, header, payload = self._sub.recv_multipart(copy=False)
+            if protocol.is_event(header.bytes):
+                self._apply_change(protocol.unpack_event(payload.buffer))
+                continue
             if self._shm_mode:
                 self._notice(header.bytes, payload.buffer)
                 continue
-            seq, _, samples, channel, index = protocol.unpack_block_ex(header.bytes, payload.buffer)
+            seq, _, samples, channel, index = protocol.unpack_block(header.bytes, payload.buffer)
             if self._last_seq is not None and seq > self._last_seq + 1:
                 self.dropped_blocks += seq - self._last_seq - 1
             self._last_seq = seq
-            if index is None:   # an older server: count them here
-                index = self._rx_last.get(channel, 0)
+            if index < self._rx_last.get(channel, 0):   # the indices went back: someone restarted the stream
+                self._stream_restarted()
             if index > self._rx_last.get(channel, index):   # blocks the socket dropped on the way
                 self._lost[channel] = self._lost.get(channel, 0) + index - self._rx_last[channel]
             self._bufs.setdefault(channel, collections.deque()).append([index, samples])
             self._rx_last[channel] = index + len(samples)
             self._rx_time = time.monotonic()
+
+    def _apply_change(self, change):
+        """A change to the stream on the server (retunes, gains, a flush; see `protocol.change`): recorded as
+        `Device._note` records a local device's, so `read` reports it in RxMeta and skips what a flush discarded. Each
+        once: the caller gets its own both in the reply and on the stream"""
+        seq = change.get("seq")
+        if seq in self._changes_seen:
+            return
+        if len(self._changes_seen) > 4096:
+            self._changes_seen.clear()
+        self._changes_seen.add(seq)
+        for index, kind, value, ch in change.get("events", ()):
+            self._seed_now(kind, (ch,))
+            self._rx_events.append((int(index), kind, value, ch))
+        self._rx_discard = max(self._rx_discard, int(change.get("discard", 0)))
+
+    def _seed_now(self, kind, channels):
+        """Before a change of `kind` is recorded: what was in effect until then (the blocks before it are labelled
+        with that, not with the new value)"""
+        before = {"freq": self._cf, "rate": self._Fs}.get(kind)
+        if before is not None:
+            for ch in channels:
+                self._rx_now.setdefault((kind, ch), before)
+
+    def _stream_restarted(self):
+        """A new stream (indices from 0 again): the last one's positions, flush point and changes are void"""
+        self._rx_next, self._rx_now, self._rx_events, self._rx_discard = {}, {}, [], 0
+        self._rx_last.clear()
+        self._lost.clear()
 
     def _notice(self, header, payload):
         """A block was written to a ring: attach to the ring if it is a new one, and note when it arrived"""
@@ -507,12 +566,17 @@ class RemoteDevice(Device):
             return
         if not name:
             return self._use_sockets("the server could not make a shared-memory segment")
+        if name in self._retired:   # sent before the stream it belongs to was stopped
+            return
         try:
             new = shm.ShmReader(name)
         except (FileNotFoundError, ValueError, OSError) as exc:
             return self._use_sockets(f"{name} can't be attached: {exc}")
         # A new stream is read from its first sample; one already running, from this block on
-        fresh = self._from_start or (reader is not None and reader.stream_id != new.stream_id)
+        restarted = reader is not None and reader.stream_id != new.stream_id
+        fresh = self._from_start or restarted
+        if restarted:
+            self._stream_restarted()
         if reader is not None:
             reader.close()
         self._rings[channel], self._pos[channel] = new, 0 if fresh else index
@@ -527,11 +591,45 @@ class RemoteDevice(Device):
     def _drop_received(self):
         if self._sub is not None:
             self._pull(0)
+        self._rx_time = self._idle_since = None
         self._bufs.clear()
-        self._rx_last.clear()
-        self._lost.clear()
+        self._stream_restarted()
         self._close_rings()   # the old stream's; the new one has rings of its own
         self._from_start = self.is_controller
+
+    def _rx_idle(self):
+        """Nothing has arrived for `stall_timeout` seconds: ask the server (at most once per `stall_timeout`) whether
+        it is there and how its device is. err.Lost when it doesn't answer, no longer hosts the device or the device
+        is gone or failing; err.StreamStalled when the device stopped delivering"""
+        if self.stall_timeout is None:
+            return
+        now = time.monotonic()
+        last = self._rx_time if self._rx_time is not None else self._idle_since
+        if last is None:
+            self._idle_since = now
+            return
+        if now - last < self.stall_timeout or now - self._probed < self.stall_timeout:
+            return
+        self._probed = now
+        try:
+            ch = _Channel(self.address, min(self.timeout, PROBE_TIMEOUT))
+            try:
+                hosted = {d["id"]: d for d in ch.request("list")["devices"]}
+            finally:
+                ch.close()
+        except (TimeoutError, zmq.ZMQError) as e:
+            raise err.Lost(f"{self.id}: no samples for {now - last:.1f}s, and the server at {self.address} doesn't "
+                           f"answer ({e})") from None
+        status = hosted.get(self.id)
+        if status is None:
+            raise err.Lost(f"{self.id}: the server at {self.address} no longer hosts it")
+        health = status.get("health", "ok")
+        if health in ("lost", "failing"):
+            raise err.Lost(f"{self.id}: the server's device is {'gone' if health == 'lost' else 'failing'}")
+        if health == "stalled":
+            raise err.StreamStalled(f"{self.id}: the server's device stopped delivering samples")
+        if not status.get("state", {}).get("rx"):
+            raise err.NotStreaming(f"{self.id} isn't receiving on the server (its controller stopped it)")
 
     @_rx_synced
     def _rx_wait(self, count, timeout, slot=0):
@@ -550,6 +648,7 @@ class RemoteDevice(Device):
             return super()._rx_read_into(out, timeout, slot)
         channel = self._rx_channels[slot]
         deadline = time.monotonic() + timeout
+        self._pull(0)   # changes (events) already sent apply to what is read now
         while True:
             reader = self._rings.get(channel)
             if reader is not None:
@@ -683,17 +782,13 @@ def _forwarder(name):
     method.__doc__ = getattr(Device, name).__doc__
     return method
 
-# Everything Device implements locally (against CAPS a remote device doesn't have) runs on the server instead
-for _name in ("initialize", "start_rx", "stop_rx", "start_tx", "stop_tx", "set_rx_sample_rate", "set_tx_sample_rate",
-              "set_rx_freq", "set_tx_freq", "set_rx_gain", "set_tx_gain", "set_rx_gain_db", "set_tx_gain_db", "set_bias_t"):
-    setattr(RemoteDevice, _name, _forwarder(_name))
-for _name in ("set_rx_gain_mode", "set_tx_gain_mode", "set_rx_bandwidth", "set_tx_bandwidth", "set_rx_antenna", "set_tx_antenna",
-              "set_clock_source", "set_freq_correction",
-              "get_rx_gain", "get_tx_gain", "get_rx_gain_db", "get_tx_gain_db", "get_rx_gains_db", "get_tx_gains_db",
-              "get_rx_gain_mode", "get_tx_gain_mode", "get_rx_bandwidth", "get_tx_bandwidth", "get_rx_antenna", "get_tx_antenna",
-              "get_clock_source", "get_setting", "get_rx_inverted",
-              "get_freq_correction"):
-    setattr(RemoteDevice, _name, _forwarder(_name))
-for _name in ("get_rx_sample_rate", "get_tx_sample_rate", "get_rx_freq", "get_tx_freq"):
-    setattr(RemoteDevice, _name, _forwarder(_name))
-del _name
+# Device's public methods run on the server (against the hosted driver: its caps, gain split, state), except those that
+# read samples, which come over the stream, and those that only read `caps` (fetched once per connection)
+_LOCAL = frozenset({"open", "close", "get_samples", "read", "read_into", "stream", "read_available", "wait_available",
+                    "flush", "write", "get_tx_stats", "get_caps", "settings", "clock_sources",
+                    "rx_gain_stages", "tx_gain_stages", "rx_gain_modes", "tx_gain_modes", "rx_antennas", "tx_antennas"})
+for _name, _fn in list(vars(Device).items()):
+    if not _name.startswith("_") and inspect.isfunction(_fn) and not inspect.isgeneratorfunction(_fn) \
+            and _name not in _LOCAL and _name not in vars(RemoteDevice):   # (a generator, `sweep`, reads: it runs here)
+        setattr(RemoteDevice, _name, _forwarder(_name))
+del _name, _fn

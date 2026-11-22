@@ -1,3 +1,12 @@
+"""`NativeDevice`: the base of every driver over a compiled extension.
+
+The extension streams on its own thread, converting to complex64 and queueing in C++ without the GIL. This class adds
+the Python side: draining the queue, the stall watchdog, drop reporting (`on_drop`, `stats`) and transmit through the
+extension's queue. A driver subclasses it and implements only what is particular to its hardware: see
+`pysdrlib.contributing`.
+"""
+import numpy as np
+
 from .. import err, warn
 from .device import Device
 from .watchdog import StreamStats, Watchdog
@@ -65,6 +74,11 @@ class NativeDevice(Device):
     def _close(self):
         self.device.close()
 
+    def _rx_lost(self):
+        """Why the device is known to be gone (unplugged...), or None, saying what to do about it. A driver that can tell
+        overrides it, so `read` raises err.Lost, not err.StreamStalled after `stall_timeout`"""
+        return None
+
     def _start_rx(self):
         self._rx_base = 0
         self._rate_changed()
@@ -87,15 +101,25 @@ class NativeDevice(Device):
         self._check_stream(have_samples=ready > 0)
         return ready
     def _rx_read(self, count, slot=0):
-        x, first = self.device.read_rx_indexed(int(count), slot)
-        return x, self._rx_base + first
+        out = np.empty(int(count), dtype=np.complex64)
+        n, first = self._rx_read_into(out, 0.0, slot)
+        return out[:n], first
     def _rx_read_into(self, out, timeout, slot=0):
         # one native call: wait, read straight into `out`, and the counters the watchdog needs
         n, first, *counters = self.device.read_rx_into(out, float(timeout), slot)
         if slot:   # the stream is judged by its first queue (all are fed together)
             counters = self.device.rx_counters()
         self._check_counters(*counters, have_samples=n > 0)
+        if n:
+            self._take_stamp(slot)
         return n, self._rx_base + first
+
+    def _take_stamp(self, slot):
+        """The driver's hardware timestamps (`stamp_rx`) become stream events, so they reach RxMeta.hw_time here, and
+        the clients of a server, like a retune"""
+        for index, t in self.device.take_rx_stamps(slot):
+            index += self._rx_base
+            self._rx_events.append((index, "hw_time", [index, t], self._rx_channels[slot]))
     def _rx_position(self, slot=0):
         _, total, _, _, age = self.device.rx_counters(slot)
         return self._rx_base + total, None if age < 0 else age
@@ -150,6 +174,10 @@ class NativeDevice(Device):
         if report.shortfall_start:   # once per episode; stats.missing keeps the total
             self._report_drop(report.missing, f"{type(self).NAME}: delivering fewer samples than {self._Fs:,.0f} "
                                               f"samples/s requires (about {report.missing:,} missing in the last window)")
+        if not have_samples:
+            why = self._rx_lost()
+            if why:
+                raise err.Lost(f"{type(self).NAME}: {why}")
         if report.stalled and not have_samples:
             stats = self.stats
             raise err.StreamStalled(

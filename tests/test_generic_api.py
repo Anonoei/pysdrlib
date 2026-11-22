@@ -3,14 +3,13 @@
 Reading runs on the simulated device (the real C++ ring and a streaming thread); the controls run on every
 hardware device over its fake driver (tests/devices.py), so each driver's mapping onto them is checked.
 """
-import dataclasses
 import time
 
 import numpy as np
 import pytest
 
 import pysdrlib
-from pysdrlib import err
+from pysdrlib import RxMeta, err
 from pysdrlib.base import caps as caps_mod
 from pysdrlib.sim import Sim
 
@@ -86,6 +85,44 @@ class TestRead:
             s.stop_rx()
         assert m.dropped > 0 and m.gaps[0][0] == 0 and m.index == 1000 + m.dropped
 
+    def test_index_stays_absolute_across_gaps_inside_blocks(self):
+        s = pysdrlib.open("sim")
+        s.initialize(cf=1e6, Fs=1e6)
+        s.on_drop = "ignore"
+        s.start_rx()
+        blocks = []
+        try:
+            for i in range(60):   # the sim delivers ahead of the reader: a drop lands some blocks later
+                if i in (2, 5):
+                    s.drop(1234, after=10_000)
+                blocks.append(s.read(30_000, timeout=2, meta=True)[1])
+                if sum(m.dropped for m in blocks) == 2 * 1234:
+                    blocks.append(s.read(30_000, timeout=2, meta=True)[1])
+                    break
+        finally:
+            s.close()
+        assert sum(m.dropped for m in blocks) == 2 * 1234
+        assert any(at > 0 for m in blocks for at, _ in m.gaps)
+        for prev, m in zip(blocks, blocks[1:]):
+            lead = sum(n for at, n in m.gaps if at == 0)
+            assert m.index == prev.index + prev.count + sum(n for at, n in prev.gaps if at > 0) + m.discarded + lead
+            assert m.follows(prev) == (lead == 0 and m.discarded == 0)
+        for m in blocks:
+            assert m.index_at(0) == m.index and m.index_at(-1) == m.next_index - 1
+            for at, n in m.gaps:
+                if at > 0:
+                    assert m.index_at(at) == m.index_at(at - 1) + 1 + n   # the samples lost sit just before `at`
+        with pytest.raises(IndexError):
+            blocks[0].index_at(blocks[0].count)
+
+    def test_wall_time(self):
+        now, mono = time.time(), time.monotonic()
+        meta = lambda **kw: RxMeta(index=0, count=1, freq=1e6, rate=1e6, **kw)
+        assert meta(hw_time=1.8e9, time=mono).wall_time == 1.8e9              # a radio clock that holds a date
+        assert meta(hw_time=12.5, time=mono - 1).wall_time == pytest.approx(now - 1, abs=0.05)   # one counting from 0
+        assert meta(time=mono).wall_time == pytest.approx(now, abs=0.05)
+        assert meta().wall_time is None
+
     def test_stream_starts_and_stops(self):
         s = sim()
         with s.stream(2048, timeout=2, meta=True) as st:
@@ -122,6 +159,33 @@ class TestRead:
         changes = [e for e in m.events if e.kind == "freq"]
         assert (changes and changes[0].value == 101e6 and m.freq == 100e6) or m.freq == 101e6
         assert m2.freq == 102e6 and not m2.events and m2.dropped == 0
+
+    def test_a_slow_retune_is_marked_where_it_started(self):
+        """A driver call that blocks (a bladeRF's cross-band retune takes ~130 ms) while samples keep arriving: the change
+        is marked where the stream was when it was sent, not where the call returned"""
+        seen = {}
+
+        class Slow(Sim):
+            def _set_rx_freq(self, freq, channel=0):
+                seen["sent"] = self._rx_position()[0]
+                time.sleep(0.1)
+                super()._set_rx_freq(freq, channel)
+                seen["done"] = self._rx_position()[0]
+
+        s = Slow(realtime=True, block_samples=4096)
+        s.open()
+        s.initialize(cf=100e6, Fs=1e6)
+        s.start_rx()
+        try:
+            s.read(1000, timeout=2)
+            s.set_rx_freq(101e6)
+            x, m = s.read(400_000, timeout=3, meta=True)
+        finally:
+            s.stop_rx()
+        assert seen["done"] - seen["sent"] > 20_000          # samples did arrive during the call
+        changes = [e for e in m.events if e.kind == "freq"]
+        assert m.freq == 100e6 and changes and changes[0].value == 101e6
+        assert m.index + changes[0].offset <= seen["sent"]
 
     def test_dc_correction(self):
         s = sim()
@@ -337,7 +401,7 @@ def test_read_reports_samples_lost_before_the_queue():
     s.start_rx()
     try:
         s.read(1000, timeout=2)
-        s.buffer.skip(777)                       # as a driver does when the hardware overflowed
+        s.device._skip_rx(777)                      # as a driver does when the hardware overflowed
         _, m = s.read(200_000, timeout=2, meta=True)
     finally:
         s.stop_rx()

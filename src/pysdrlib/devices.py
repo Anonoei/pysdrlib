@@ -312,7 +312,8 @@ def connect(address: Optional[str] = None, device: Optional[str] = None, *, clai
     choosing = any(kwargs.get(k) is not None for k in ("serial", "label", "need", "want", "pick"))
     if device is None or (choosing and device not in ids):
         if device is not None and device not in types:
-            raise err.NoDevice(f"{address} cannot open a device of type {device!r} (types: {', '.join(types) or 'none'})")
+            raise err.NoDevice(f"{address} cannot open a device of type {device!r} (types: {', '.join(types) or 'none'})",
+                               reason="no_type")
         dev = RemoteDevice(address, device, **kwargs)
         dev.open()
         return dev
@@ -328,7 +329,7 @@ def connect(address: Optional[str] = None, device: Optional[str] = None, *, clai
         return dev
     if device not in types:
         raise err.NoDevice(f"{address} hosts no device {device!r} and cannot open one of that type "
-                           f"(hosted: {', '.join(ids) or 'none'}; types: {', '.join(types) or 'none'})")
+                           f"(hosted: {', '.join(ids) or 'none'}; types: {', '.join(types) or 'none'})", reason="no_type")
     free = [d["id"] for d in hosted if d["type"] == device and not d["controlled"]]
     if reuse and free:
         return connect(address, free[0], claim=True, **kwargs)
@@ -365,11 +366,32 @@ def _connect_anywhere(device, claim, reuse, discover_timeout=2.0, **kwargs) -> D
     raise err.NoDevice(f"no server on this network has a radio for the request: {' | '.join(reasons)}")
 
 def open(what, serial=None, **open_args) -> Device:
-    """An opened device: from a DeviceInfo (see `find`), or a driver name (`serial` picks the unit)"""
+    """An opened device: from a DeviceInfo (see `find`), a `Radio` (see `discover`), a driver name (`serial` picks the
+    unit), or a target string (see `pysdrlib.targets`):
+
+        pysdrlib.open("<driver>@<serial>")              # attached here, by (the end of) its serial
+        pysdrlib.open("radiohost/<driver>-0")           # hosted by a server: attach to it
+        pysdrlib.open("radiohost/<driver>@<serial>", program="pyspecan")   # attached to a server: open it there
+
+    For a device on a server, the keywords go to `connect` (`claim`, `reuse`, `program`, `need`, `timeout`...); here,
+    to `Device.open`"""
+    from . import targets
+    if isinstance(what, targets.Radio):
+        what = what.target
+    if isinstance(what, DeviceInfo):
+        if serial is not None:
+            open_args["serial"] = serial
+        return what.open(**open_args)
+    if isinstance(what, str) and ("/" in what or "@" in what):
+        t = targets.parse_target(what)
+        serial = serial if serial is not None else t.serial
+        if t.server is not None:
+            if serial is not None:
+                open_args["serial"] = serial
+            return connect(t.server, t.device, **open_args)
+        what = t.device
     if serial is not None:
         open_args["serial"] = serial
-    if isinstance(what, DeviceInfo):
-        return what.open(**open_args)
     sdr = device(what)
     sdr.open(**open_args)
     return sdr

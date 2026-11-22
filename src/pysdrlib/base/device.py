@@ -24,6 +24,8 @@ A device that lacks a control raises `err.NotSupported`. Values out of range are
 `err.InvalidValue` with `strict = True`.
 """
 import atexit
+import dataclasses
+import functools
 import itertools
 import time
 import weakref
@@ -61,17 +63,19 @@ TX_CHUNK = 16384   # samples a multi-channel write queues per channel at a time 
 def _stage_setter(cls, direction, stage, spec, name):
     hook = f"_set_{direction.lower()}_{stage.lower()}_gain"
 
-    def setter(self, gain=None):
+    def setter(self, gain=None, channel=0):
         apply = getattr(self, hook, None)
         if apply is None:
             raise NotImplementedError(f"{type(self).__name__} declares a {direction} {stage} gain stage but has no {hook}")
-        return self._set_gain_stage(direction, stage, gain, apply)
+        self._ensure_open(name)
+        self._check_channel(direction.lower(), channel)
+        return self._set_gain_stage(direction, stage, gain, apply, channel)
 
     steps = f" in {spec.step} dB steps" if spec.step else ""
     default = f" (default {spec.default})" if spec.default is not None else ""
     setter.__name__ = name
     setter.__qualname__ = f"{cls.__qualname__}.{name}"
-    setter.__doc__ = f"{direction} {stage} gain [dB], {spec.min}-{spec.max}{steps}{default}. None: the default. Returns the gain set"
+    setter.__doc__ = f"{direction} {stage} gain [dB], {spec.min}-{spec.max}{steps}{default}. None: the default. `channel`: which channel's. Returns the gain set"
     setter._generated = True   # type: ignore[attr-defined]
     return setter
 
@@ -92,6 +96,15 @@ class Device:
     SETTINGS: dict = {}  # {name: caps.Setting}: the device's own controls, see `set_setting`
     GAIN_RESERVE: dict = {}  # {"rx"/"tx": (stage, ...)}: stages a total gain uses only when the others can't reach it
     GAIN_BALANCE = "range"   # how a total is shared: "range" (each stage the same fraction of its range) or "db" (equal dB)
+
+    # Set by a remote device (pysdrlib.remote.RemoteDevice); these defaults let a caller read them from any device
+    id: str | None = None        # the device's id on its server ("<driver>-0"); None for a local device
+    granted: dict | None = None  # what the radio a server chose can do, nearest to what was asked; None when not chosen
+
+    @property
+    def is_controller(self) -> bool:
+        """Whether this handle may change settings: always for a local device; a remote one may be a viewer"""
+        return True
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -175,12 +188,13 @@ class Device:
         self._ensure_open("initialize")
         cf = self.set_rx_freq(cf)
         Fs = self.set_rx_sample_rate(Fs)
-        if type(self).CAN_TRANSMIT and self.caps.shared.get("freq") != "device":   # a transmitter of its own
+        can_tx = type(self).CAN_TRANSMIT and bool(self.caps.channels.get("tx"))   # (this unit, as opened, may not)
+        if can_tx and self.caps.shared.get("freq") != "device":   # a transmitter of its own
             self.set_tx_freq(cf)
-        if type(self).CAN_TRANSMIT and self.caps.shared.get("rate") != "device":
+        if can_tx and self.caps.shared.get("rate") != "device":
             self.set_tx_sample_rate(Fs)
         rx_gain = self._initial_gain("rx", rx_gain, rx_gain_db)
-        tx_gain = self._initial_gain("tx", tx_gain, tx_gain_db) if type(self).CAN_TRANSMIT else None
+        tx_gain = self._initial_gain("tx", tx_gain, tx_gain_db) if can_tx else None
         self._initialize(cf, Fs, rx_gain, tx_gain)   # (the hook gets the total gains in dB)
 
     def _initial_gain(self, d, fraction, db):
@@ -209,7 +223,8 @@ class Device:
         _OPEN.discard(self)
 
     def __enter__(self):
-        self.open()
+        if not self.state["open"]:   # `with pysdrlib.open(...) as sdr` is open already
+            self.open()
         return self
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
@@ -228,6 +243,10 @@ class Device:
                 self._set_rx_channels(chs)
             self._rx_channels = chs
         self._rx_reset()
+        for ch in self._rx_channels:   # what the stream starts at: a block from before a later change keeps saying so
+            d = self._direction("rx", ch)
+            self._rx_now[("freq", ch)] = self._tuning.get(("freq", d, ch), self._cf)
+            self._rx_now[("rate", ch)] = self._tuning.get(("rate", d, ch), self._Fs)
         self._start_rx()
         self.state["rx"] = True
     @property
@@ -331,6 +350,7 @@ class Device:
         if hw != Fs and not _caps.contains(self.caps.rates, hw):
             hw, scale = Fs, 1.0    # discrete rates: the hardware can't be asked for a corrected one
         rx_before = self._Fs
+        at = self._rx_mark()
         self._Fs = hw
         done = [(self._set_rx_sample_rate if d == "rx" else self._set_tx_sample_rate)(hw, channel=channel)   # may snap self._Fs
                 for d in self._hooked(direction, dirs, "rate")]
@@ -339,7 +359,7 @@ class Device:
             actual = self._Fs if "rx" in dirs else hw
         rate = Fs if actual == hw else actual * scale
         self._Fs = rx_before if "rx" not in dirs else rate
-        self._tuned("rate", rate, dirs, channel, flush)
+        self._tuned("rate", rate, dirs, channel, flush, at)
         return rate
     def _tune_freq(self, freq, direction, channel, flush):
         """The work of `set_*_freq`; `direction` None: both (what a correction re-applies)"""
@@ -354,21 +374,24 @@ class Device:
         held = self._within(radio, self.caps.freq, "Frequency")
         if held != radio:
             radio, freq = held, held if chain is None else chain.to_rf(held)
+        at = self._rx_mark()
         for d in self._hooked(direction, dirs, "freq"):
             link = chain if d == (direction or "rx") else self._chain(d, channel)
             hw = radio if link is chain else (freq if link is None else link.to_if(freq))
             hw = hw / self._ppm_scale() if self._ppm else hw
             (self._set_rx_freq if d == "rx" else self._set_tx_freq)(hw, channel=channel)
-        self._tuned("freq", freq, dirs, channel, flush)
+        self._tuned("freq", freq, dirs, channel, flush, at)
         return freq
 
     def _chain(self, direction, channel=0):
         """The chain (`caps.chains`) the signal of this direction goes through: the one of the antenna port selected, else the
         one for any port, else the first. None: nothing between the radio and the air"""
+        return self._chain_for_port(direction, self._antenna.get((direction, channel)))
+
+    def _chain_for_port(self, direction, port):
         chains = [c for c in self.caps.chains if c.direction == direction]
         if not chains:
             return None
-        port = self._antenna.get((direction, channel))
         return next((c for c in chains if port is not None and c.port == port), None) or \
             next((c for c in chains if c.port is None), chains[0])
 
@@ -467,6 +490,7 @@ class Device:
         self.log.trace("set_%s_gain_db(%s, stage=%s)", d, gain, stage)
         self._ensure_open(f"set_{d}_gain_db")
         self._direction(d, channel)
+        at = self._rx_mark() if d == "rx" else None
         if stage is None:
             total = "default" if gain is None else self._check_gain(gain, d.upper())
             (self._set_rx_gain if d == "rx" else self._set_tx_gain)(total, channel=channel)
@@ -478,7 +502,7 @@ class Device:
             self._set_gain_stage(d.upper(), name, gain, setter, channel)
         value = self._get_gain_db(d, stage, channel)
         if d == "rx":
-            self._note("gain", value, channel, flush)
+            self._note("gain", value, channel, flush, at=at)
         return value
 
     def _get_gain_db(self, d, stage, channel):
@@ -563,10 +587,11 @@ class Device:
         else:
             bw = max(r.hi for r in ranges)
             self._invalid(f"Bandwidth {want:,.0f} is wider than {type(self).NAME} allows, using {bw:,.0f}")
+        at = self._rx_mark() if d == "rx" else None
         bw = self._set_bandwidth(d, bw, channel=channel) or bw
         self._bandwidth[(d, channel)] = bw
         if d == "rx":
-            self._note("bandwidth", bw, channel, False)
+            self._note("bandwidth", bw, channel, False, at=at)
         return bw
 
     def rx_antennas(self, channel=0):
@@ -575,6 +600,30 @@ class Device:
     def tx_antennas(self, channel=0):
         """The transmitter's selectable antenna ports ([]: just the one)"""
         return list(self.caps.antennas[self._direction("tx", channel)])
+    def rx_antenna_info(self, channel=0):
+        """Each receive antenna port and what is on it, as `rx_antennas` lists them (one entry, port None, when there is
+        just the one): [{"port", "chain", "antenna", "inverted", "selected"}]. chain: the name of the `caps.Chain` the
+        port goes through (None: none declared); antenna: `Chain.describe()` of the antenna fitted (None: not known;
+        `pysdrlib.base.antennas.format_antenna` makes text of it); inverted: whether the spectrum comes mirrored there
+        (see `get_rx_inverted`); selected: whether it is the port in use (None for each of several when none was ever
+        selected: the radio's default)"""
+        return self._antenna_info("rx", channel)
+    def tx_antenna_info(self, channel=0):
+        """Each transmit antenna port and what is on it: as `rx_antenna_info`"""
+        return self._antenna_info("tx", channel)
+
+    def _antenna_info(self, d, channel):
+        self._direction(d, channel)
+        ports = list(self.caps.antennas[d]) or [None]
+        chosen = self._antenna.get((d, channel))
+        out = []
+        for port in ports:
+            chain = self._chain_for_port(d, port)
+            out.append({"port": port, "chain": (chain.name or None) if chain else None,
+                        "antenna": chain.describe() if chain else None, "inverted": bool(chain and chain.invert),
+                        "selected": True if len(ports) == 1 else (None if chosen is None else port == chosen)})
+        return out
+
     def set_rx_antenna(self, name, channel=0):
         """Select a receive antenna port by name (see `rx_antennas`). Raises `err.NotSupported` for a name the device lacks"""
         return self._set_antenna_of("rx", name, channel)
@@ -671,16 +720,28 @@ class Device:
         return self.caps.json()
 
     # ------------------------------------------------------------------ reading
-    def read(self, count, timeout=None, meta=False, channel=0):
+    def read(self, count, timeout=None, meta=False, channel=0, on_drop=None, latest=False):
         """Exactly `count` samples (complex64), waiting for them. Raises err.Timeout after `timeout` seconds
         (None: wait as long as the device delivers; a stalled device raises err.StreamStalled).
         meta=True returns (samples, RxMeta): the first sample's index, where samples were lost, retunes...
         channel: one of `rx_channels`, or several (a sequence): then a (channels, count) array whose rows start at
-        the same sample index (the same instant), and a list of RxMeta"""
+        the same sample index (the same instant), and a list of RxMeta.
+        on_drop="raise": raise err.Dropped if samples were lost inside this block (`RxMeta.gaps`), for a capture that
+        must be contiguous; the exception carries the block (`.samples`, `.meta`, `.lost`). None: return it anyway.
+        latest=True: the newest `count` samples at the current settings, for a display: what is queued before them
+        is skipped, and so is everything from before the last change of a setting (a retune, a new rate or gain...) and
+        its settling (`caps.retune_settle`); if not enough has arrived since, wait for it. The skipped samples are
+        counted in `RxMeta.discarded`, not as gaps"""
+        _check_on_drop(on_drop)
+        if latest:
+            self._skip_to_latest(int(count), (channel,) if np.isscalar(channel) else tuple(channel))
         if not np.isscalar(channel):
-            return self._read_aligned(int(count), timeout, meta, tuple(channel))
+            out, metas = self._read_aligned(int(count), timeout, True, tuple(channel))
+            _gap_check(on_drop, out, metas)
+            return (out, metas) if meta else out
         out = np.empty(int(count), dtype=np.complex64)
         m = self._read_into(out, timeout, channel)
+        _gap_check(on_drop, out, m)
         return (out, m) if meta else out
 
     def _read_aligned(self, count, timeout, meta, channels):
@@ -701,22 +762,177 @@ class Device:
                 out[k] = np.concatenate((keep, more))
                 metas[k] = RxMeta(index=start, count=count, freq=metas[k].freq, rate=metas[k].rate, channel=channels[k],
                                   gaps=metas[k].gaps + m.gaps, discarded=metas[k].discarded + skip, time=metas[k].time,
-                                  events=metas[k].events)
+                                  events=metas[k].events,
+                                  hw_time=None if metas[k].hw_time is None else metas[k].hw_time + skip / metas[k].rate)
         return (out, metas) if meta else out
-    def read_into(self, out, timeout=None, meta=False, channel=0):
+    def read_into(self, out, timeout=None, meta=False, channel=0, on_drop=None):
         """`read` into a complex64 array you own (filled completely). Returns its length, or (length, RxMeta)"""
+        _check_on_drop(on_drop)
         if out.dtype != np.complex64 or not out.flags.c_contiguous:
             raise TypeError("read_into needs a contiguous complex64 array")
         m = self._read_into(out, timeout, channel)
+        _gap_check(on_drop, out, m)
         return (len(out), m) if meta else len(out)
-    def stream(self, count, timeout=None, meta=False, channel=0, flush=True):
+    def stream(self, count, timeout=None, meta=False, channel=0, flush=True, on_drop=None, latest=False):
         """Blocks of `count` samples, in a `with` block that starts receiving (and stops it after) when it wasn't:
 
             with sdr.stream(65536) as s:
                 for x in s: ...
 
-        flush: when already receiving, discard what was queued before the stream starts"""
-        return RxStream(self, count, timeout, meta, channel, flush)
+        flush: when already receiving, discard what was queued before the stream starts. on_drop: as `read`'s, for
+        each block (an err.Dropped ends a `for` loop over the stream; call `s.read()` in a loop to carry on past one).
+        latest: each block is the newest (see `read`), for a display that would rather skip than fall behind"""
+        _check_on_drop(on_drop)
+        return RxStream(self, count, timeout, meta, channel, flush, on_drop, latest)
+    def sweep(self, start, stop=None, step=None, count=65536, timeout=None, meta=False, channel=0, repeat=False,
+              offset=0.0, skip=0, on_drop=None, retries=3):
+        """Step the receiver across frequencies, yielding (frequency, samples): `count` samples at each, all received
+        after its retune and settling (`set_rx_freq(..., flush=True)`):
+
+            for freq, x in sdr.sweep(88e6, 108e6, count=65536): ...          # start to stop (inclusive)
+            for freq, x in sdr.sweep([162.4e6, 162.55e6], count=4096): ...   # or a list of frequencies
+
+        step: Hz between steps (default: 80% of the sample rate, as a band's edges roll off). offset: tune this far
+        above each frequency and shift the samples back, so the device's DC spike (its LO leaking through) lands
+        `offset` Hz off the middle of each step's spectrum, not on it. skip: samples to discard after each retune on top
+        of the device's own settling (`caps.retune_settle`). repeat: sweep again and again, until the loop breaks.
+        meta: yield (frequency, samples, RxMeta). on_drop: "raise" (as `read`'s), or "retry": capture a step again
+        when samples were lost inside it, up to `retries` times, then raise err.Dropped. Starts receiving if it wasn't,
+        and stops it again when the sweep ends (or the loop breaks)"""
+        if on_drop not in (None, "raise", "retry"):
+            raise ValueError(f"on_drop is None, 'raise' or 'retry', not {on_drop!r}")
+        if stop is None:
+            freqs = np.asarray(list(np.atleast_1d(start)), dtype=float)
+        else:
+            if step is None:
+                step = 0.8 * (self.get_rx_sample_rate(channel) or self.caps.default_rate)
+            if step == 0 or (stop - start) * step < 0:
+                raise ValueError(f"step {step} doesn't go from {start} to {stop}")
+            freqs = start + step * np.arange(int(np.floor((stop - start) / step + 1e-9)) + 1)
+        if not len(freqs):
+            raise ValueError("no frequencies to sweep")
+        started = not self.state["rx"]
+        if started:
+            self.start_rx()
+        shift, shift_rate = None, None
+        try:
+            while True:
+                for f in freqs:
+                    tuned = self.set_rx_freq(float(f) + offset, channel=channel, flush=True) - offset
+                    if skip:
+                        self.read(int(skip), timeout=timeout, channel=channel)
+                    for attempt in range(int(retries) + 1 if on_drop == "retry" else 1):
+                        try:
+                            x, m = self.read(count, timeout=timeout, meta=True, channel=channel,
+                                             on_drop="raise" if on_drop else None)
+                            break
+                        except err.Dropped as e:
+                            if on_drop != "retry" or attempt == int(retries):
+                                raise
+                            self.log.debug("sweep at %g Hz lost %d samples: capturing it again", tuned, e.lost)
+                    if offset:
+                        if shift is None or len(shift) != count or shift_rate != m.rate:
+                            shift_rate = m.rate
+                            shift = np.exp(2j * np.pi * offset / m.rate * np.arange(count)).astype(np.complex64)
+                        x *= shift   # the signal at `tuned` sat at -offset: bring it to the middle
+                        m = dataclasses.replace(m, freq=m.freq - offset)
+                    yield (tuned, x, m) if meta else (tuned, x)
+                if not repeat:
+                    break
+        finally:
+            if started and self.state["rx"]:
+                self.stop_rx()
+    def find_gain(self, channel=0, count=65536, max_clip=1e-4, clip_level=0.98, headroom_db=0.0, confirm=None,
+                  timeout=None, skip=0):
+        """The highest receive gain at which the signal doesn't clip, found by bisecting the gains the device can set
+        (clipping only grows with gain), and set. Returns it as a fraction of the gain range:
+
+            sdr.find_gain()                        # -> 0.62: channel 0's gain, now in effect
+            sdr.find_gain(channel=[0, 1])          # -> {0: 0.62, 1: 0.71}: each channel's, from aligned reads
+
+        At each step the gain is set (skipping its settling, `flush=True`), `skip` more samples are discarded, and
+        `count` are read; a block clips when more than `max_clip` of its samples have I or Q at `clip_level` of full
+        scale or beyond. For a bursty signal (TDMA, WiFi, BLE...) `count` must span a burst: a window that misses
+        them reads as clean. confirm: then read this many samples (default 4 * count) at the gain found, and step down
+        while that clips. headroom_db: back off this much below the gain found.
+        Channels whose gain is one setting (`caps.shared["gain"]`) get the gain at which none clips.
+        The gain mode is set to "manual" (an AGC would undo it). Starts receiving if it wasn't, and stops it again; when
+        already receiving, the channels must be among `rx_channels`. The result holds while the signal stays as it was"""
+        multi = not np.isscalar(channel)
+        channels = tuple(channel) if multi else (channel,)
+        if self.state["rx"] and not set(channels) <= set(self.rx_channels):
+            raise err.InvalidValue(f"find_gain: channels {list(channels)} aren't all receiving (rx_channels "
+                                   f"{list(self.rx_channels)}): stop_rx() first, or start_rx(channels=...) with them")
+        for ch in channels:
+            if self.get_rx_gain_mode(ch) != "manual":
+                self.set_rx_gain_mode("manual", ch)
+        joint = multi and self.caps.shared.get("gain", "channel") != "channel"
+        target = channels if multi else channel
+        confirm = 4 * int(count) if confirm is None else int(confirm)
+        steps = {ch: _gain_settings(self.caps.gains[self._direction("rx", ch)]) for ch in channels}
+        measured = {ch: {} for ch in channels}   # gain in effect [dB] -> share of samples clipping
+
+        def clipping(want, n, cache=True):
+            """Set each channel's gain (dB), and the share of `n` samples clipping, by channel. With cache, a gain a
+            channel already got is not read again (several settings asked for can come out the same)"""
+            got = {ch: self.set_rx_gain_db(g, channel=ch, flush=True) for ch, g in want.items()}
+            if cache and all(got[ch] in measured[ch] for ch in channels):
+                return {ch: measured[ch][got[ch]] for ch in channels}
+            if skip:
+                self.read(int(skip), timeout=timeout, channel=target)
+            x = np.atleast_2d(self.read(int(n), timeout=timeout, channel=target))
+            over = ((np.abs(x.real) >= clip_level) | (np.abs(x.imag) >= clip_level)).mean(axis=1).tolist()
+            share = dict(zip(channels, [max(over)] * len(over) if joint else over))
+            if cache:
+                for ch in channels:
+                    measured[ch][got[ch]] = share[ch]
+            return share
+
+        started = not self.state["rx"]
+        if started:
+            self.start_rx(channels=channels if channels != (0,) else None)
+        self._quiet_gain_rounding = True
+        try:
+            lo = dict.fromkeys(channels, -1)                          # index of the highest setting known not to clip
+            hi = {ch: len(steps[ch]) for ch in channels}              # ... of the lowest known to clip
+            share = clipping({ch: steps[ch][-1] for ch in channels}, count)
+            for ch in channels:
+                if share[ch] <= max_clip:
+                    lo[ch] = len(steps[ch]) - 1
+                else:
+                    hi[ch] = len(steps[ch]) - 1
+            while any(hi[ch] - lo[ch] > 1 for ch in channels):
+                mid = {ch: (lo[ch] + hi[ch]) // 2 if hi[ch] - lo[ch] > 1 else max(lo[ch], 0) for ch in channels}
+                share = clipping({ch: steps[ch][mid[ch]] for ch in channels}, count)
+                for ch in channels:
+                    if hi[ch] - lo[ch] > 1:
+                        if share[ch] <= max_clip:
+                            lo[ch] = mid[ch]
+                        else:
+                            hi[ch] = mid[ch]
+            at = {ch: max(lo[ch], 0) for ch in channels}
+            while confirm:   # a longer look: a window can miss a burst
+                share = clipping({ch: steps[ch][at[ch]] for ch in channels}, confirm, cache=False)
+                down = [ch for ch in channels if share[ch] > max_clip and at[ch] > 0]
+                if not down:
+                    break
+                for ch in down:
+                    at[ch] -= 1
+            found = {}
+            for ch in channels:
+                if lo[ch] < 0:
+                    self.log.warning("find_gain: channel %s clips even at the lowest gain", ch)
+                gain = steps[ch][at[ch]]
+                if headroom_db:
+                    gain = max([g for g in steps[ch] if g <= gain - headroom_db] or [steps[ch][0]])
+                self.set_rx_gain_db(gain, channel=ch, flush=True)
+                found[ch] = self.get_rx_gain(channel=ch)
+        finally:
+            self._quiet_gain_rounding = False
+            if started and self.state["rx"]:
+                self.stop_rx()
+        return found if multi else found[channel]
+
     def read_available(self, channel=0, count=None):
         """What is queued for a channel now (up to `count`), without waiting: (samples, index of the first). Stops at a
         gap, so the samples are contiguous; the next call's index shows the jump. For relaying a stream (the remote
@@ -749,11 +965,36 @@ class Device:
         self._rx_discard = max(self._rx_discard, total)
         return n
 
+    def _skip_to_latest(self, count, channels):
+        """`read(latest=True)`: move the discard point up to the newest `count` samples, and past the last change of a
+        setting (and its settling) of any of `channels`"""
+        self._ensure_open("read")
+        if not self.state["rx"]:
+            return   # (the read says why)
+        slot = self._slot(channels[0])
+        self._rx_wait(0, 0.0, slot=slot)   # (a remote device takes what has arrived, changes too)
+        total, _ = self._rx_position(slot=slot)
+        mark = total - count
+        settle = int(self.caps.retune_settle * (self._Fs or 0)) + int(self.caps.retune_samples)
+        for index, kind, _, ch in self._rx_events:
+            if kind != "hw_time" and ch in channels:
+                mark = max(mark, index + settle)
+        self._rx_discard = max(self._rx_discard, mark)
+
+    def _rx_idle(self):
+        """`read` got nothing for a moment: raise err.Lost / err.StreamStalled if the device is gone or stopped
+        delivering (a device without its own watchdog, as a remote one, checks here)"""
+
     def _slot(self, channel):
         try:
             return self._rx_channels.index(channel)
         except ValueError:
             raise err.InvalidValue(f"channel {channel} isn't streaming (start_rx(channels=...) has {self._rx_channels})") from None
+
+    def _rx_not_started(self):
+        """`read` found the device not receiving: raise err.NotStreaming, or return when it turns out to be (a remote
+        viewer's state can be older than the server's)"""
+        raise err.NotStreaming(f"{type(self).NAME} isn't receiving (call start_rx(), or use stream())")
 
     def _read_into(self, out, timeout, channel):
         self._ensure_open("read")
@@ -764,9 +1005,16 @@ class Device:
         got, first, gaps, discarded = 0, None, [], 0
         while got < count:
             if not self.state["rx"]:
-                raise err.NotStreaming(f"{type(self).NAME} isn't receiving (call start_rx(), or use stream())")
+                self._rx_not_started()
             left = None if deadline is None else deadline - time.monotonic()
-            n, idx = self._rx_read_into(out[got:], READ_SLICE if left is None else max(0.0, min(READ_SLICE, left)), slot)
+            try:
+                n, idx = self._rx_read_into(out[got:], READ_SLICE if left is None else max(0.0, min(READ_SLICE, left)), slot)
+                if n == 0:
+                    self._rx_idle()
+            except err.Lost as exc:   # the end of the stream: what this read had goes with the error
+                exc.samples = out[:got].copy()
+                exc.meta = self._meta(first, got, channel, gaps, discarded) if got else None
+                raise
             if n == 0:
                 if deadline is not None and time.monotonic() >= deadline:
                     raise err.Timeout(f"{type(self).NAME}: got {got} of {count} samples in {timeout}s")
@@ -797,7 +1045,8 @@ class Device:
         return self._meta(first if first is not None else self._rx_next.get(channel, 0), count, channel, gaps, discarded)
 
     def _meta(self, first, count, channel, gaps, discarded):
-        events, later = [], []
+        events, later, stamp = [], [], None
+        before = self._rx_ends.get(channel, 0)          # where the last block returned ended: changes before it were reported
         for change in self._rx_events:
             index, kind, value, ch = change
             if ch != channel:                           # another channel's: its own reads report it
@@ -805,17 +1054,29 @@ class Device:
                 continue
             if index <= first:
                 self._rx_now[(kind, ch)] = value        # in effect at the block's start
+                # at its first sample (or in a gap before it), not yet reported. A change a flush skipped past isn't
+                # one: the whole block is at the new setting, as RxMeta says
+                if index >= before and kind != "hw_time" and count and not discarded:
+                    events.append(Event(0, kind, value, ch))
                 continue
             if index < first + count:
-                events.append(Event(index - first, kind, value, ch))
+                if kind == "hw_time":                   # (index, seconds): how the radio's clock reads, not a change
+                    stamp = stamp or value
+                else:
+                    events.append(Event(index - first, kind, value, ch))
             later.append(change)
         self._rx_events = later
+        if count:
+            self._rx_ends[channel] = first + count + sum(n for at, n in gaps if at > 0)
         total, age = self._rx_position(slot=self._slot(channel))
         when = self._stream_time(channel, self._Fs, sample_time(self._Fs, total, age, first), first)
+        rate = self._rx_now.get(("rate", channel), self._Fs)
+        stamp = self._rx_now.get(("hw_time", channel)) or stamp
+        hw_time = stamp[1] + (first - stamp[0]) / rate if stamp and rate else None
         return RxMeta(index=first, count=count, channel=channel,
-                      freq=self._rx_now.get(("freq", channel), self._cf), rate=self._rx_now.get(("rate", channel), self._Fs),
+                      freq=self._rx_now.get(("freq", channel), self._cf), rate=rate,
                       gaps=tuple(gaps), discarded=discarded, time=when,
-                      events=tuple(events))
+                      events=tuple(events), hw_time=hw_time)
 
     def _stream_time(self, channel, rate, estimate, index):
         """Time of sample `index`. Each delivery estimate is jittery (by a block or more, worse on coarse clocks), so
@@ -848,27 +1109,35 @@ class Device:
         self._rx_discard = 0        # samples before this index are skipped (flush=True)
         self._rx_events = []        # (index, kind, value, channel) changes not yet past
         self._rx_now = {}           # (kind, channel) -> value at the last block's start
+        self._rx_ends = {}          # channel -> stream index after the last block returned (changes before it are reported)
         self._rx_dc = {}
         self._rx_clock = {}         # channel -> [rate, t0, last time]: the stream's time of sample 0, smoothed
         self._rx_buf = np.empty(0, dtype=np.complex64)
         self._rx_buf_index = 0
 
-    def _note(self, kind, value, channel, flush, channels=None):
-        """A receive setting changed (for `channels`, default `channel`): mark where in the stream, and skip the
-        settling with flush"""
+    def _rx_mark(self):
+        """Where the receive stream is before a setting is sent to the hardware (None: not receiving). The change is
+        marked there, not where the driver's call returns: a call can block for a long time (~130 ms for a bladeRF's
+        cross-band retune) while samples keep arriving, and those are already at, or settling to, the new setting"""
+        return self._rx_position()[0] if self.state.get("rx") else None
+
+    def _note(self, kind, value, channel, flush, channels=None, at=None):
+        """A receive setting changed (for `channels`, default `channel`): mark where in the stream (`at`: the position
+        `_rx_mark` took before the hardware call; default now), and skip the settling with flush, counted from now"""
         if not self.state.get("rx"):
             return
         total, _ = self._rx_position()
+        mark = total if at is None else min(at, total)
         for ch in (channels if channels is not None else (channel,)):
             if ch in self._rx_channels:
-                self._rx_events.append((total, kind, value, ch))
+                self._rx_events.append((mark, kind, value, ch))
         if flush:
             for slot in range(len(self._rx_channels)):
                 self._rx_flush(slot=slot)
             settle = int(self.caps.retune_settle * (self._Fs or 0)) + int(self.caps.retune_samples)
             self._rx_discard = max(self._rx_discard, total + settle)
 
-    def _tuned(self, kind, value, dirs, channel, flush):
+    def _tuned(self, kind, value, dirs, channel, flush, at=None):
         """Record a frequency or rate for every (direction, channel) it changed, per caps.shared[kind]: "channel" (just
         that one), "direction" (all channels of the direction), "device" (everything); mark the receive stream"""
         shared = self.caps.shared.get(kind, "channel")
@@ -881,7 +1150,7 @@ class Device:
         if kind == "freq":
             self._cf = self._tuning.get(("freq", "rx", 0), self._cf)
         if "rx" in hit:
-            self._note(kind, value, channel, flush, hit["rx"])
+            self._note(kind, value, channel, flush, hit["rx"], at)
 
     def _hooked(self, direction, dirs, kind):
         """The directions whose hook a tuning call runs: the one asked for. With none asked for (both) and one synthesizer
@@ -1022,7 +1291,8 @@ class Device:
         """Round `gain` down to a multiple of `step` and clamp it to [lo, hi], warning if changed"""
         if step:
             if gain % step:
-                self._invalid(f"{label} gain must be a multiple of {step}")
+                if not getattr(self, "_quiet_gain_rounding", False):   # (find_gain sets totals a split may round)
+                    self._invalid(f"{label} gain must be a multiple of {step}")
                 gain -= gain % step # default to lowering gain to next valid value
         if gain < lo:
             self._invalid(f"{label} gain must greater than {lo}")
@@ -1141,55 +1411,8 @@ class Device:
         A tie goes to the stage nearer the antenna (the first listed), which keeps the noise figure down"""
         d = direction.lower()
         stages = self.caps.gains[d]
-        reserve = {n for n in type(self).GAIN_RESERVE.get(d, ()) if n in stages}
-        names = list(stages)
-        options = [self._stage_values(stages[n]) for n in names]
-        if np.prod([len(o) for o in options], dtype=float) > 1e6:
-            raise NotImplementedError(f"{type(self).NAME}: too many gain combinations to search; split it in the driver")
-        by_db = type(self).GAIN_BALANCE == "db"
-
-        def load(n, v):
-            span = stages[n].max - stages[n].min
-            return v - stages[n].min if by_db else ((v - stages[n].min) / span if span else 0.0)
-
-        def best_of(combos):
-            best, best_key = None, None
-            for combo in combos:
-                total_db = sum(combo)
-                used = [load(n, v) for n, v in zip(names, combo) if n not in reserve]
-                key = (round(abs(total_db - total), 9), total_db > total,
-                       sum(v - stages[n].min for n, v in zip(names, combo) if n in reserve),
-                       (max(used) - min(used)) if used else 0.0,
-                       tuple(-v for v in combo))   # a tie: gain nearer the antenna (stages are listed in signal order)
-                if best_key is None or key < best_key:
-                    best, best_key = combo, key
-            return best, best_key
-
-        if reserve:   # first without the reserve stages
-            held = [o if n not in reserve else (stages[n].min,) for n, o in zip(names, options)]
-            combo, key = best_of(itertools.product(*held))
-            steps = [self._resolution(stages[n]) for n in names if n not in reserve]
-            if combo is not None and key[0] <= (min(steps) if steps else 0):
-                return dict(zip(names, combo))
-        combo, _ = best_of(itertools.product(*options))
-        return dict(zip(names, combo))
-
-    @classmethod
-    def _resolution(cls, spec):
-        """The finest change a stage can make"""
-        values = sorted(set(cls._stage_values(spec)))
-        gaps = [b - a for a, b in zip(values, values[1:])]
-        return min(gaps) if gaps else 0
-
-    @staticmethod
-    def _stage_values(spec):
-        """The gains a stage can be set to: its table, its steps, or (continuous) whole dB"""
-        if spec.values:
-            return tuple(spec.values)
-        step = spec.step or 1
-        if all(isinstance(v, int) for v in (spec.min, spec.max, step)):
-            return tuple(range(spec.min, spec.max + 1, step))
-        return tuple(np.arange(spec.min, spec.max + step / 2, step).tolist())
+        reserve = frozenset(n for n in type(self).GAIN_RESERVE.get(d, ()) if n in stages)
+        return dict(_split(tuple(stages.items()), reserve, type(self).GAIN_BALANCE == "db", total, type(self).NAME))
 
     def _set_bias_t(self, bias):
         raise NotImplementedError()
@@ -1218,3 +1441,81 @@ class Device:
         """Raise if transmitting has failed"""
     def _tx_stats(self, slot=0):
         raise err.NotSupported(f"{type(self).NAME} has no transmit statistics")
+
+
+# --- the gain split (Device._split_gain), cached: a device's stages are fixed, and a GUI's gain slider asks again and again
+@functools.lru_cache(maxsize=1024)
+def _check_on_drop(on_drop):
+    if on_drop not in (None, "raise"):
+        raise ValueError(f"on_drop is None or 'raise', not {on_drop!r}")
+
+def _gap_check(on_drop, samples, meta):
+    """err.Dropped (carrying the block) when on_drop is "raise" and samples were lost inside it"""
+    if on_drop != "raise":
+        return
+    metas = meta if isinstance(meta, list) else [meta]
+    lost = sum(n for m in metas for at, n in m.gaps if at > 0)   # (one before the first sample isn't inside it)
+    if lost:
+        e = err.Dropped(f"{lost:,} samples lost inside a block of {metas[0].count:,}"
+                        + (f" (channels {[m.channel for m in metas if any(at for at, _ in m.gaps)]})" if len(metas) > 1 else ""))
+        e.samples, e.meta, e.lost = samples, meta, lost
+        raise e
+
+def _gain_settings(stages):
+    """The total gains (dB, ascending) a direction's stages ({name: GainStage}) can make"""
+    options = [_stage_values(spec) for spec in stages.values()]
+    if not options:
+        return [0.0]
+    if np.prod([len(o) for o in options], dtype=float) > 1e5:   # too many to list: whole dB across the range
+        lo, hi = sum(min(o) for o in options), sum(max(o) for o in options)
+        return sorted(set(np.arange(lo, hi, 1.0).tolist()) | {hi})
+    return sorted({round(sum(combo), 6) for combo in itertools.product(*options)})
+
+def _split(stages, reserve, by_db, total, name):
+    """{stage: gain} sharing `total` between `stages` ((name, GainStage) pairs, in signal order); see `_split_gain`"""
+    names = [n for n, _ in stages]
+    spec = dict(stages)
+    options = [_stage_values(spec[n]) for n in names]
+    if np.prod([len(o) for o in options], dtype=float) > 1e6:
+        raise NotImplementedError(f"{name}: too many gain combinations to search; split it in the driver")
+
+    def load(n, v):
+        span = spec[n].max - spec[n].min
+        return v - spec[n].min if by_db else ((v - spec[n].min) / span if span else 0.0)
+
+    def best_of(combos):
+        best, best_key = None, None
+        for combo in combos:
+            total_db = sum(combo)
+            used = [load(n, v) for n, v in zip(names, combo) if n not in reserve]
+            key = (round(abs(total_db - total), 9), total_db > total,
+                   sum(v - spec[n].min for n, v in zip(names, combo) if n in reserve),
+                   (max(used) - min(used)) if used else 0.0,
+                   tuple(-v for v in combo))   # a tie: gain nearer the antenna (stages are listed in signal order)
+            if best_key is None or key < best_key:
+                best, best_key = combo, key
+        return best, best_key
+
+    if reserve:   # first without the reserve stages
+        held = [o if n not in reserve else (spec[n].min,) for n, o in zip(names, options)]
+        combo, key = best_of(itertools.product(*held))
+        steps = [_resolution(spec[n]) for n in names if n not in reserve]
+        if combo is not None and key[0] <= (min(steps) if steps else 0):
+            return tuple(zip(names, combo))
+    combo, _ = best_of(itertools.product(*options))
+    return tuple(zip(names, combo))
+
+def _resolution(spec):
+    """The finest change a stage can make"""
+    values = sorted(set(_stage_values(spec)))
+    gaps = [b - a for a, b in zip(values, values[1:])]
+    return min(gaps) if gaps else 0
+
+def _stage_values(spec):
+    """The gains a stage can be set to: its table, its steps, or (continuous) whole dB"""
+    if spec.values:
+        return tuple(spec.values)
+    step = spec.step or 1
+    if all(isinstance(v, int) for v in (spec.min, spec.max, step)):
+        return tuple(range(spec.min, spec.max + 1, step))
+    return tuple(np.arange(spec.min, spec.max + step / 2, step).tolist())

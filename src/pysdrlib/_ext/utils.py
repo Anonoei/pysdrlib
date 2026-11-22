@@ -25,14 +25,6 @@ def rmdir(path: Path):
         file.unlink()
     path.rmdir()
 
-def readme(init_file: str) -> str:
-    """Text of the README.md beside a package's __init__.py, for its module docstring (pdoc shows it as the
-    package's page). Empty if the file isn't shipped, so a missing README never breaks an import."""
-    try:
-        return (Path(init_file).parent / "README.md").read_text(encoding="utf-8")
-    except OSError:
-        return ""
-
 def is_installed(lib_name):
     libc_path = ctypes.util.find_library(lib_name)
     if libc_path is None:
@@ -203,7 +195,8 @@ class VendorLibrary:
                 if stale:
                     driver = self.driver or self.name
                     warnings.warn(f"{cached} was built from older sources than this pysdrlib's: run "
-                                  f"`pysdrlib build {driver} --force` (or set PYSDRLIB_BUILD=auto) to rebuild it", _StaleLibrary)
+                                  f"`pysdrlib build {driver} --force` (or set PYSDRLIB_BUILD=auto) to rebuild it", _StaleLibrary,
+                                  skip_file_prefixes=(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + os.sep,))
                 return f"{'stale' if stale else 'cached'} {cached}"
             except OSError:
                 pass
@@ -263,7 +256,7 @@ def pybind_extension(device: str, header_dir, header, extra_sources=(), include_
         sources=[f"{src}/{device}_pybind.cpp", f"{src}/{device}_device.cpp", *(f"{src}/{f}" for f in extra_sources)],
         include_dirs=[*([header_dir] if vendor else []), *include_dirs, shared, src],
         depends=[f"{src}/{device}_device.hpp", *([f"{header_dir}/{header}"] if vendor else []),
-                 f"{shared}/hardware_wrapper.hpp", f"{shared}/hardware_numpy.hpp", f"{shared}/hardware_pybind.hpp",
+                 f"{shared}/hardware_wrapper.hpp", f"{shared}/hardware_pybind.hpp",
                  f"{shared}/hardware_format.hpp", f"{shared}/hardware_convert.hpp", f"{shared}/hardware_rx.hpp",
                  f"{shared}/hardware_ring.hpp", f"{shared}/hardware_tx.hpp"],
         libraries=list(libraries),
@@ -278,7 +271,7 @@ def pybind_extension(device: str, header_dir, header, extra_sources=(), include_
 
 def samples_extension():
     """The pybind11 Extension for `pysdrlib.base.lib._samples` (setup.py): the sample conversion and ring
-    that pysdrlib.base.convert and pysdrlib.base.buffer call. It depends on no vendor library, so unlike the
+    that pysdrlib.base.convert and pysdrlib.base.buffer call, and the hardware-less device pysdrlib.sim streams through. It depends on no vendor library, so unlike the
     devices' it is always built and always works."""
     from pybind11.setup_helpers import Pybind11Extension
 
@@ -288,7 +281,8 @@ def samples_extension():
         sources=[f"{src}/samples_pybind.cpp"],
         include_dirs=[shared],
         depends=[f"{shared}/hardware_format.hpp", f"{shared}/hardware_convert.hpp", f"{shared}/hardware_ring.hpp",
-                 f"{shared}/hardware_shm.hpp"],
+                 f"{shared}/hardware_shm.hpp", f"{shared}/hardware_wrapper.hpp", f"{shared}/hardware_pybind.hpp",
+                 f"{shared}/hardware_rx.hpp", f"{shared}/hardware_tx.hpp"],
         extra_compile_args=FP_FLAGS,
         cxx_std=17,
     )

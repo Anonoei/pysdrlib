@@ -56,8 +56,8 @@ class TestSetup:
 
     def test_complex_and_4bit_use_whole_bytes(self, tmp_path):
         file = File()
-        file.set_path(make_file(tmp_path, "ci8t", [1 + 2j] * 10))
-        file.set_fmt("ci8t")
+        file.set_path(make_file(tmp_path, "ci4t", [1 + 2j] * 10))
+        file.set_fmt("ci4t")
         assert file.max_samp == 10  # one byte per I/Q pair
         file.set_fmt("i4t")         # 4-bit: smallest unit is a byte, no divide by zero
         assert file.max_samp == 10
@@ -175,9 +175,9 @@ class TestPosition:
         ("i32t", list(range(N))),
         ("f32", [float(i) for i in range(N)]),
         ("f64", [float(i) for i in range(N)]),
-        ("ci8t", [complex(i % 8, -(i % 8)) for i in range(N)]),
-        ("ci16t", [complex(i, -i) for i in range(N)]),
-        ("cf64", [complex(i, -i) for i in range(N)]),
+        ("ci4t", [complex(i % 8, -(i % 8)) for i in range(N)]),
+        ("ci8t", [complex(i, -i) for i in range(N)]),
+        ("cf32", [complex(i, -i) for i in range(N)]),
     ])
     def test_open_resumes_at_cur_samp_for_any_format(self, tmp_path, fmt, values):
         """Opening at a non-zero sample seeks to sample * bytes, not sample / bytes."""
@@ -191,9 +191,9 @@ class TestPosition:
         np.testing.assert_allclose(out, np.array(values[40:44]))
         assert file.cur_samp == 44
 
-    @pytest.mark.parametrize("fmt", ["i16t", "cf64", "ci8t"])
+    @pytest.mark.parametrize("fmt", ["i16t", "cf32", "ci4t"])
     def test_position_invariant(self, tmp_path, fmt):
-        values = [complex(i % 8, 1) if fmt == "ci8t" else (i if fmt == "i16t" else complex(i, 1)) for i in range(N)]
+        values = [complex(i % 8, 1) if fmt == "ci4t" else (i if fmt == "i16t" else complex(i, 1)) for i in range(N)]
         file = File()
         file.set_path(make_file(tmp_path, fmt, values))
         file.set_fmt(fmt)
@@ -207,8 +207,9 @@ class TestPosition:
 class TestOpenClose:
     def test_close_then_reopen(self, f):
         f.next(10)
+        assert f.is_open
         f.close()
-        assert f.f is None
+        assert not f.is_open
         f.open()
         assert ints(f.next(5)) == list(range(10, 15))  # resumes where it left off
 
@@ -226,14 +227,60 @@ class TestOpenClose:
             assert ints(opened.next(3)) == [0, 1, 2]
         assert file.f is None
 
-    def test_reading_when_closed_raises_not_open(self, tmp_path):
+    def test_reading_opens_the_file(self, tmp_path):
         file = File()
         file.set_path(make_file(tmp_path))
         file.set_fmt("i16t")
+        assert ints(file.next(3)) == [0, 1, 2] and file.f is not None
+        assert ints(file.prev(1)) == [2]
+        file.close()
+        assert ints(file.next(1)) == [2]   # where it was
+        file.close()
+
+    def test_reading_without_a_path_raises_not_open(self):
         with pytest.raises(err.NotOpen):
-            file.next(1)
-        with pytest.raises(err.NotOpen):
-            file.prev(1)
+            File().next(1)
+
+    def test_a_format_nothing_names_is_unknown_format(self, tmp_path):
+        path = tmp_path / "capture.bin"
+        path.write_bytes(bytes(16))
+        with pytest.raises(err.UnknownFormat, match="give the sample format"):
+            File(path)
+        assert issubclass(err.UnknownFormat, ValueError)
+
+
+class TestExtensions:
+    @pytest.mark.parametrize("name, fmt", [("a.cfile", "cf32"), ("a.CF32", "cf32"), ("a.fc32", "cf32"), ("a.cs16", "ci16t"),
+                                           ("a.cs8", "ci8t"), ("a.cu8", "cui8"), ("a.cf64", "cf64")])
+    def test_format_from_extension(self, tmp_path, name, fmt):
+        from pysdrlib import Formats
+        path = tmp_path / name
+        path.write_bytes(bytes(64))
+        assert File(path).fmt is Formats[fmt]
+        assert File(path, "ci8t").fmt is Formats.ci8t   # a given format wins
+
+    def test_unknown_extension_needs_a_format(self, tmp_path):
+        path = tmp_path / "a.bin"
+        path.write_bytes(bytes(8))
+        with pytest.raises(ValueError, match="fmt"):
+            File(path)
+
+    def test_sink_guesses_too(self, tmp_path):
+        from pysdrlib.file import FileSink
+        from pysdrlib import Formats
+        assert FileSink(tmp_path / "x.cs16").fmt is Formats.ci16t
+        assert FileSink(tmp_path / "x.bin").fmt is Formats.cf32
+
+    def test_errors_live_in_pysdrlib_err(self, tmp_path):
+        assert file_err.Overflow is err.Overflow and file_err.Underflow is err.Underflow
+        path = tmp_path / "a.cf32"
+        path.write_bytes(bytes(16))   # two samples
+        with File(path) as f:
+            with pytest.raises(err.Overflow):
+                f.next(3)
+            with pytest.raises(EOFError):
+                f.next(3)
+            assert len(f.next(3, partial=True)) == 2
 
 
 class TestConvenience:
@@ -269,11 +316,11 @@ class TestFileSink:
 
     def test_complex_round_trip(self, tmp_path):
         from pysdrlib.file import FileSink
-        path = tmp_path / "out.cf32"
+        path = tmp_path / "out.cf16"
         x = (np.arange(8) + 1j * np.arange(8)).astype(np.complex64)
-        with FileSink(path, "cf32") as s:
+        with FileSink(path, "cf16") as s:
             s.write(x)
-        with File(path, "cf32") as r:
+        with File(path, "cf16") as r:
             assert np.array_equal(r.next(8), x)
 
     def test_truncates_unless_append(self, tmp_path):
@@ -310,7 +357,7 @@ class TestClip:
         from pysdrlib.file import FileSink
         path = tmp_path / "c.bin"
         x = np.array([1 + 2j, 40000 - 50000j, -3 + 0j, 0 + 33000j], dtype=np.complex64)
-        s = FileSink(path, "ci32t", clip=True, open=True)
+        s = FileSink(path, "ci16t", clip=True, open=True)
         records = []  # pysdrlib loggers are detached from the root logger, so listen on the sink's own
         class Grab(logging.Handler):
             def emit(self, record):
@@ -323,7 +370,7 @@ class TestClip:
         assert s.clipped == 2
         assert [r.getMessage() for r in records if "clipped" in r.getMessage()] == \
             [f"2 samples clipped writing {path}"]
-        with File(path, "ci32t") as r:
+        with File(path, "ci16t") as r:
             out = r.next(5)
         assert out.dtype == np.complex64
         assert out[1] == 32767 - 32768j and out[3] == 0 + 32767j and out[0] == 1 + 2j
@@ -343,7 +390,7 @@ class TestClip:
 class TestRangeChecks:
     def test_plain_integer_formats_raise_instead_of_wrapping(self, tmp_path):
         from pysdrlib.file import FileSink
-        for fmt, bad in (("i16t", [40000]), ("ci32t", np.array([40000 + 0j], dtype=np.complex64)),
+        for fmt, bad in (("i16t", [40000]), ("ci16t", np.array([40000 + 0j], dtype=np.complex64)),
                          ("ui8", [300]), ("i16t", [np.nan]), ("i16t", [np.inf])):
             with FileSink(tmp_path / "w.bin", fmt) as s:
                 with pytest.raises(ValueError):
@@ -395,12 +442,12 @@ class TestNits:
 
 class TestScale:
     def test_scaled_samples_are_what_a_device_returns(self, tmp_path):
-        path = tmp_path / "cap.ci16t"
+        path = tmp_path / "cap.ci8t"
         with open(path, "wb") as f:
-            Formats.ci16t.write(f, [127 - 128j, 64 + 0j, 0 + 0j, -64 + 32j])
-        with File(path, "ci16t") as raw:
+            Formats.ci8t.write(f, [127 - 128j, 64 + 0j, 0 + 0j, -64 + 32j])
+        with File(path, "ci8t") as raw:
             assert raw.next(4).tolist() == [127 - 128j, 64 + 0j, 0 + 0j, -64 + 32j]
-        with File(path, "ci16t", scale=True) as scaled:
+        with File(path, "ci8t", scale=True) as scaled:
             x = scaled.next(4)
         assert x.dtype == np.complex64
         np.testing.assert_allclose(x, [127 / 128 - 1j, 0.5, 0, -0.5 + 0.25j])

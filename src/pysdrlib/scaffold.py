@@ -26,6 +26,23 @@ def _fill(text, names):
     return text
 
 # --------------------------------------------------------------------------- Python templates
+# The package docstring is the driver's page in the docs (and `help(pysdrlib.<name>)`)
+DOC = '''"""@CLASS@: TODO what the radio is, and links (vendor page, a how-to, the library it wraps).
+
+## Specs
+- Frequency (TODO)
+- Sample rate (TODO)
+- Samples (TODO: complex int16, converted to complex64)
+- Gain (dB): TODO the stages, as `sdr.rx_gain_stages()` lists them
+
+## Setup
+TODO: what the first import looks for (system library, cache, bundled build) and what a build needs.
+
+## Notes
+TODO: anything measured (retune settling, rates that drop samples), udev rules, quirks.
+"""
+'''
+
 INIT = '''from .._ext import @NAME@ as ext, utils
 
 @CLASS@ = utils.import_device(__name__, ".@NAME@", "@CLASS@", ext.LIB)
@@ -197,23 +214,6 @@ def get():
     # return utils.pybind_extension("@NAME@", "src/pysdrlib/@NAME@/vendor/@NAME@/include", "@NAME@.h")
 '''
 
-README = '''# @CLASS@
-
-TODO: what the radio is, and links (vendor page, a how-to, the library it wraps).
-
-## Specs
-- Frequency (TODO)
-- Sample rate (TODO)
-- Samples (TODO: complex int16, converted to complex64)
-- Gain (dB): TODO the stages, as `sdr.rx_gain_stages()` lists them
-
-## Setup
-TODO: what the first import looks for (system library, cache, bundled build) and what a build needs.
-
-## Notes
-TODO: anything measured (retune settling, rates that drop samples), udev rules, quirks.
-'''
-
 # --------------------------------------------------------------------------- out-of-tree templates
 # A driver that lives in its own package: the Python-only device with absolute imports, an entry point, and a test.
 DEVICE_OUT = DEVICE_PY.replace("from ..base.", "from pysdrlib.base.").replace("from .. import err", "from pysdrlib import err")
@@ -329,7 +329,7 @@ uint32_t @NAME@_device_count();
 CPP = '''#include "@NAME@_device.hpp"
 
 // Where the vendor's streaming thread hands over a buffer, call
-//     dispatch_rx(data, valid_bytes, buffer_bytes);
+//     dispatch_rx(data, valid_bytes);
 // It converts to complex64 and queues on that thread, with no Python involved; a non-zero return asks you to stop.
 // Report samples the hardware says it lost with skip_rx(count), so readers see the gap.
 // See _native/rtl_sdr/ (a callback driver) and _native/uhd/ (a polled one) for the whole of it.
@@ -362,9 +362,8 @@ void @CLASS@Device::open_by_serial(const std::string& serial) {
 
 void @CLASS@Device::close() {
     if (!handle_) return;
-    // TODO: stop the stream (join its thread) first, then drop rx_callback_, then close the handle
+    // TODO: stop the stream (join its thread) first, then close the handle
     handle_ = nullptr;
-    rx_callback_ = nullptr;
 }
 
 void @CLASS@Device::start_rx() { require(); /* TODO: start the stream; running_ = true */ }
@@ -429,9 +428,8 @@ def files(name, cls, native=True, out_of_tree=False):
         }
         return {path: _fill(text, names) for path, text in out.items()}
     out = {
-        f"{name}/__init__.py": INIT if native else INIT_PY,
+        f"{name}/__init__.py": DOC + (INIT if native else INIT_PY),
         f"{name}/{name}.py": DEVICE if native else DEVICE_PY,
-        f"{name}/README.md": README,
     }
     if native:
         out.update({

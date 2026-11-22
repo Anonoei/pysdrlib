@@ -13,17 +13,15 @@ class device:
         """
         A closed device; use the module's open() to get an open one.
         """
-    def _dispatch_rx(self, arg0: collections.abc.Buffer) -> int:
+    def _dispatch_rx(self, data: collections.abc.Buffer, valid: typing.Any = None, slot: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
         ...
-    def _simulate_rx(self, arg0: bytes, arg1: typing.SupportsInt | typing.SupportsIndex, arg2: typing.SupportsInt | typing.SupportsIndex) -> int:
+    def _skip_rx(self, samples: typing.SupportsInt | typing.SupportsIndex, slot: typing.SupportsInt | typing.SupportsIndex = 0) -> None:
         ...
     def close(self) -> None:
         ...
     def is_streaming(self) -> bool:
         ...
     def read_rx(self, count: typing.Any = None, slot: typing.SupportsInt | typing.SupportsIndex = 0) -> numpy.typing.NDArray[numpy.complex64]:
-        ...
-    def read_rx_indexed(self, count: typing.SupportsInt | typing.SupportsIndex, slot: typing.SupportsInt | typing.SupportsIndex = 0) -> tuple[numpy.typing.NDArray[numpy.complex64], int]:
         ...
     def read_rx_into(self, out: typing.Annotated[numpy.typing.ArrayLike, numpy.complex64], timeout: typing.SupportsFloat | typing.SupportsIndex, slot: typing.SupportsInt | typing.SupportsIndex = 0) -> tuple[int, int, int, int, int, int, float]:
         ...
@@ -39,11 +37,13 @@ class device:
         """
         Queue up to `samples` complex samples (the oldest are dropped past that) in each of `slots` queues (one per channel of a multi-channel stream); discards pending ones.
         """
-    def set_rx_callback(self, arg0: collections.abc.Callable) -> None:
+    def stamp_rx(self, t: typing.SupportsFloat | typing.SupportsIndex, slot: typing.SupportsInt | typing.SupportsIndex = 0) -> None:
         ...
     def start_rx(self) -> None:
         ...
     def stop_rx(self) -> None:
+        ...
+    def take_rx_stamps(self, slot: typing.SupportsInt | typing.SupportsIndex = 0) -> list:
         ...
     def wait_rx(self, samples: typing.SupportsInt | typing.SupportsIndex, timeout: typing.SupportsFloat | typing.SupportsIndex, slot: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
         """
@@ -68,8 +68,28 @@ class device:
     def port(self) -> int:
         ...
     @property
-    def rx_available(self) -> int:
+    def rate_windows(self) -> int:
         ...
+    @property
+    def disconnected_for(self) -> float:
+        ...
+    @property
+    def replaced(self) -> int:
+        ...
+    @property
+    def rtl_gain_count(self) -> int:
+        ...
+    @property
+    def rtl_header(self) -> bool:
+        ...
+    @property
+    def rtl_tuner(self) -> int:
+        ...
+    @property
+    def rx_rate(self) -> float:
+        """
+        Samples per second arriving (latest ~1 s window); 0.0 when not known
+        """
     @property
     def rx_slots(self) -> int:
         ...

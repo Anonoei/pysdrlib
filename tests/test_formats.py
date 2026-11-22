@@ -4,7 +4,7 @@ import io as _io
 import numpy as np
 import pytest
 
-from pysdrlib.base import formats, io
+from pysdrlib.base import formats
 
 
 def _to_buff(data: bytes):
@@ -35,12 +35,12 @@ class TestFormats:
         assert hasattr(formats.Formats, 'f64')
 
         # Check complex formats
+        assert hasattr(formats.Formats, 'ci4t')
         assert hasattr(formats.Formats, 'ci8t')
         assert hasattr(formats.Formats, 'ci16t')
-        assert hasattr(formats.Formats, 'ci32t')
+        assert hasattr(formats.Formats, 'cf16')
         assert hasattr(formats.Formats, 'cf32')
         assert hasattr(formats.Formats, 'cf64')
-        assert hasattr(formats.Formats, 'cf128')
 
     def test_formats_get(self):
         """Test getting formats by name."""
@@ -63,7 +63,7 @@ class TestFormats:
         assert len(fmts) > 0
         assert 'ui8' in fmts
         assert 'f32' in fmts
-        assert 'cf32' in fmts
+        assert 'cf16' in fmts
 
     def test_formats_bits(self):
         """Test getting bits property."""
@@ -76,8 +76,8 @@ class TestFormats:
         f32 = formats.Formats.f32
         assert f32.bits == 32
 
-        cf64 = formats.Formats.cf64
-        assert cf64.bits == 64
+        cf32 = formats.Formats.cf32
+        assert cf32.bits == 32   # per value (I or Q), as in SigMF
 
     def test_formats_bytes(self):
         """Test getting bytes property."""
@@ -90,8 +90,8 @@ class TestFormats:
         f32 = formats.Formats.f32
         assert f32.bytes == 4
 
-        cf64 = formats.Formats.cf64
-        assert cf64.bytes == 8
+        cf32 = formats.Formats.cf32
+        assert cf32.bytes == 8
 
     def test_formats_is_complex(self):
         """Test is_complex property."""
@@ -100,9 +100,9 @@ class TestFormats:
         assert not formats.Formats.f32.is_complex
 
         # Complex formats
+        assert formats.Formats.cf16.is_complex
         assert formats.Formats.cf32.is_complex
-        assert formats.Formats.cf64.is_complex
-        assert formats.Formats.ci16t.is_complex
+        assert formats.Formats.ci8t.is_complex
 
     def test_formats_read_write(self):
         """Test read/write methods."""
@@ -134,50 +134,20 @@ class TestFormats:
         data = _io.BytesIO()
         test_values = [1+2j, 3+4j, -5-6j]
 
-        formats.Formats.cf32.write(data, test_values)
+        formats.Formats.cf16.write(data, test_values)
         data.seek(0)
 
-        result = formats.Formats.cf32.read(data, len(test_values))
+        result = formats.Formats.cf16.read(data, len(test_values))
         for expected, actual in zip(test_values, result):
             # Use approximate comparison for complex numbers
             assert abs(expected - actual) < 1e-6
 
-    def test_formats_sizes(self):
-        """Test that format sizes match their enum values."""
-        # Check that SIZE attribute is set correctly
-        assert io.ui8_t.SIZE == 8
-        assert io.ui16_t.SIZE == 16
-        assert io.ui32_t.SIZE == 32
-        assert io.i8_t.SIZE == 8
-        assert io.i16_t.SIZE == 16
-        assert io.i32_t.SIZE == 32
-
-        assert io.f16.SIZE == 16
-        assert io.f32.SIZE == 32
-        assert io.f64.SIZE == 64
-
-        assert io.i4_t.SIZE == io.i4_o.SIZE == 4
-        assert io.i8_o.SIZE == 8
-        assert io.i16_o.SIZE == 16
-        assert io.ci8_t.SIZE == 8
-        assert io.ci16_t.SIZE == 16
-        assert io.ci32_t.SIZE == 32
-
-        assert io.cf32.SIZE == 32
-        assert io.cf64.SIZE == 64
-        assert io.cf128.SIZE == 128
-
-    def test_enum_matches_io_sizes(self):
-        """Every enum member's bits come from its class, and bytes is bits // 8."""
+    def test_bits_are_per_value_and_bytes_per_element(self):
+        """SigMF-style: the bits of one value (I or Q); bytes of a whole element (a complex sample)"""
         for fmt in formats.Formats:
-            assert fmt.bits == fmt.value.SIZE
-            assert fmt.bytes == max(1, fmt.bits // 8)  # 4-bit I/Q components: one pair per byte
-
-    def test_complex_is_two_components(self):
-        """A complex format is two of its base format (e.g. cf64 = 2 x f32)."""
-        for fmt in formats.Formats:
-            if fmt.is_complex:
-                assert fmt.bits == 2 * fmt.value.BASE.SIZE, fmt.name
+            assert fmt.bytes == max(1, fmt.bits * (2 if fmt.is_complex else 1) // 8), fmt.name
+        assert (formats.Formats.cf32.bits, formats.Formats.cf32.bytes) == (32, 8)
+        assert (formats.Formats.ci4t.bits, formats.Formats.ci4t.bytes) == (4, 1)
 
     def test_ls_matches_enum(self):
         assert formats.Formats.ls() == [f.name for f in formats.Formats]
@@ -199,13 +169,18 @@ ROUND_TRIP = {
     "f16":   ([0.0, 1.5, -2.25, 100.0], "f"),
     "f32":   ([0.0, 1.5, 3.14, -2.7, 1e10], "f"),
     "f64":   ([0.0, 1.5, 3.141592653589793, -2.7e-300], "f"),
-    "ci8t":  ([1 + 2j, -8 - 7j, 7 + 0j, 0 - 1j], "c"),
-    "ci16t": ([1 + 2j, -128 - 127j, 127 + 0j], "c"),
-    "ci32t": ([1 + 2j, -32768 - 1j, 32767 + 0j], "c"),
-    "cf32":  ([1 + 2j, 3 + 4j, -5 - 6j], "c"),
-    "cf64":  ([1.5 + 2.5j, 3.14 - 4j, -5e10 + 6j], "c"),
-    "cf128": ([1.5 + 2.5j, 3.141592653589793 - 4j], "c"),
+    "ci4t":  ([1 + 2j, -8 - 7j, 7 + 0j, 0 - 1j], "c"),
+    "ci8t": ([1 + 2j, -128 - 127j, 127 + 0j], "c"),
+    "ci16t": ([1 + 2j, -32768 - 1j, 32767 + 0j], "c"),
+    "cf16":  ([1 + 2j, 3 + 4j, -5 - 6j], "c"),
+    "cf32":  ([1.5 + 2.5j, 3.14 - 4j, -5e10 + 6j], "c"),
+    "cf64": ([1.5 + 2.5j, 3.141592653589793 - 4j], "c"),
+    "ci32t": ([1 + 2j, -2**24 + 0j, 2**24 - 1j], "c"),
+    "cui8":  ([0 + 255j, 128 + 127j], "c"),
+    "cui16": ([0 + 65535j, 1 + 2j], "c"),
 }
+ROUND_TRIP.update({f"{name}_be": case for name, case in ROUND_TRIP.items()   # big-endian: the same values
+                   if f"{name}_be" in formats.Formats.__members__})
 
 
 class TestRoundTrip:
@@ -214,7 +189,7 @@ class TestRoundTrip:
 
     @staticmethod
     def _tol(name):
-        return {"f16": 1e-3, "f32": 1e-6, "cf64": 1e-6}.get(name, 0)
+        return {"f16": 1e-3, "f32": 1e-6, "cf32": 1e-6}.get(name.removesuffix("_be"), 0)
 
     def _roundtrip(self, name, values, count=None):
         fmt = formats.Formats[name]
@@ -237,7 +212,7 @@ class TestRoundTrip:
         """Bytes written == samples * bits / 8 (4-bit packs two per byte, always a whole number)."""
         for name, (values, _) in ROUND_TRIP.items():
             fmt, raw, _ = self._roundtrip(name, values)
-            assert len(raw) * 8 == len(values) * fmt.bits, name
+            assert len(raw) * 8 == len(values) * fmt.bits * (2 if fmt.is_complex else 1), name
 
     def test_read_all_with_negative_count(self):
         for name, (values, _) in ROUND_TRIP.items():
@@ -276,14 +251,14 @@ class TestRoundTrip:
         """Complex int8 (two int4) is byte aligned, so any sample count works and streams cleanly."""
         buf = _io.BytesIO()
         iq = [1 + 2j, 3 - 4j, -5 + 6j, 7 - 8j, -1 + 0j]
-        formats.Formats.ci8t.write(buf, iq)
+        formats.Formats.ci4t.write(buf, iq)
         assert len(buf.getvalue()) == len(iq)  # 1 byte per complex sample
         buf.seek(0)
-        assert formats.Formats.ci8t.read(buf, 3).tolist() == iq[:3]
-        assert formats.Formats.ci8t.read(buf, 2).tolist() == iq[3:]
+        assert formats.Formats.ci4t.read(buf, 3).tolist() == iq[:3]
+        assert formats.Formats.ci4t.read(buf, 2).tolist() == iq[3:]
 
     def test_4bit_bytes_is_one(self):
-        assert formats.Formats.i4t.bytes == formats.Formats.i4o.bytes == formats.Formats.ci8t.bytes == 1
+        assert formats.Formats.i4t.bytes == formats.Formats.i4o.bytes == formats.Formats.ci4t.bytes == 1
         assert formats.Formats.i4t.bits == 4
 
     def test_accepts_numpy_and_lists(self):
@@ -302,15 +277,15 @@ class TestRoundTrip:
 
     def test_complex_is_interleaved_iq(self):
         buf = _io.BytesIO()
-        formats.Formats.ci16t.write(buf, [1 + 2j, 3 + 4j])
+        formats.Formats.ci8t.write(buf, [1 + 2j, 3 + 4j])
         assert buf.getvalue() == bytes([1, 2, 3, 4])
 
     def test_complex_read_dtypes(self):
-        """Complex reads give complex64, except cf128 which keeps double precision."""
+        """Complex reads give complex64, except cf64 which keeps double precision."""
         for name, (values, _) in ROUND_TRIP.items():
-            if name.startswith(("ci", "cf")):
+            if name.startswith("c"):
                 _, _, result = self._roundtrip(name, values)
-                assert result.dtype == (np.complex128 if name == "cf128" else np.complex64), name
+                assert result.dtype == (np.complex128 if name.startswith("cf64") else np.complex64), name
 
     def test_integer_formats_round_floats(self):
         buf = _io.BytesIO()
@@ -333,15 +308,15 @@ class TestRoundTrip:
 class TestScale:
     """full_scale / scale: what a format's values mean as a device's +-1 samples"""
     @pytest.mark.parametrize("name,full", [
-        ("i8t", 128), ("i16t", 32768), ("ci16t", 128), ("ci32t", 32768), ("ci8t", 8), ("i4t", 8), ("i8o", 128),
-        ("ui8", 127.5), ("ui16", 32767.5), ("f32", 1), ("f64", 1), ("cf64", 1), ("cf32", 1), ("cf128", 1),
+        ("i8t", 128), ("i16t", 32768), ("ci8t", 128), ("ci16t", 32768), ("ci4t", 8), ("i4t", 8), ("i8o", 128),
+        ("ui8", 127.5), ("ui16", 32767.5), ("cui8", 127.5), ("f32", 1), ("f64", 1), ("cf32", 1), ("cf16", 1), ("cf64", 1),
     ])
     def test_full_scale(self, name, full):
         assert formats.Formats[name].full_scale == full
 
     def test_a_signed_integer_maps_its_extremes_to_plus_minus_one(self):
         x = np.array([127 - 128j, 0, -64 + 64j], dtype=np.complex64)
-        y = formats.Formats.ci16t.scale(x)
+        y = formats.Formats.ci8t.scale(x)
         assert y.dtype == np.complex64
         np.testing.assert_allclose(y, [127 / 128 - 1j, 0, -0.5 + 0.5j])
 
@@ -352,8 +327,8 @@ class TestScale:
 
     def test_floats_keep_their_values_and_precision(self):
         assert formats.Formats.f32.scale(np.array([0.25], np.float32)).tolist() == [0.25]
-        assert formats.Formats.cf64.scale(np.array([1 + 2j], np.complex64)).dtype == np.complex64
-        assert formats.Formats.cf128.scale(np.array([1 + 2j])).dtype == np.complex128
+        assert formats.Formats.cf32.scale(np.array([1 + 2j], np.complex64)).dtype == np.complex64
+        assert formats.Formats.cf64.scale(np.array([1 + 2j])).dtype == np.complex128
         assert formats.Formats.f64.scale(np.array([0.5])).dtype == np.float64
 
     def test_scale_inverts_a_device_conversion(self):
@@ -361,11 +336,46 @@ class TestScale:
         from pysdrlib.base import convert
         raw = np.array([[100, -100], [-128, 127]], dtype=np.int8)
         stored = np.frombuffer(raw.tobytes(), dtype=np.int8).astype(np.float32).view(np.complex64)
-        np.testing.assert_allclose(formats.Formats.ci16t.scale(stored), convert.INT8.to_complex64(raw))
+        np.testing.assert_allclose(formats.Formats.ci8t.scale(stored), convert.INT8.to_complex64(raw))
 
     def test_writing_complex64_does_not_widen_it(self):
-        """cf64 on disk is the array's own bytes, with no double-precision copy in between"""
+        """cf32 on disk is the array's own bytes, with no double-precision copy in between"""
         x = (np.arange(8) + 1j * np.arange(8)).astype(np.complex64)
         buf = _io.BytesIO()
-        formats.Formats.cf64.write(buf, x)
+        formats.Formats.cf32.write(buf, x)
         assert buf.getvalue() == x.tobytes()
+
+def test_unscale_is_the_inverse_of_scale(tmp_path):
+    import numpy as np
+    from pysdrlib import File, FileSink
+    x = (0.5 * np.exp(2j * np.pi * np.arange(256) / 16)).astype(np.complex64)
+    for name in ("ci8", "ci16", "cu8", "cui16", "cf32", "cf16"):
+        fmt = formats.Formats.get(name)
+        assert np.allclose(fmt.scale(fmt.unscale(x)), x, atol=1e-6), name
+        with FileSink(tmp_path / name, name, scale=True) as out:
+            out.write(x)
+        with File(tmp_path / name, name, scale=True) as f:
+            assert np.allclose(f.next(256), x, atol=1.5 / fmt.full_scale + 1e-3), name
+
+
+def test_big_endian_formats_round_trip_and_match_numpy(tmp_path):
+    import io as _io
+    import numpy as np
+    rng = np.random.default_rng(1)
+    for name, le in [("ui16_be", "ui16"), ("i32_be", "i32"), ("f16_be", "f16"), ("f64_be", "f64"), ("ci16_be", "ci16"),
+                     ("cui16_be", "cui16"), ("cf32_be", "cf32"), ("cf64_be", "cf64")]:
+        fmt, little = formats.Formats.get(name), formats.Formats.get(le)
+        assert fmt.value.big and fmt.bits == little.bits and fmt.bytes == little.bytes and name in formats.Formats.__members__
+        lo, hi = little.value.limits() or (-1e6, 1e6)
+        vals = rng.uniform(max(lo, -1000), min(hi, 1000), 64).round()
+        data = vals[0::2] + 1j * vals[1::2] if little.is_complex else vals
+        a, b = _io.BytesIO(), _io.BytesIO()
+        fmt.write(a, data)
+        little.write(b, data)
+        swapped = np.frombuffer(b.getvalue(), little.value.dtype).byteswap().tobytes()
+        assert a.getvalue() == swapped, name   # the same values, the other byte order
+        a.seek(0)
+        got = fmt.read(a, -1)
+        assert got.dtype.isnative and np.array_equal(got, little.read(_io.BytesIO(b.getvalue()), -1)), name
+    for bad in ("i8", "ci8", "i16o"):
+        assert f"{bad}_be" not in formats.Formats.__members__

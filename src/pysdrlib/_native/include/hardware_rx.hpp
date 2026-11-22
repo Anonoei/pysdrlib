@@ -53,6 +53,8 @@ public:
     size_t read(cfloat* dst, size_t max_count, uint64_t* first = nullptr) { return ring_.read(dst, max_count, first); }
     size_t wait(size_t n, double timeout) { return ring_.wait(n, timeout); }
     void skip(size_t n) { ring_.skip(n); }
+    void stamp(double t) { ring_.stamp(t); }
+    std::vector<std::pair<uint64_t, double>> take_stamps() { return ring_.take_stamps(); }
     RingStats stats() const { return ring_.stats(); }
 
 private:
