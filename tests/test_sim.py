@@ -327,6 +327,29 @@ class TestBuiltSignal:
         assert on[:1000].all() and not on[1000:4000].any()
         dev.close()
 
+    def test_out_of_band_parts_are_filtered(self):
+        dev = self.make(tones=[{"freq": 101.25e6, "level": -10}], noise=-40, seed=4)   # 1.25 MHz off at 1 MS/s
+        dev.pump(2)
+        assert np.abs(dev.get_samples()).max() < 0.1   # just the noise: no alias at +250 kHz
+        dev.set_rx_freq(101.0e6)
+        dev.pump(2)
+        x = dev.get_samples()
+        assert tone_hz(x, 1e6) == pytest.approx(250_000, abs=300) and _peak_db(x, 1e6, 250_000) == pytest.approx(-10, abs=0.5)
+        dev.close()
+
+    def test_open_takes_the_signal(self):
+        with pysdrlib.open("sim", tones=[(125_000, -20)], noise=-40, seed=1) as dev:
+            assert dev.tones == [{"offset": 125_000, "level": -20}] and dev.noise == -40
+        with pytest.raises(TypeError, match="no signal setting tonez"):
+            pysdrlib.open("sim", tonez=[(1, -1)])
+
+    def test_configure_while_open(self):
+        dev = self.make()
+        dev.configure(tones=[(-250_000, -10)])
+        dev.pump(2)
+        assert tone_hz(dev.get_samples(), 1e6) == pytest.approx(-250_000, abs=300)
+        dev.close()
+
     def test_default_tone_unchanged(self):
         dev = self.make()
         assert not dev._synthetic

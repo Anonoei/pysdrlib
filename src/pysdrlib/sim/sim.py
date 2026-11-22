@@ -83,13 +83,9 @@ class Sim(NativeDevice):
         self._stamp = False     # stamp the next block with the time (RxMeta.hw_time)
         self._stop = threading.Event()
         self._gains = [{n.lower(): s.default for n, s in self.CAPS.gains["rx"].items()} for _ in range(self.channels)]
-        self.channel_db = list(channel_db) if channel_db is not None else [0.0] * self.channels
-        self.tones = [self._part(t) for t in (tones or ())]
-        self.noise = noise
-        self.bursts = [self._part(b) for b in (bursts or ())]
-        self.gain_ref = gain_ref
-        self.retune_delay = float(retune_delay)
-        self._rng = np.random.default_rng(seed)
+        self.channel_db = [0.0] * self.channels
+        self.configure(tones=tones, noise=noise, bursts=bursts, gain_ref=gain_ref, retune_delay=retune_delay, seed=seed,
+                       channel_db=channel_db)
         self._produced = 0          # samples per channel delivered or lost since open
         self._sim_cf = None         # the frequency the signal is at (None: the device's)
         self._pending_cf = None     # (sample index, frequency): a retune not yet showing
@@ -99,6 +95,34 @@ class Sim(NativeDevice):
         self._make_block()
 
     # --- simulation interface --- #
+    SIGNAL = ("tone", "tones", "noise", "bursts", "gain_ref", "retune_delay", "seed", "channel_db")
+
+    def configure(self, **signal):
+        """Change the signal: any of the constructor's `tone`, `tones`, `noise`, `bursts`, `gain_ref`, `retune_delay`,
+        `seed` and `channel_db` (also taken by `open`, so `pysdrlib.open("sim", tones=...)` works). Parts beyond
+        +-Fs/2 of the frequency it is tuned to are not received, as a radio's filters would have it"""
+        unknown = set(signal) - set(self.SIGNAL)
+        if unknown:
+            raise TypeError(f"Sim has no signal setting {', '.join(sorted(unknown))} (it has {', '.join(self.SIGNAL)})")
+        if "tones" in signal:
+            self.tones = [self._part(t) for t in (signal["tones"] or ())]
+        if "noise" in signal:
+            self.noise = signal["noise"]
+        if "bursts" in signal:
+            self.bursts = [self._part(b) for b in (signal["bursts"] or ())]
+        if "gain_ref" in signal:
+            self.gain_ref = signal["gain_ref"]
+        if "retune_delay" in signal:
+            self.retune_delay = float(signal["retune_delay"] or 0.0)
+        if "seed" in signal or not hasattr(self, "_rng"):
+            self._rng = np.random.default_rng(signal.get("seed"))
+        if signal.get("channel_db") is not None:
+            if len(signal["channel_db"]) != self.channels:
+                raise ValueError(f"channel_db needs one value per channel ({self.channels})")
+            self.channel_db = [float(v) for v in signal["channel_db"]]
+        if "tone" in signal:
+            self.set_tone(signal["tone"])
+
     def set_tone(self, freq):
         """Tone frequency in Hz relative to center. Rounded so whole cycles fit in a block."""
         self._tone = freq
@@ -182,6 +206,10 @@ class Sim(NativeDevice):
     def _offset(self, part, cf):
         return part["offset"] if "offset" in part else part["freq"] - cf
 
+    def _in_band(self, part, cf, fs):
+        """Within +-Fs/2 of the tuning: beyond, a radio's filters remove it (it would alias in otherwise)"""
+        return abs(self._offset(part, cf)) < fs / 2
+
     @property
     def _gain(self):   # channel 0's stages
         return self._gains[0]
@@ -207,8 +235,12 @@ class Sim(NativeDevice):
         tones = self.tones or ([] if self.bursts or self.noise is not None else
                                [{"offset": self._tone if self._tone is not None else fs / 8, "level": 20 * np.log10(0.5)}])
         for t in tones:
+            if not self._in_band(t, cf, fs):
+                continue
             out += 10 ** (t["level"] / 20) * np.exp(2j * np.pi * ((self._offset(t, cf) / fs * idx) % 1.0))
         for b in self.bursts:
+            if not self._in_band(b, cf, fs):
+                continue
             period, duration = max(1, int(b["period"] * fs)), int(b["duration"] * fs)
             on = (idx % period) < duration
             if not on.any():
@@ -283,7 +315,10 @@ class Sim(NativeDevice):
             else:
                 time.sleep(0)  # let the consumer thread run
 
-    def _open(self, *args, **kwargs):
+    def _open(self, serial_number=None, index=None, **signal):
+        """signal: as `configure`'s (anything else raises TypeError). serial_number and index pick a unit on a radio: a
+        sim is any unit asked for"""
+        self.configure(**signal)
         dev = _samples.NullDevice()
         fmt = self.SAMPLE_FORMAT
         dev.set_format(fmt.kind, fmt.bits, fmt.storage, fmt.packed)
