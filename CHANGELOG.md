@@ -61,6 +61,15 @@ PyPI.
 - Gain splitting is cached: a repeated HackRF `set_rx_gain` takes 5 µs instead of 723 µs.
 - The native ring copies samples out with its lock released, so a slow reader no longer holds up the driver's thread.
 
+### Shared-memory streams
+
+- **`shm` driver and `pysdrlib.shm.ShmStream`**: a process publishes samples under a name (`ShmStream("rpps.ch3", Fs=,
+  cf=)`, then `publish(x, first)`), and any other on the machine receives them like a radio
+  (`pysdrlib.open("shm@rpps.ch3")`, listed by `find()`). RxMeta carries the publisher's gaps, its wall-clock time
+  (`hw_time`), and a freq or rate event when it retunes; a closed stream raises `err.Lost`.
+- The ring under it (`ShmWriter`, `ShmReader`, `fit_capacity`) moved from `pysdrlib.remote.shm` to `pysdrlib.shm`, and
+  needs no pyzmq.
+
 ### Files
 
 - SigMF: `FileSink` writes `.sigmf-data` and `.sigmf-meta` files, with a capture per retune and an annotation where
@@ -90,8 +99,6 @@ PyPI.
 - A viewer whose state is older than the server's (it attached before the controller started receiving) has `read`
   ask the server once instead of raising `err.NotStreaming`.
 - `RemoteDevice` forwards every public `Device` method. This fixes `split_rx_gain_db` running on the client.
-- `pysdrlib.remote.shm` (`ShmWriter`, `ShmReader`, `fit_capacity`) is public API: a complex64 ring in shared memory
-  that any process can write and others read, without a server.
 
 ### Fixes
 

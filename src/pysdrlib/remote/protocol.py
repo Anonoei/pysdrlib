@@ -24,7 +24,7 @@ caller complex64. The same goes for the TX stream: the controller sends blocks i
 by default (or any other wire format) and the server decodes whatever the header says. The format may change
 between blocks (the controller can switch it), so it is read from every header.
 
-A client on the same machine as the server can take the samples from shared memory instead (`shm.py`): per streaming
+A client on the same machine as the server can take the samples from shared memory instead (`pysdrlib.shm.ring`): per streaming
 channel the server keeps a ring of complex64 samples in a shared-memory segment that any number of clients read, each at
 its own pace. They subscribe to the topic `shm:<device id>` rather than the device id, and get a *notice* for each
 block published: 3 frames like a block, with FLAG_SHM in the header (channel, index of the first sample, count) and

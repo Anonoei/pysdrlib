@@ -196,7 +196,7 @@ def check_package(name) -> list:
     folder = Path(module.__file__).parent
     if len((module.__doc__ or "").strip().splitlines()) < 3:
         add(WARNING, "has no docstring in its __init__.py (what it is, its specs, what to install: its page in the docs)")
-    if issubclass(device, NativeDevice) and name not in ("sim", "file"):   # they stream through pysdrlib's NullDevice
+    if issubclass(device, NativeDevice) and name not in ("sim", "file", "shm"):   # they stream through pysdrlib's NullDevice
         if importlib.util.find_spec(f"pysdrlib._ext.{name}") is None:
             add(ERROR, f"has no _ext/{name}.py (how its vendor library is found or built, and its extension)")
         else:

@@ -1,4 +1,4 @@
-"""Several clients on one radio through shared memory (pysdrlib.remote.shm), against a server hosting the simulated device.
+"""Several clients on one radio through shared memory (pysdrlib.shm), against a server hosting the simulated device.
 
 The simulated device's tone is phase-continuous, so the sample at a stream index is the same for every client: what
 two clients read at the same index must be equal, however and whenever they got it.
@@ -13,7 +13,8 @@ import pytest
 
 import pysdrlib
 from pysdrlib import err
-from pysdrlib.remote import Server, shm
+from pysdrlib import shm
+from pysdrlib.remote import Server
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="ZeroMQ has no ipc:// transport on Windows")
 
@@ -272,7 +273,7 @@ class TestFallback:
 class TestAnotherProcess:
     READER = """
 import sys, numpy as np
-from pysdrlib.remote import shm
+from pysdrlib import shm
 r = shm.ShmReader(sys.argv[1])
 out = np.empty(1000, np.complex64)
 n, first = r.read(out, 0)

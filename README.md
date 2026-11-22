@@ -26,8 +26,9 @@ For a more robust C implementation with far more hardware, use [SoapySDR](https:
 | [BladeRF 2.0 micro](https://anonoei.github.io/pysdrlib/api/bladerf/) | `bladerf` | 2 RX and 2 TX channels; tested on a 2.0 micro xA4 (receive), transmit checked for plumbing only |
 | [TCP IQ stream](https://anonoei.github.io/pysdrlib/api/tcpiq/) | `tcpiq` | Receive raw I/Q over TCP, as the client (`host=`, `port=`) or the server (`listen=True`); not listed by `find()` |
 
-Also: [`sim`](https://anonoei.github.io/pysdrlib/api/sim/), a simulated radio that needs no hardware, and [`file`](https://anonoei.github.io/pysdrlib/guide/files/), which plays a
-recording back as a radio. A radio needs its vendor's library: `pysdrlib build` builds the bundled copy
+Also: [`sim`](https://anonoei.github.io/pysdrlib/api/sim/), a simulated radio that needs no hardware, [`file`](https://anonoei.github.io/pysdrlib/guide/files/), which plays a
+recording back as a radio, and [`shm`](https://anonoei.github.io/pysdrlib/api/shm/), which receives a stream another process
+publishes in shared memory (`ShmStream`). A radio needs its vendor's library: `pysdrlib build` builds the bundled copy
 ([Installing](https://anonoei.github.io/pysdrlib/guide/installing/)).
 
 ## Quickstart

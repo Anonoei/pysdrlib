@@ -23,6 +23,7 @@ public signatures in one file).
 | `_native/<driver>/` | C++: `<name>_device.hpp/.cpp` (the wrapper) and `<name>_pybind.cpp`; `_native/include/` is shared (queue, shm ring) |
 | `sim/` | A simulated radio on the real native streaming path: tones, noise, bursts, channels, drops/stalls on demand |
 | `file/` | `File`, `FileSink`, SigMF, `Replay` (`open("file", path=...)`: a recording as a radio, and transmit into a file) |
+| `shm/` | Streams in shared memory: `ShmStream` publishes under a name (ring + JSON manifest), the `shm` driver receives it (`open("shm@NAME")`); `ring.py` (`ShmWriter`/`ShmReader`) is also the remote server's local transport |
 | `remote/` | ZeroMQ server/client, controllers and viewers, shared-memory transport on one machine, relays, mDNS discovery, the `pysdrlib server/client/relay/discover` commands |
 | `testing.py`, `contributing.py`, `scaffold.py` | Driver checks (`check_driver`, `check_package`), the driver-writing guide (a docstring), the skeleton generator |
 | `cli.py` | The `pysdrlib` command (`build`, `play`, `server`, `client`...) |

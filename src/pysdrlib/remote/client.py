@@ -30,7 +30,7 @@ from ..base.device import Device
 from ..base.watchdog import StreamStats
 from . import choose
 from . import protocol
-from . import shm
+from .. import shm
 
 DEFAULT_TIMEOUT = 5.0
 PULL_LIMIT = 256   # blocks taken from the socket per call (its receive high-water mark)

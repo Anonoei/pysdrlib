@@ -32,6 +32,7 @@ nav = [
     "api/file.md",
     "api/remote.md",
     "api/sim.md",
+    "api/shm.md",
     "api/native.md",
     "api/testing.md",
     "api/contributing.md",

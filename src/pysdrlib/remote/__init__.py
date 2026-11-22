@@ -190,7 +190,7 @@ to `127.0.0.1` unless told otherwise. Use `--bind tcp://0.0.0.0:5555` only on a 
 | `remote/server.py` | `Server` (the C2 socket: lifecycle and ownership) and `DeviceWorker` (one hosted device's sockets) |
 | `remote/client.py` | `Client` (discovery) and `RemoteDevice` (a `Device` backed by a server) |
 | `remote/server.py` also has | `RelayWorker`, a device of another server hosted here (`Server.relay`) |
-| `remote/shm.py` | `ShmWriter` (the server's ring in shared memory) and `ShmReader` (a client's view of it); the ring is C++ in `_native/include/hardware_shm.hpp` |
+| `pysdrlib.shm` | `ShmWriter` (the server's ring in shared memory) and `ShmReader` (a client's view of it), in `shm/ring.py`; the ring is C++ in `_native/include/hardware_shm.hpp` |
 | `remote/discovery.py` | `Advertiser` (a server's mDNS announcement) and `discover` |
 | `remote/protocol.py` | Wire format: message framing, sample block headers, wire formats. The file documents the sockets |
 | `remote/cli.py` | The `pysdrlib` command |

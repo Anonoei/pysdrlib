@@ -1,21 +1,18 @@
-"""Samples in shared memory, for a client on the server's machine
+"""The ring: complex64 samples in a named shared-memory segment, one writer and any number of readers
 
-The server writes each streaming channel into a ring (`ShmWriter`); clients map it and read at their own pace (`ShmReader`).
-The ring itself is C++ (`_native/include/hardware_shm.hpp`, the ShmRing class in `pysdrlib/base/lib/_samples`), correct across
-processes; this maps the memory and cleans up. See `protocol` for how a client learns the segment's name.
+The ring itself is C++ (`_native/include/hardware_shm.hpp`, the ShmRing class in `pysdrlib/base/lib/_samples`), correct
+across processes; this maps the memory and cleans up. `ShmStream` (in `stream`) adds the manifest that names it; a
+`pysdrlib server` uses the ring alone, and tells its clients the segment's name (see `pysdrlib.remote.protocol`).
 
-    writer = ShmWriter(capacity=1 << 20, stream_id=1)       # the server
+    writer = ShmWriter(capacity=fit_capacity(1 << 20), stream_id=1)
     writer.publish(samples, first_index)
-    reader = ShmReader(writer.name)                          # a client
+    reader = ShmReader(writer.name)                          # another process
     n, first = reader.read(out, pos)                         # up to len(out) samples from stream index pos
-
-`ShmWriter`, `ShmReader` and `fit_capacity` are public API, usable without a server (RPPS publishes channels with
-them). What to know when using them directly:
 
 - One writer per ring, on one machine. Samples are complex64; `out` must be a C-contiguous complex64 array.
 - `publish(samples, first)`: `first` at or after `head` (lower raises ValueError; higher records a gap). Only the
   1024 most recent gaps are remembered.
-- The ring carries only samples, their indices and `stream_id`: keep the rate, frequency and time beside it.
+- The ring carries only samples, their indices and `stream_id`: the rate, frequency and time go beside it (`ShmStream`).
 - Size the ring with `fit_capacity` first: a segment is only filled as it is written, so one larger than `/dev/shm`
   has room for crashes the writer later, not now.
 - There is no blocking wait: poll `head` (a cheap atomic load) and sleep a few ms. Start a new reader at `head`

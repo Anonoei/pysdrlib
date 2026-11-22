@@ -32,7 +32,7 @@ from .. import logger
 from . import choose
 from . import frontends as frontends_mod
 from . import protocol
-from . import shm
+from .. import shm
 from .client import RemoteDevice
 
 POLL_MS = 100

@@ -36,6 +36,7 @@ API_PAGES = {
     "file": ["pysdrlib.file/"],
     "remote": ["pysdrlib.remote/"],
     "sim": ["pysdrlib.sim/"],
+    "shm": ["pysdrlib.shm/"],
     "native": ["pysdrlib.base.native"],
     "testing": ["pysdrlib.testing"],
     "contributing": ["pysdrlib.contributing"],
