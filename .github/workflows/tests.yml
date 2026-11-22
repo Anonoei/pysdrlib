@@ -11,18 +11,19 @@ permissions:
 
 concurrency:
   # head_ref is the PR's branch, ref_name the pushed one: a push and the pull_request run it triggers share a group, so one cancels the other
-  group: tests-${{ github.head_ref || github.ref_name }}
+  group: tests-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   test:
     name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 20 }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.12", "3.14"]
+        python-version: ["3.12", "3.13", "3.14"]
 
     steps:
       - name: Checkout repo
@@ -43,7 +44,7 @@ jobs:
       - name: Install package
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -e ".[test]"
 
       # Hardware tests are opt-in (PYSDRLIB_HW=1) and benchmarks are
       # deselected by default in pyproject.toml, so this runs on fakes only.
@@ -53,6 +54,33 @@ jobs:
         env:
           PYSDRLIB_BUILD: auto
         run: python -m pytest -v
+
+  package:
+    # The wheel built from the sdist has to install into a clean environment and stream from the simulated radio
+    name: Wheel and sdist
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libusb-1.0-0-dev libfftw3-dev
+      - run: python -m pip install --upgrade pip build twine
+      - name: Build sdist, then the wheel from the sdist
+        run: python -m build
+      - run: python -m twine check dist/*
+      - name: Install into a clean environment and run the quickstart
+        run: |
+          python -m venv /tmp/clean
+          /tmp/clean/bin/pip install dist/*.whl
+          cd /tmp
+          /tmp/clean/bin/python "$GITHUB_WORKSPACE/examples/quickstart.py"
 
   docs:
     # Same build as deploy-docs (strict), so a broken docstring cross-reference or snippet path fails the pull request
@@ -71,5 +99,5 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install $(python -c "import tomllib; print(' '.join(tomllib.load(open('pyproject.toml', 'rb'))['project']['optional-dependencies']['docs']))")
-      - run: python builder.py -d
+      - run: python tools/builder.py -d
       - run: test -f site/api/hackrf/index.html && test -s site/llms-full.txt

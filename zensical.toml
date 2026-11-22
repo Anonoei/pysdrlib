@@ -1,5 +1,5 @@
 # Documentation site: guides in docs/, the API reference from the package docstrings (mkdocstrings, read statically:
-# no compiled extension or vendor library is needed). `python builder.py -d` writes docs/api/ and the llms files, then
+# no compiled extension or vendor library is needed). `python tools/builder.py -d` writes docs/api/ and the llms files, then
 # builds into site/.
 [project]
 site_name = "pysdrlib"

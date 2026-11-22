@@ -4,21 +4,24 @@
 git clone https://github.com/Anonoei/pysdrlib
 cd pysdrlib
 git switch -c feature/<your feature>
-pip install -e '.[dev,docs]'
-python builder.py -c -t                   # compile the extensions in place, run the tests
+python tools/builder.py -s -c -t     # install with the dev extras, compile the extensions in place, run the tests
 ```
 
-## `builder.py`
+## `tools/builder.py`
 
 | Flag | Does |
 | --- | --- |
+| `-s` | Install the package and the dev extras (editable) |
 | `-n NAME` | Generate the skeleton of a new driver (`python -m pysdrlib.scaffold`) |
 | `-v M\|m\|p` | Bump the major, minor or patch version (a dry run without `-r`) |
 | `-c` | Compile the extensions in place |
-| `-b` | Build the sdist and wheel into `dist/` |
+| `-b` | Build the sdist and wheel into `dist/`, and check them with twine |
 | `-l` | Install in editable mode |
 | `-t` | Run the tests |
 | `-d` | Build this site into `site/` |
+| `-u` | Upload `dist/` to TestPyPI (PyPI with `-r`) |
+
+The same helper, with the same flags, is in RPPS and pyspecan.
 
 Releases are published by CI from a GitHub release tagged `vX.Y.Z`, and the site by `deploy-docs.yml` on every push to
 `main`.
@@ -80,8 +83,8 @@ This site is built with [Zensical](https://zensical.org) and mkdocstrings:
 
 ```
 pip install -e '.[docs]'
-python builder.py -d          # API pages, the site into site/, llms.txt and llms-full.txt
-python -m zensical serve      # preview (after builder.py -d has written docs/api/)
+python tools/builder.py -d          # API pages, the site into site/, llms.txt and llms-full.txt
+python -m zensical serve      # preview (after tools/builder.py -d has written docs/api/)
 ```
 
 Each kind of documentation has one home:

@@ -1,6 +1,6 @@
 """The documentation is complete: every public package has its page's text, every API page is in the site's nav, every
 example is shown by a guide, the README's quickstart is the tested one, and the llms files can be generated. (The site
-itself is built by `python builder.py -d`, in CI.)"""
+itself is built by `python tools/builder.py -d`, in CI.)"""
 import importlib.util
 import re
 import sys

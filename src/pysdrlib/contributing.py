@@ -135,7 +135,7 @@ needs the radio is marked `hardware`, runs only with `PYSDRLIB_HW=1`, and skips 
 The reference documentation is generated from docstrings: document the class, and every public method a driver adds,
 as you would for a user. Fill in the docstring of `<name>/__init__.py`: what the radio is, its specs, what to install,
 and what you measured (the existing drivers show the shape). Add a row to the supported-devices table in the top-level
-README, and its page to `API_PAGES` in `tools/gen_docs.py` and under *Drivers* in `zensical.toml` (`python builder.py -d` builds
+README, and its page to `API_PAGES` in `tools/gen_docs.py` and under *Drivers* in `zensical.toml` (`python tools/builder.py -d` builds
 the site; `tests/test_docs.py` checks both).
 
 ## Out of tree

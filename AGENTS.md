@@ -61,10 +61,10 @@ public signatures in one file).
 ## Commands
 
 ```
-pip install -e '.[dev]'           # docs: '.[docs]'
-python builder.py -c              # compile the extensions in place
-python builder.py -t              # pytest (no hardware needed)
-python builder.py -d              # docs site into site/ (+ llms.txt, llms-full.txt)
+python tools/builder.py -s         # pip install -e '.[dev]' (test and docs extras included)
+python tools/builder.py -c         # compile the extensions in place
+python tools/builder.py -t         # pytest (no hardware needed)
+python tools/builder.py -d         # docs site into site/ (+ llms.txt, llms-full.txt)
 pytest                            # skips are fine, failures are not
 PYSDRLIB_HW=1 pytest              # plus hardware tests, each skipping if its radio is absent
 pytest -m benchmark               # timing checks (deselected by default)

@@ -4,7 +4,7 @@
     python tools/gen_docs.py             # writes docs/api/*.md, docs/llms.txt, docs/llms-full.txt
     python tools/gen_docs.py --check     # exits 1 if zensical.toml's API nav and API_PAGES disagree
 
-`python builder.py -d` runs this, then `zensical build`. Zensical runs no MkDocs plugins (gen-files), so the pages that
+`python tools/builder.py -d` runs this, then `zensical build`. Zensical runs no MkDocs plugins (gen-files), so the pages that
 render each module (`::: pysdrlib.<module>`, mkdocstrings) are written here, one per API_PAGES entry. The source is read
 with griffe, as mkdocstrings does: nothing is imported, so no compiled extension or vendor library is needed.
 
