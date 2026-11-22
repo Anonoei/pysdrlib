@@ -1086,7 +1086,13 @@ class Server:
     def _dispatch(self, msg):
         op = msg.get("op")
         if op == "hello":
-            return {"version": protocol.VERSION, "lease": self.lease, "types": self.types()}
+            from .. import __version__
+            if "version" in msg:   # (a client from before it sent its version checks ours itself)
+                why = protocol.mismatch(protocol.VERSION, __version__, msg["version"], msg.get("pysdrlib"), "client")
+                if why:
+                    self.log.warning("refused a client: %s", why)
+                    raise err.ProtocolError(why)
+            return {"version": protocol.VERSION, "pysdrlib": __version__, "lease": self.lease, "types": self.types()}
         if op == "metrics":
             return self.metrics(msg.get("device"))
         if op == "list":

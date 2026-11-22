@@ -90,6 +90,16 @@ _ERRORS = {
     )
 }
 
+def mismatch(version, package, peer_version, peer_package, peer):
+    """Why this side (protocol `version`, pysdrlib `package`) and `peer` ("server" or "client", running protocol
+    `peer_version` and pysdrlib `peer_package`) can't talk, naming the one to update; None when they can"""
+    if peer_version == version:
+        return None
+    me = "client" if peer == "server" else "server"
+    older = peer if peer_version is None or (isinstance(peer_version, int) and peer_version < version) else me
+    return (f"the {peer} runs pysdrlib {peer_package or '(an older version)'} (protocol {peer_version}) and the {me} "
+            f"pysdrlib {package} (protocol {version}): update the {older} (pip install -U pysdrlib)")
+
 def jsonable(obj):
     """json.dumps default: numpy scalars/arrays and a few containers"""
     if isinstance(obj, np.generic):

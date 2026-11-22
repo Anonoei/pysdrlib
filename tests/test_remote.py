@@ -198,6 +198,39 @@ class TestOwnership:
             RemoteDevice(server.endpoint, id="sim-99").open()
 
 
+class TestVersions:
+    def test_mismatch_names_the_side_to_update(self):
+        assert protocol.mismatch(4, "0.5.0", 4, "0.4.9", "server") is None
+        assert "update the client" in protocol.mismatch(4, "0.5.0", 3, "0.4.0", "client")
+        assert "update the server" in protocol.mismatch(4, "0.4.0", 5, "0.5.0", "client")
+        assert "update the server" in protocol.mismatch(5, "0.5.0", 4, "0.4.0", "server")
+        assert "update the client" in protocol.mismatch(4, "0.4.0", 5, "0.5.0", "server")
+
+    def test_hello_shares_versions(self, server):
+        with Client(server.endpoint) as c:
+            assert c.info["version"] == protocol.VERSION and c.info["pysdrlib"] == pysdrlib.__version__
+
+    def test_server_refuses_another_version(self, server):
+        from pysdrlib.remote.client import _Channel
+        c2 = _Channel(server.endpoint, 5.0)
+        try:
+            with pytest.raises(err.ProtocolError, match="update the client"):
+                c2.request("hello", version=protocol.VERSION - 1, pysdrlib="0.0.1")
+            with pytest.raises(err.ProtocolError, match="update the server"):
+                c2.request("hello", version=protocol.VERSION + 1, pysdrlib="9.9.9")
+            assert c2.request("hello")["version"] == protocol.VERSION   # a client from before versions were sent
+        finally:
+            c2.close()
+
+    def test_client_refuses_an_old_server(self, server, monkeypatch):
+        monkeypatch.setattr(protocol, "VERSION", protocol.VERSION + 1)   # this client is newer than the server...
+        monkeypatch.setattr(server, "_dispatch", lambda msg, real=server._dispatch: dict(   # ... which doesn't check
+            real({k: v for k, v in msg.items() if k not in ("version", "pysdrlib")}), version=protocol.VERSION - 1)
+            if msg.get("op") == "hello" else real(msg))
+        with pytest.raises(err.ProtocolError, match="update the server"):
+            Client(server.endpoint)
+
+
 class TestServer:
     def test_unknown_or_disallowed_type(self, server):
         with pytest.raises(err.NoDevice):

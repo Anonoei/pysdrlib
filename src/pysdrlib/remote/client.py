@@ -92,10 +92,11 @@ class _Channel:
 
 def _hello(c2, address):
     """The server's `hello` (its protocol version, lease, device types); `err.ProtocolError` unless it speaks ours"""
-    info = c2.request("hello")
-    if info.get("version") != protocol.VERSION:
-        raise err.ProtocolError(f"the server at {address} speaks protocol {info.get('version')}, this pysdrlib "
-                                f"{protocol.VERSION}: run the same pysdrlib version on both")
+    from .. import __version__
+    info = c2.request("hello", version=protocol.VERSION, pysdrlib=__version__)   # a server refuses a version not its own
+    why = protocol.mismatch(protocol.VERSION, __version__, info.get("version"), info.get("pysdrlib"), "server")
+    if why:   # a server from before it checked
+        raise err.ProtocolError(f"{address}: {why}")
     return info
 
 
