@@ -52,8 +52,9 @@ class RxStream:
     then (channels, count), aligned; see Device.read). A `timeout` (seconds) bounds each
     block's wait; None waits as long as the device keeps delivering (a stalled device raises err.StreamStalled).
     """
-    def __init__(self, device, count, timeout=None, meta=False, channel=0, flush=True):
+    def __init__(self, device, count, timeout=None, meta=False, channel=0, flush=True, on_drop=None):
         self.device, self.count, self.timeout, self.meta, self.channel = device, int(count), timeout, meta, channel
+        self.on_drop = on_drop
         self._flush = flush
         self._started = False
 
@@ -72,7 +73,7 @@ class RxStream:
         self._started = False
 
     def read(self):
-        return self.device.read(self.count, timeout=self.timeout, meta=self.meta, channel=self.channel)
+        return self.device.read(self.count, timeout=self.timeout, meta=self.meta, channel=self.channel, on_drop=self.on_drop)
 
     def __iter__(self):
         while self.device.state["rx"]:

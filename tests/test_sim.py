@@ -257,3 +257,181 @@ class TestSampleFormats:
 
     def test_default_is_int8(self):
         assert Sim().SAMPLE_FORMAT == convert.INT8
+
+
+def _peak_db(x, fs, offset):
+    """dBFS of the spectrum's bin at `offset` Hz (a tone of amplitude a reads 20*log10(a))"""
+    spec = np.fft.fft(x) / len(x)
+    k = int(round(offset / fs * len(x))) % len(x)
+    return 20 * np.log10(np.abs(spec[k]) + 1e-12)
+
+
+class TestBuiltSignal:
+    """The signal built from parts (tones, noise, bursts), and the stream misbehaving on demand"""
+
+    def make(self, **kwargs):
+        dev = Sim(realtime=False, block_samples=4096, **kwargs)
+        dev.open()
+        dev.initialize(cf=100e6, Fs=1e6)
+        return dev
+
+    def test_tones_and_noise(self):
+        dev = self.make(tones=[(125_000, -20), (-250_000, -10)], noise=-30, seed=1)   # above int8's ~-50 dBFS quantization floor
+        dev.pump(4)
+        x = dev.get_samples()
+        assert _peak_db(x, 1e6, 125_000) == pytest.approx(-20, abs=0.5)
+        assert _peak_db(x, 1e6, -250_000) == pytest.approx(-10, abs=0.5)
+        rest = np.delete(np.abs(np.fft.fft(x) / len(x)) ** 2, [round(0.125 * len(x)), round(0.75 * len(x))])
+        assert 10 * np.log10(rest.sum()) == pytest.approx(-30, abs=1)   # the noise floor's total power
+        dev.close()
+
+    def test_rf_tone_moves_with_retune(self):
+        dev = self.make(tones=[{"freq": 100.2e6, "level": -6}])
+        dev.pump(2)
+        assert tone_hz(dev.get_samples(), 1e6) == pytest.approx(200_000, abs=300)
+        dev.set_rx_freq(100.1e6)
+        dev.pump(2)
+        assert tone_hz(dev.get_samples(), 1e6) == pytest.approx(100_000, abs=300)
+        dev.close()
+
+    def test_retune_delay_keeps_old_samples(self):
+        dev = self.make(tones=[{"freq": 100.2e6, "level": -6}], retune_delay=0.01)   # 10,000 samples at 1 MS/s
+        dev.pump(1)
+        dev.get_samples()
+        dev.set_rx_freq(100.1e6)
+        dev.pump(4)
+        x = dev.get_samples()
+        assert tone_hz(x[:8192], 1e6) == pytest.approx(200_000, abs=300)        # still the old frequency
+        assert tone_hz(x[-4096:], 1e6) == pytest.approx(100_000, abs=300)       # then the new one
+        dev.close()
+
+    def test_gain_ref_scales_and_clips(self):
+        dev = self.make(tones=[(125_000, -20)], gain_ref=32)
+        dev.set_rx_gain_db(32)
+        dev.pump(1)
+        assert np.abs(dev.get_samples()).max() == pytest.approx(0.1, abs=0.01)
+        dev.set_rx_gain_db(42)
+        dev.pump(1)
+        assert np.abs(dev.get_samples()).max() == pytest.approx(0.316, abs=0.02)
+        dev.set_rx_gain_db(80)
+        dev.pump(1)
+        x = dev.get_samples()
+        assert np.abs(x.real).max() <= 1.0 and np.mean(np.abs(x.real) > 0.98) > 0.5   # the ADC clips
+        dev.close()
+
+    def test_bursts(self):
+        dev = self.make(bursts=[{"offset": 0, "level": -6, "period": 0.004, "duration": 0.001}], seed=2)
+        dev.pump(2)
+        on = np.abs(dev.get_samples()) > 0.25
+        assert on.mean() == pytest.approx(0.25, abs=0.02)   # on a quarter of the time
+        assert on[:1000].all() and not on[1000:4000].any()
+        dev.close()
+
+    def test_default_tone_unchanged(self):
+        dev = self.make()
+        assert not dev._synthetic
+        dev.pump(1)
+        assert np.abs(dev.get_samples()).max() == pytest.approx(0.5, abs=0.01)
+        dev.close()
+
+
+class TestMisbehaving:
+    @pytest.fixture
+    def live(self):
+        dev = Sim(realtime=True, block_samples=4096)
+        dev.open()
+        dev.initialize(cf=100e6, Fs=1e6)
+        dev.start_rx()
+        yield dev
+        dev.close()
+
+    def test_drop_makes_a_gap(self, live):
+        live.read(4096, timeout=1.0)
+        live.drop(5000)
+        lost = 0
+        for _ in range(10):
+            _, m = live.read(4096, timeout=1.0, meta=True)
+            lost += sum(n for _, n in m.gaps)
+            if lost:
+                break
+        assert lost == 5000
+
+    def test_stall_loses_what_would_have_come(self, live):
+        live.read(4096, timeout=1.0)
+        live.stall(0.1)
+        assert live.stalled
+        _, m = live.read(8192, timeout=2.0, meta=True)
+        lost = sum(n for _, n in m.gaps)
+        assert 50_000 < lost < 300_000     # ~0.1 s at 1 MS/s, with scheduling slack
+        assert not live.stalled
+
+    def test_stall_until_resumed(self, live):
+        live.read(4096, timeout=1.0)
+        live.stall()
+        live.flush()
+        with pytest.raises(err.Timeout):
+            live.read(4096, timeout=0.1)
+        live.resume()
+        live.read(4096, timeout=1.0)
+
+
+class TestOnDrop:
+    """read/stream/sweep(on_drop=...): a block that lost samples inside it raises, or is captured again"""
+
+    @pytest.fixture
+    def live(self):
+        dev = Sim(realtime=True, block_samples=4096)
+        dev.open()
+        dev.initialize(cf=100e6, Fs=1e6)
+        dev.start_rx()
+        yield dev
+        dev.close()
+
+    def test_raise_carries_the_block(self, live):
+        live.read(4096, timeout=1.0)
+        live.drop(5000, after=4096)
+        with pytest.raises(err.Dropped) as e:
+            live.read(16384, timeout=1.0, on_drop="raise")
+        assert e.value.lost == 5000 and len(e.value.samples) == 16384 and e.value.meta.gaps
+        live.read(4096, timeout=1.0, on_drop="raise")   # the next block is whole again
+
+    def test_default_returns_the_block(self, live):
+        live.read(4096, timeout=1.0)
+        live.drop(5000, after=4096)
+        _, m = live.read(16384, timeout=1.0, meta=True)
+        assert sum(n for _, n in m.gaps) == 5000
+
+    def test_stream(self, live):
+        with live.stream(16384, timeout=1.0, on_drop="raise") as s:
+            s.read()
+            live.drop(5000, after=4096)
+            with pytest.raises(err.Dropped):
+                s.read()
+
+    def test_bad_policy(self, live):
+        with pytest.raises(ValueError):
+            live.read(10, on_drop="warn")
+        with pytest.raises(ValueError):
+            next(live.sweep([100e6], on_drop="sometimes"))
+
+    def test_sweep_retries_a_step_that_lost_samples(self, live):
+        real, drops = live.set_rx_freq, iter([True])
+        def retune(*a, **kw):
+            f = real(*a, **kw)
+            if next(drops, False):   # only the first step
+                live.drop(5000, after=4096)
+            return f
+        live.set_rx_freq = retune
+        steps = list(live.sweep([100e6, 101e6], count=16384, timeout=1.0, meta=True, on_drop="retry"))
+        assert [f for f, _, _ in steps] == [100e6, 101e6]
+        assert all(not any(at for at, _ in m.gaps) for _, _, m in steps)
+
+    def test_sweep_raise(self, live):
+        real = live.set_rx_freq
+        def retune(*a, **kw):
+            f = real(*a, **kw)
+            live.drop(5000, after=4096)
+            return f
+        live.set_rx_freq = retune
+        with pytest.raises(err.Dropped):
+            list(live.sweep([100e6], count=16384, timeout=1.0, on_drop="raise"))

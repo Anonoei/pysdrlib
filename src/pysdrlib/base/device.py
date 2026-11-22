@@ -685,16 +685,22 @@ class Device:
         return self.caps.json()
 
     # ------------------------------------------------------------------ reading
-    def read(self, count, timeout=None, meta=False, channel=0):
+    def read(self, count, timeout=None, meta=False, channel=0, on_drop=None):
         """Exactly `count` samples (complex64), waiting for them. Raises err.Timeout after `timeout` seconds
         (None: wait as long as the device delivers; a stalled device raises err.StreamStalled).
         meta=True returns (samples, RxMeta): the first sample's index, where samples were lost, retunes...
         channel: one of `rx_channels`, or several (a sequence): then a (channels, count) array whose rows start at
-        the same sample index (the same instant), and a list of RxMeta"""
+        the same sample index (the same instant), and a list of RxMeta.
+        on_drop="raise": raise err.Dropped if samples were lost inside this block (`RxMeta.gaps`), for a capture that
+        must be contiguous; the exception carries the block (`.samples`, `.meta`, `.lost`). None: return it anyway"""
+        _check_on_drop(on_drop)
         if not np.isscalar(channel):
-            return self._read_aligned(int(count), timeout, meta, tuple(channel))
+            out, metas = self._read_aligned(int(count), timeout, True, tuple(channel))
+            _gap_check(on_drop, out, metas)
+            return (out, metas) if meta else out
         out = np.empty(int(count), dtype=np.complex64)
         m = self._read_into(out, timeout, channel)
+        _gap_check(on_drop, out, m)
         return (out, m) if meta else out
 
     def _read_aligned(self, count, timeout, meta, channels):
@@ -718,22 +724,26 @@ class Device:
                                   events=metas[k].events,
                                   hw_time=None if metas[k].hw_time is None else metas[k].hw_time + skip / metas[k].rate)
         return (out, metas) if meta else out
-    def read_into(self, out, timeout=None, meta=False, channel=0):
+    def read_into(self, out, timeout=None, meta=False, channel=0, on_drop=None):
         """`read` into a complex64 array you own (filled completely). Returns its length, or (length, RxMeta)"""
+        _check_on_drop(on_drop)
         if out.dtype != np.complex64 or not out.flags.c_contiguous:
             raise TypeError("read_into needs a contiguous complex64 array")
         m = self._read_into(out, timeout, channel)
+        _gap_check(on_drop, out, m)
         return (len(out), m) if meta else len(out)
-    def stream(self, count, timeout=None, meta=False, channel=0, flush=True):
+    def stream(self, count, timeout=None, meta=False, channel=0, flush=True, on_drop=None):
         """Blocks of `count` samples, in a `with` block that starts receiving (and stops it after) when it wasn't:
 
             with sdr.stream(65536) as s:
                 for x in s: ...
 
-        flush: when already receiving, discard what was queued before the stream starts"""
-        return RxStream(self, count, timeout, meta, channel, flush)
+        flush: when already receiving, discard what was queued before the stream starts. on_drop: as `read`'s, for
+        each block (an err.Dropped ends a `for` loop over the stream; call `s.read()` in a loop to carry on past one)"""
+        _check_on_drop(on_drop)
+        return RxStream(self, count, timeout, meta, channel, flush, on_drop)
     def sweep(self, start, stop=None, step=None, count=65536, timeout=None, meta=False, channel=0, repeat=False,
-              offset=0.0, skip=0):
+              offset=0.0, skip=0, on_drop=None, retries=3):
         """Step the receiver across frequencies, yielding (frequency, samples): `count` samples at each, all received
         after its retune and settling (`set_rx_freq(..., flush=True)`):
 
@@ -744,8 +754,11 @@ class Device:
         above each frequency and shift the samples back, so the device's DC spike (its LO leaking through) lands
         `offset` Hz off the middle of each step's spectrum, not on it. skip: samples to discard after each retune on top
         of the device's own settling (`caps.retune_settle`). repeat: sweep again and again, until the loop breaks.
-        meta: yield (frequency, samples, RxMeta). Starts receiving if it wasn't, and stops it again when the sweep ends
-        (or the loop breaks)"""
+        meta: yield (frequency, samples, RxMeta). on_drop: "raise" (as `read`'s), or "retry": capture a step again
+        when samples were lost inside it, up to `retries` times, then raise err.Dropped. Starts receiving if it wasn't,
+        and stops it again when the sweep ends (or the loop breaks)"""
+        if on_drop not in (None, "raise", "retry"):
+            raise ValueError(f"on_drop is None, 'raise' or 'retry', not {on_drop!r}")
         if stop is None:
             freqs = np.asarray(list(np.atleast_1d(start)), dtype=float)
         else:
@@ -766,7 +779,15 @@ class Device:
                     tuned = self.set_rx_freq(float(f) + offset, channel=channel, flush=True) - offset
                     if skip:
                         self.read(int(skip), timeout=timeout, channel=channel)
-                    x, m = self.read(count, timeout=timeout, meta=True, channel=channel)
+                    for attempt in range(int(retries) + 1 if on_drop == "retry" else 1):
+                        try:
+                            x, m = self.read(count, timeout=timeout, meta=True, channel=channel,
+                                             on_drop="raise" if on_drop else None)
+                            break
+                        except err.Dropped as e:
+                            if on_drop != "retry" or attempt == int(retries):
+                                raise
+                            self.log.debug("sweep at %g Hz lost %d samples: capturing it again", tuned, e.lost)
                     if offset:
                         if shift is None or len(shift) != count or shift_rate != m.rate:
                             shift_rate = m.rate
@@ -1250,6 +1271,22 @@ class Device:
 
 # --- the gain split (Device._split_gain), cached: a device's stages are fixed, and a GUI's gain slider asks again and again
 @functools.lru_cache(maxsize=1024)
+def _check_on_drop(on_drop):
+    if on_drop not in (None, "raise"):
+        raise ValueError(f"on_drop is None or 'raise', not {on_drop!r}")
+
+def _gap_check(on_drop, samples, meta):
+    """err.Dropped (carrying the block) when on_drop is "raise" and samples were lost inside it"""
+    if on_drop != "raise":
+        return
+    metas = meta if isinstance(meta, list) else [meta]
+    lost = sum(n for m in metas for at, n in m.gaps if at > 0)   # (one before the first sample isn't inside it)
+    if lost:
+        e = err.Dropped(f"{lost:,} samples lost inside a block of {metas[0].count:,}"
+                        + (f" (channels {[m.channel for m in metas if any(at for at, _ in m.gaps)]})" if len(metas) > 1 else ""))
+        e.samples, e.meta, e.lost = samples, meta, lost
+        raise e
+
 def _split(stages, reserve, by_db, total, name):
     """{stage: gain} sharing `total` between `stages` ((name, GainStage) pairs, in signal order); see `_split_gain`"""
     names = [n for n, _ in stages]
