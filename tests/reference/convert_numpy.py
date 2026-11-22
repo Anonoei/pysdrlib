@@ -27,7 +27,8 @@ class SampleFormat:
                "float" IEEE float
     bits:      significant bits per component (12 for a 12-bit ADC)
     storage:   bits a component occupies in memory: 8, 16, 32 or 64. For `packed` formats, equals `bits`.
-    packed:    components follow each other with no padding (only 12-bit signed is supported)
+    packed:    components follow each other with no padding: signed 12-bit (I and Q in 3 bytes) or signed 4-bit
+               (I and Q in one byte, I in the high nibble)
     byteorder: "<" little endian (default) or ">"
     """
     kind: str
@@ -42,13 +43,13 @@ class SampleFormat:
         if self.byteorder not in ("<", ">"):
             raise ValueError("byteorder must be '<' or '>'")
         if self.packed:
-            if (self.kind, self.bits, self.storage) != ("int", 12, 12):
-                raise ValueError("only signed 12-bit samples can be packed")
+            if self.kind != "int" or self.bits not in (12, 4) or self.storage != self.bits:
+                raise ValueError("only signed 12-bit and 4-bit samples can be packed")
             return
         if self.storage not in (8, 16, 32, 64) or not 1 <= self.bits <= self.storage:
             raise ValueError(f"invalid bits/storage: {self.bits}/{self.storage}")
-        if self.kind == "float" and (self.bits != self.storage or self.storage not in (32, 64)):
-            raise ValueError("float samples are 32 or 64 bits")
+        if self.kind == "float" and (self.bits != self.storage or self.storage not in (16, 32, 64)):
+            raise ValueError("float samples are 16, 32 or 64 bits")
 
     @property
     def dtype(self):
@@ -61,7 +62,9 @@ class SampleFormat:
     @property
     def bytes_per_sample(self):
         """Bytes of one complex (I, Q) sample"""
-        return 3 if self.packed else 2 * self.storage // 8
+        if self.packed:
+            return 1 if self.bits == 4 else 3
+        return 2 * self.storage // 8
 
     @property
     def full_scale(self):
@@ -90,6 +93,8 @@ UINT8 = SampleFormat("uint", 8, 8)
 INT16 = SampleFormat("int", 16, 16)
 INT12 = SampleFormat("int", 12, 16)                  # 12-bit values in 16-bit words
 INT12_PACKED = SampleFormat("int", 12, 12, packed=True)  # I and Q in 3 bytes
+INT4_PACKED = SampleFormat("int", 4, 4, packed=True)    # I and Q in one byte (I in the high nibble)
+FLOAT16 = SampleFormat("float", 16, 16)                 # IEEE half
 FLOAT32 = SampleFormat("float", 32, 32)
 
 def _bytes_of(raw):
@@ -98,7 +103,7 @@ def _bytes_of(raw):
 @lru_cache(maxsize=None)
 def _converter(fmt: SampleFormat):
     if fmt.packed:
-        return _packed12_converter(fmt)
+        return _packed4_converter(fmt) if fmt.bits == 4 else _packed12_converter(fmt)
     dtype, scale = fmt.dtype, np.float32(1.0 / fmt.full_scale)
     offset = np.float32(fmt.full_scale) if fmt.kind == "uint" else None
     scaled = fmt.kind != "float"
@@ -131,6 +136,18 @@ def _packed12_converter(fmt):
         return (comps.astype(np.float32) * scale).reshape(-1).view(np.complex64)
     return convert
 
+def _packed4_converter(fmt):
+    def convert(raw, valid=None):
+        b = _bytes_of(raw)
+        if valid is not None:
+            b = b[:valid]
+        b = b.astype(np.int16)
+        comps = np.empty((len(b), 2), dtype=np.int16)
+        comps[:, 0] = ((b >> 4) ^ 0x8) - 0x8      # I: high nibble, sign extended
+        comps[:, 1] = ((b & 0x0F) ^ 0x8) - 0x8    # Q: low nibble
+        return (comps.astype(np.float32) * np.float32(1 / 8)).reshape(-1).view(np.complex64)
+    return convert
+
 @lru_cache(maxsize=None)
 def _encoder(fmt: SampleFormat):
     def components(iq):
@@ -147,6 +164,11 @@ def _encoder(fmt: SampleFormat):
         quant = lambda x: np.clip(np.rint(x * scale), lo, hi)
     if not fmt.packed:
         return lambda iq: quant(components(iq)).astype(fmt.dtype)
+    def encode4(iq):
+        c = quant(components(iq)).astype(np.int16).reshape(-1, 2) & 0x0F
+        return ((c[:, 0] << 4) | c[:, 1]).astype(np.uint8)
+    if fmt.bits == 4:
+        return encode4
     def encode(iq):
         c = quant(components(iq)).astype(np.int16).reshape(-1, 2) & 0x0FFF
         out = np.empty((len(c), 3), dtype=np.uint8)

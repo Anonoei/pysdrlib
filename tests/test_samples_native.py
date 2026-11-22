@@ -19,10 +19,11 @@ S = convert.SampleFormat
 FORMATS = [
     S("int", 8, 8), S("uint", 8, 8), S("int", 16, 16), S("uint", 16, 16), S("int", 12, 16), S("uint", 12, 16),
     S("int", 32, 32), S("uint", 32, 32), S("int", 24, 32), S("int", 64, 64), S("uint", 64, 64),
-    S("float", 32, 32), S("float", 64, 64), S("int", 12, 12, packed=True),
+    S("float", 16, 16), S("float", 32, 32), S("float", 64, 64), S("int", 12, 12, packed=True),
+    S("int", 4, 4, packed=True),
     *(S(f.kind, f.bits, f.storage, byteorder=">") for f in (
         S("int", 16, 16), S("uint", 16, 16), S("int", 12, 16), S("int", 32, 32), S("uint", 64, 64),
-        S("float", 32, 32), S("float", 64, 64))),
+        S("float", 16, 16), S("float", 32, 32), S("float", 64, 64))),
 ]
 # Layouts whose float32 arithmetic is well defined for any input (wider integers overflow float32's range
 # the way numpy's astype does, which the reference leaves to the platform)
@@ -96,7 +97,7 @@ class TestDecode:
         np.testing.assert_array_equal(convert.INT16.to_complex64(raw), ref(convert.INT16).to_complex64(raw.reshape(-1)))
 
     def test_a_layout_the_extension_cannot_read_is_rejected(self):
-        for args in (("float", 16, 16, False), ("int", 12, 12, False), ("uint", 12, 12, True), ("int", 40, 32, False),
+        for args in (("float", 8, 8, False), ("float", 16, 32, False), ("int", 4, 4, False), ("int", 12, 12, False), ("uint", 12, 12, True), ("int", 40, 32, False),
                      ("bogus", 8, 8, False)):
             with pytest.raises(ValueError):
                 samples.decode(b"\0" * 8, *args)
@@ -150,7 +151,8 @@ class TestEncode:
         top = fmt.from_complex64(np.array([1e30 + 1e30j], dtype=np.complex64)).view(np.uint8)
         bottom = fmt.from_complex64(np.array([-1e30 - 1e30j], dtype=np.complex64)).view(np.uint8)
         hi, lo = fmt.to_complex64(top), fmt.to_complex64(bottom)
-        assert hi.real[0] > 0.99 and hi.imag[0] > 0.99 and lo.real[0] < -0.99 and lo.imag[0] < -0.99
+        top_code = 1 - 1 / fmt.full_scale if fmt.kind == "int" else 1.0   # the highest code (7/8 for 4-bit)
+        assert hi.real[0] == hi.imag[0] >= min(top_code, 0.99) and lo.real[0] == lo.imag[0] <= -0.99
         if fmt.kind == "uint":
             assert lo.real[0] == -1 and hi.real[0] == 1   # exactly the end stops
 

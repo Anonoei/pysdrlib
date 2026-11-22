@@ -81,7 +81,7 @@ class TestClient:
             sdr.stop_rx()
         assert y.dtype == np.complex64 and np.array_equal(y, x[:65536])
 
-    @pytest.mark.parametrize("name", ["ci16", "ci8", "cu8", "cu16", "ci32", "cf64", "ci16_be"])
+    @pytest.mark.parametrize("name", ["ci16", "ci8", "cu8", "cu16", "ci32", "cf64", "ci16_be", "ci4", "cf16", "cf16_be"])
     def test_other_sample_formats_and_split_samples(self, server, name):
         fmt = convert.sample_format(name)
         x = (0.5 * tone(40_000)).astype(np.complex64)

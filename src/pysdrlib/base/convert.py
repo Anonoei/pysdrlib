@@ -33,7 +33,8 @@ class SampleFormat:
                "float" IEEE float
     bits:      significant bits per component (12 for a 12-bit ADC)
     storage:   bits a component occupies in memory: 8, 16, 32 or 64. For `packed` formats, equals `bits`.
-    packed:    components follow each other with no padding (only 12-bit signed is supported)
+    packed:    components follow each other with no padding: signed 12-bit (I and Q in 3 bytes) or signed 4-bit
+               (I and Q in one byte, I in the high nibble)
     byteorder: "<" little endian (default) or ">"
     """
     kind: str
@@ -48,13 +49,13 @@ class SampleFormat:
         if self.byteorder not in ("<", ">"):
             raise ValueError("byteorder must be '<' or '>'")
         if self.packed:
-            if (self.kind, self.bits, self.storage) != ("int", 12, 12):
-                raise ValueError("only signed 12-bit samples can be packed")
+            if self.kind != "int" or self.bits not in (12, 4) or self.storage != self.bits:
+                raise ValueError("only signed 12-bit and 4-bit samples can be packed")
             return
         if self.storage not in (8, 16, 32, 64) or not 1 <= self.bits <= self.storage:
             raise ValueError(f"invalid bits/storage: {self.bits}/{self.storage}")
-        if self.kind == "float" and (self.bits != self.storage or self.storage not in (32, 64)):
-            raise ValueError("float samples are 32 or 64 bits")
+        if self.kind == "float" and (self.bits != self.storage or self.storage not in (16, 32, 64)):
+            raise ValueError("float samples are 16, 32 or 64 bits")
 
     @property
     def dtype(self):
@@ -67,7 +68,9 @@ class SampleFormat:
     @property
     def bytes_per_sample(self):
         """Bytes of one complex (I, Q) sample"""
-        return 3 if self.packed else 2 * self.storage // 8
+        if self.packed:
+            return 1 if self.bits == 4 else 3
+        return 2 * self.storage // 8
 
     @property
     def full_scale(self):
@@ -99,9 +102,11 @@ UINT8 = SampleFormat("uint", 8, 8)
 INT16 = SampleFormat("int", 16, 16)
 INT12 = SampleFormat("int", 12, 16)                  # 12-bit values in 16-bit words
 INT12_PACKED = SampleFormat("int", 12, 12, packed=True)  # I and Q in 3 bytes
+INT4_PACKED = SampleFormat("int", 4, 4, packed=True)    # I and Q in one byte (I in the high nibble)
+FLOAT16 = SampleFormat("float", 16, 16)                 # IEEE half
 FLOAT32 = SampleFormat("float", 32, 32)
 
-_NAMES = {"ci8": INT8, "cu8": UINT8, "cui8": UINT8, "ci16": INT16, "cf32": FLOAT32,
+_NAMES = {"ci4": INT4_PACKED, "ci8": INT8, "cu8": UINT8, "cui8": UINT8, "ci16": INT16, "cf16": FLOAT16, "cf32": FLOAT32,
           "cu16": SampleFormat("uint", 16, 16), "cui16": SampleFormat("uint", 16, 16),
           "ci32": SampleFormat("int", 32, 32), "cf64": SampleFormat("float", 64, 64)}
 
@@ -113,7 +118,7 @@ NAMES = tuple(sorted(n for n in _NAMES if n not in ("cui8", "cui16"))) + tuple(
 
 def sample_format(fmt) -> SampleFormat:
     """A `SampleFormat` from itself or a SigMF-style name: "cf32" (GNU Radio complex64), "ci16", "ci8", "cu8"/"cui8"
-    (RTL-SDR), "cu16", "ci32", "cf64". Two's complement may be spelled out ("ci16t"), and "_le"/"_be" picks the byte
+    (RTL-SDR), "cu16", "ci32", "cf64", "cf16" (IEEE half), "ci4" (I and Q nibbles in a byte). Two's complement may be spelled out ("ci16t"), and "_le"/"_be" picks the byte
     order (default little-endian)."""
     if isinstance(fmt, SampleFormat):
         return fmt

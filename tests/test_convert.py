@@ -37,7 +37,9 @@ class TestDescriptor:
         dict(kind="int", bits=12, storage=12),            # packed must say so
         dict(kind="int", bits=12, storage=12, packed=True, byteorder="x"),
         dict(kind="uint", bits=12, storage=12, packed=True),
-        dict(kind="float", bits=16, storage=16),
+        dict(kind="float", bits=8, storage=8),
+        dict(kind="int", bits=4, storage=4),               # packed must say so
+        dict(kind="int", bits=4, storage=8, packed=True),
         dict(kind="int", bits=8, storage=24),
     ])
     def test_invalid(self, bad):
@@ -212,6 +214,43 @@ class TestNames:
         assert convert.sample_format(convert.INT12) is convert.INT12
 
     def test_unknown_names_are_refused(self):
-        for bad in ("cf16", "ci4", "i16", "complex64"):
+        for bad in ("cf8", "ci2", "i16", "complex64"):
             with pytest.raises(ValueError, match="unknown sample format"):
                 convert.sample_format(bad)
+
+
+class TestFourBitAndHalf:
+    def test_ci4_layout(self):
+        # I in the high nibble, Q in the low, two's complement, full scale 8
+        out = convert.sample_format("ci4").to_complex64(np.array([0x7F, 0x81, 0x0F], dtype=np.uint8))
+        np.testing.assert_array_equal(out, np.array([7 / 8 - 1j / 8, -1 + 1j / 8, -1j / 8], dtype=np.complex64))
+        assert convert.sample_format("ci4t") == convert.INT4_PACKED and convert.INT4_PACKED.bytes_per_sample == 1
+
+    def test_ci4_matches_the_file_format(self, tmp_path):
+        from pysdrlib import File, FileSink
+        iq = (np.arange(-8, 8) / 8 + 1j * np.arange(7, -9, -1) / 8).astype(np.complex64)
+        raw = convert.INT4_PACKED.from_complex64(iq)
+        path = tmp_path / "x.bin"
+        raw.tofile(path)
+        with File(path, "ci4t", scale=True) as f:
+            np.testing.assert_array_equal(f.next(len(iq)), iq)
+
+    def test_cf16(self):
+        fmt = convert.sample_format("cf16")
+        iq = np.array([0.5 - 0.25j, 1e-6 + 65504j, 1 / 3 + 0j], dtype=np.complex64)
+        raw = fmt.from_complex64(iq)
+        np.testing.assert_array_equal(raw.view("<f2"), iq.view(np.float32).astype(np.float16))
+        np.testing.assert_array_equal(fmt.to_complex64(raw), iq.view(np.float32).astype(np.float16).astype(np.float32).view(np.complex64))
+        be = convert.sample_format("cf16_be")
+        np.testing.assert_array_equal(be.to_complex64(be.from_complex64(iq)), fmt.to_complex64(raw))
+
+    def test_half_rounding_edges(self):
+        x = np.array([65504, 65519, 65520, 1e9, 2.0 ** -24, 2.0 ** -25, 3 * 2.0 ** -26, 2.0 ** -14, -0.0, np.inf],
+                     dtype=np.float32)
+        x = np.concatenate([x, -x])
+        got = convert.FLOAT16.from_complex64(x.view(np.complex64)).view("<f2")
+        np.testing.assert_array_equal(got.view(np.uint16), x.astype(np.float16).view(np.uint16))
+
+    def test_listed_for_tcpiq(self):
+        from pysdrlib import tcpiq
+        assert {"ci4", "cf16", "cf16_be"} <= set(tcpiq.FORMATS)
