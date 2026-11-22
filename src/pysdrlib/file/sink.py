@@ -116,7 +116,9 @@ class FileSink:
         for offset, n in meta.gaps:
             if offset or self._last_index is None:
                 self.annotations.append({"core:sample_start": self.count + offset, "core:comment": f"{n} samples lost before"})
-        self._last_index = meta.index + meta.count
+        # (a gap inside the block moves the index on too: it isn't a jump before the next one. One at offset 0 is before
+        # meta.index, already counted above)
+        self._last_index = meta.index + meta.count + sum(n for offset, n in meta.gaps if offset)
 
     def _events(self, meta, base):
         for e in meta.events:
@@ -160,7 +162,7 @@ class FileSink:
         # clip I and Q separately, in the array's own precision
         parts = np.ascontiguousarray(arr).view(arr.real.dtype) if is_complex else arr
         bad = (parts < lo) | (parts > hi)
-        if parts.dtype.kind == "f" and self.fmt.integer():
+        if parts.dtype.kind == "f" and self.fmt.integer:
             nan = np.isnan(parts)  # NaN has no integer value: store 0 and count it (inf saturates)
             if nan.any():
                 parts = np.where(nan, 0, parts).astype(parts.dtype, copy=False)

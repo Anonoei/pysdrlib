@@ -28,7 +28,6 @@ import dataclasses
 import functools
 import itertools
 import time
-import warnings
 import weakref
 from typing import Any
 
@@ -808,70 +807,93 @@ class Device:
         finally:
             if started and self.state["rx"]:
                 self.stop_rx()
-    def find_gain(self, channel=0, count=65536, max_clip=1e-4, clip_level=0.98, headroom_db=0.0, resolution=0.01,
+    def find_gain(self, channel=0, count=65536, max_clip=1e-4, clip_level=0.98, headroom_db=0.0, confirm=None,
                   timeout=None, skip=0):
-        """The highest receive gain at which the signal doesn't clip, found by bisecting the gain fraction (clipping only
-        grows with gain), and set:
+        """The highest receive gain at which the signal doesn't clip, found by bisecting the gains the device can set
+        (clipping only grows with gain), and set. Returns it as a fraction of the gain range:
 
-            sdr.find_gain()                        # -> 0.62: channel 0's gain fraction, now in effect
+            sdr.find_gain()                        # -> 0.62: channel 0's gain, now in effect
             sdr.find_gain(channel=[0, 1])          # -> {0: 0.62, 1: 0.71}: each channel's, from aligned reads
 
         At each step the gain is set (skipping its settling, `flush=True`), `skip` more samples are discarded, and
         `count` are read; a block clips when more than `max_clip` of its samples have I or Q at `clip_level` of full
-        scale or beyond. headroom_db: then back off this much below the gain found. resolution: of the fraction.
+        scale or beyond. For a bursty signal (TDMA, WiFi, BLE...) `count` must span a burst: a window that misses
+        them reads as clean. confirm: then read this many samples (default 4 * count) at the gain found, and step down
+        while that clips. headroom_db: back off this much below the gain found.
         Channels whose gain is one setting (`caps.shared["gain"]`) get the gain at which none clips.
-        The gain mode is set to "manual" (an AGC would undo it). Starts receiving if it wasn't, and stops it again.
-        The result holds while the signal stays as it was during the search"""
+        The gain mode is set to "manual" (an AGC would undo it). Starts receiving if it wasn't, and stops it again; when
+        already receiving, the channels must be among `rx_channels`. The result holds while the signal stays as it was"""
         multi = not np.isscalar(channel)
         channels = tuple(channel) if multi else (channel,)
-        if not 0 < resolution < 1:
-            raise ValueError(f"resolution is a fraction of the gain range, between 0 and 1, not {resolution}")
+        if self.state["rx"] and not set(channels) <= set(self.rx_channels):
+            raise err.InvalidValue(f"find_gain: channels {list(channels)} aren't all receiving (rx_channels "
+                                   f"{list(self.rx_channels)}): stop_rx() first, or start_rx(channels=...) with them")
         for ch in channels:
             if self.get_rx_gain_mode(ch) != "manual":
                 self.set_rx_gain_mode("manual", ch)
         joint = multi and self.caps.shared.get("gain", "channel") != "channel"
         target = channels if multi else channel
+        confirm = 4 * int(count) if confirm is None else int(confirm)
+        steps = {ch: _gain_settings(self.caps.gains[self._direction("rx", ch)]) for ch in channels}
+        measured = {ch: {} for ch in channels}   # gain in effect [dB] -> share of samples clipping
+
+        def clipping(want, n, cache=True):
+            """Set each channel's gain (dB), and the share of `n` samples clipping, by channel. With cache, a gain a
+            channel already got is not read again (several settings asked for can come out the same)"""
+            got = {ch: self.set_rx_gain_db(g, channel=ch, flush=True) for ch, g in want.items()}
+            if cache and all(got[ch] in measured[ch] for ch in channels):
+                return {ch: measured[ch][got[ch]] for ch in channels}
+            if skip:
+                self.read(int(skip), timeout=timeout, channel=target)
+            x = np.atleast_2d(self.read(int(n), timeout=timeout, channel=target))
+            over = ((np.abs(x.real) >= clip_level) | (np.abs(x.imag) >= clip_level)).mean(axis=1).tolist()
+            share = dict(zip(channels, [max(over)] * len(over) if joint else over))
+            if cache:
+                for ch in channels:
+                    measured[ch][got[ch]] = share[ch]
+            return share
+
         started = not self.state["rx"]
         if started:
             self.start_rx(channels=channels if channels != (0,) else None)
-
-        def clipping(fractions):
-            for ch, f in fractions.items():
-                self.set_rx_gain(f, channel=ch, flush=True)
-            if skip:
-                self.read(int(skip), timeout=timeout, channel=target)
-            x = np.atleast_2d(self.read(int(count), timeout=timeout, channel=target))
-            over = ((np.abs(x.real) >= clip_level) | (np.abs(x.imag) >= clip_level)).mean(axis=1)
-            share = dict(zip(channels, over.tolist()))
-            return {ch: max(share.values()) for ch in channels} if joint else share
-
-        quiet = warnings.catch_warnings()   # gains between the device's steps round down: that's expected here
-        quiet.__enter__()
-        warnings.filterwarnings("ignore", message=".*gain must", category=warn._Warning)
+        self._quiet_gain_rounding = True
         try:
-            lo, hi = dict.fromkeys(channels, 0.0), dict.fromkeys(channels, 1.0)
-            share = clipping(hi)
+            lo = dict.fromkeys(channels, -1)                          # index of the highest setting known not to clip
+            hi = {ch: len(steps[ch]) for ch in channels}              # ... of the lowest known to clip
+            share = clipping({ch: steps[ch][-1] for ch in channels}, count)
             for ch in channels:
                 if share[ch] <= max_clip:
-                    lo[ch] = 1.0   # doesn't clip even at the top
-            while any(hi[ch] - lo[ch] > resolution for ch in channels):
-                mid = {ch: (lo[ch] + hi[ch]) / 2 if hi[ch] - lo[ch] > resolution else lo[ch] for ch in channels}
-                share = clipping(mid)
+                    lo[ch] = len(steps[ch]) - 1
+                else:
+                    hi[ch] = len(steps[ch]) - 1
+            while any(hi[ch] - lo[ch] > 1 for ch in channels):
+                mid = {ch: (lo[ch] + hi[ch]) // 2 if hi[ch] - lo[ch] > 1 else max(lo[ch], 0) for ch in channels}
+                share = clipping({ch: steps[ch][mid[ch]] for ch in channels}, count)
                 for ch in channels:
-                    if hi[ch] - lo[ch] > resolution:
-                        (lo if share[ch] <= max_clip else hi)[ch] = mid[ch]
+                    if hi[ch] - lo[ch] > 1:
+                        if share[ch] <= max_clip:
+                            lo[ch] = mid[ch]
+                        else:
+                            hi[ch] = mid[ch]
+            at = {ch: max(lo[ch], 0) for ch in channels}
+            while confirm:   # a longer look: a window can miss a burst
+                share = clipping({ch: steps[ch][at[ch]] for ch in channels}, confirm, cache=False)
+                down = [ch for ch in channels if share[ch] > max_clip and at[ch] > 0]
+                if not down:
+                    break
+                for ch in down:
+                    at[ch] -= 1
             found = {}
             for ch in channels:
-                if lo[ch] == 0.0 and hi[ch] <= resolution:
+                if lo[ch] < 0:
                     self.log.warning("find_gain: channel %s clips even at the lowest gain", ch)
-                self.set_rx_gain(lo[ch], channel=ch, flush=True)
+                gain = steps[ch][at[ch]]
                 if headroom_db:
-                    floor = self.caps.gain_range(self._direction("rx", ch)).lo
-                    self.set_rx_gain_db(max(floor, self.get_rx_gain_db(channel=ch) - headroom_db), channel=ch,
-                                        flush=True)
+                    gain = max([g for g in steps[ch] if g <= gain - headroom_db] or [steps[ch][0]])
+                self.set_rx_gain_db(gain, channel=ch, flush=True)
                 found[ch] = self.get_rx_gain(channel=ch)
         finally:
-            quiet.__exit__(None, None, None)
+            self._quiet_gain_rounding = False
             if started and self.state["rx"]:
                 self.stop_rx()
         return found if multi else found[channel]
@@ -1215,7 +1237,8 @@ class Device:
         """Round `gain` down to a multiple of `step` and clamp it to [lo, hi], warning if changed"""
         if step:
             if gain % step:
-                self._invalid(f"{label} gain must be a multiple of {step}")
+                if not getattr(self, "_quiet_gain_rounding", False):   # (find_gain sets totals a split may round)
+                    self._invalid(f"{label} gain must be a multiple of {step}")
                 gain -= gain % step # default to lowering gain to next valid value
         if gain < lo:
             self._invalid(f"{label} gain must greater than {lo}")
@@ -1383,6 +1406,16 @@ def _gap_check(on_drop, samples, meta):
                         + (f" (channels {[m.channel for m in metas if any(at for at, _ in m.gaps)]})" if len(metas) > 1 else ""))
         e.samples, e.meta, e.lost = samples, meta, lost
         raise e
+
+def _gain_settings(stages):
+    """The total gains (dB, ascending) a direction's stages ({name: GainStage}) can make"""
+    options = [_stage_values(spec) for spec in stages.values()]
+    if not options:
+        return [0.0]
+    if np.prod([len(o) for o in options], dtype=float) > 1e5:   # too many to list: whole dB across the range
+        lo, hi = sum(min(o) for o in options), sum(max(o) for o in options)
+        return sorted(set(np.arange(lo, hi, 1.0).tolist()) | {hi})
+    return sorted({round(sum(combo), 6) for combo in itertools.product(*options)})
 
 def _split(stages, reserve, by_db, total, name):
     """{stage: gain} sharing `total` between `stages` ((name, GainStage) pairs, in signal order); see `_split_gain`"""

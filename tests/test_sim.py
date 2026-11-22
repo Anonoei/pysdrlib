@@ -522,7 +522,7 @@ class TestFindGain:
     def test_finds_the_highest_gain_that_does_not_clip(self):
         dev = self.make()
         span = dev.caps.gain_range("rx")
-        f = dev.find_gain(count=8192, resolution=0.005)
+        f = dev.find_gain(count=8192)
         limit = (self.clip_db(-20) - span.lo) / (span.hi - span.lo)   # 52 dB
         assert f == dev.get_rx_gain() and limit - 0.03 <= f <= limit + 0.005
         assert not dev.state["rx"]   # stopped again
@@ -548,8 +548,61 @@ class TestFindGain:
 
     def test_two_channels_each_their_own(self):
         dev = self.make(channels=2, channel_db=[0, -10])   # channel 1 is 10 dB weaker: 10 dB more gain
-        found = dev.find_gain(channel=[0, 1], count=8192, resolution=0.005)
+        found = dev.find_gain(channel=[0, 1], count=8192)
         span = dev.caps.gain_range("rx")
         assert (found[1] - found[0]) * (span.hi - span.lo) == pytest.approx(10, abs=2)
         assert dev.get_rx_gain(channel=1) == found[1]
         dev.close()
+
+    def test_settings_the_device_has(self):
+        dev = self.make()
+        dev.find_gain(count=4096)
+        assert dev.get_rx_gain_db() in dev_settings(dev)
+
+    def test_bursts_a_window_can_miss(self):
+        # strong bursts 5 ms of every 100 ms: a 4096-sample window (4 ms) mostly misses them; the confirm read catches them
+        dev = Sim(realtime=True, block_samples=4096, tones=[(125_000, -40)], gain_ref=32,
+                  bursts=[{"offset": -200_000, "level": -10, "period": 0.1, "duration": 0.005}], seed=3)
+        dev.open()
+        dev.initialize(cf=100e6, Fs=1e6)
+        dev.find_gain(count=4096, confirm=250_000)
+        assert dev.get_rx_gain_db() <= 32 + 10 + 1   # where the bursts (not the -40 dBFS tone) reach full scale
+        dev.close()
+
+    def test_channels_must_be_receiving(self):
+        dev = self.make(channels=2)
+        dev.start_rx()   # channel 0 only
+        with pytest.raises(err.InvalidValue, match="rx_channels"):
+            dev.find_gain(channel=[0, 1])
+        dev.close()
+
+    def test_no_rounding_warnings(self, recwarn):
+        dev = self.make()
+        dev.find_gain(count=4096)
+        assert not [w for w in recwarn if "gain must" in str(w.message)]
+        dev.close()
+
+
+def test_sigmf_sink_annotates_a_gap_inside_a_block_once(tmp_path):
+    import json
+    from pysdrlib.file import FileSink
+    dev = Sim(realtime=True, block_samples=4096)
+    dev.open()
+    dev.initialize(cf=100e6, Fs=1e6)
+    dev.start_rx()
+    try:
+        dev.read(10_000, timeout=1.0)
+        dev.drop(5000, after=3000)
+        with FileSink(tmp_path / "x.sigmf") as sink:
+            for _ in range(4):
+                x, m = dev.read(10_000, timeout=1.0, meta=True)
+                sink.write(x, meta=m)
+    finally:
+        dev.close()
+    notes = json.loads((tmp_path / "x.sigmf-meta").read_text())["annotations"]
+    assert [a["core:comment"] for a in notes] == ["5000 samples lost before"]
+
+
+def dev_settings(dev):
+    from pysdrlib.base.device import _gain_settings
+    return _gain_settings(dev.caps.gains["rx"])

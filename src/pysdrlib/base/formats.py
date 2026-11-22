@@ -183,6 +183,7 @@ class Formats(Enum):
         """(lo, hi) of the values `write` accepts per component (I or Q), or None if unbounded"""
         return self.value.limits()
 
+    @property
     def integer(self):
         """True if components are stored as integers"""
         return self.value.integer()
