@@ -37,6 +37,13 @@ the `Dropped` warning). There is no stall watchdog, because the sender decides w
 
 ## Specs
 - Frequency and sample rate: whatever the source sends. `cf` and `Fs` are what you declare it to be.
+- Measured rate: `sdr.measured_rate` is how many samples per second are arriving, measured over windows of about a
+  second, whether receiving or not. It is None until the first window is complete (the first 0.25 s of a stream are
+  skipped, because what the sender and the kernel buffered arrives as a burst), when nothing has arrived for 2 s, and
+  after a client leaves. A window restarts after a pause longer than 0.5 s. If it is more than 10% off the declared `Fs`
+  for 3 windows in a row, `read` warns once per client (`warn.RateMismatch`). `Fs` is never taken from it: only a
+  sender paced in real time (a radio, `rtl_tcp`) arrives at its sample rate. A file replayed with `nc`, or a GNU Radio
+  flowgraph without a Throttle, arrives as fast as the network allows.
 - Samples: `open(..., sample_format=...)` with a SigMF-style name (`"cf32"`, the default: float32 I, Q, GNU Radio's
   `complex64`; `"ci16"`, `"ci8"`, `"cu8"` for `rtl_tcp`-style unsigned bytes, `"cu16"`, `"ci32"`, `"cf64"`, `"cf16"` (IEEE half),
   `"ci4"` (I and Q nibbles in one byte, I high), optionally with `_be`; `pysdrlib.tcpiq.FORMATS` lists them) or any

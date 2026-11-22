@@ -307,3 +307,65 @@ class TestReconnect:
         finally:
             stale.close()
         listening.stop_rx()
+
+
+def paced_sender(port, rate, seconds, chunk=2000, hold=0.0):
+    """A client that sends cf32 at `rate` samples/s, in real time, for `seconds`, then stays connected `hold` seconds"""
+    def send():
+        x = tone(chunk).tobytes()
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as c:
+            t0 = time.monotonic()
+            for i in range(int(rate * seconds / chunk)):
+                delay = t0 + i * chunk / rate - time.monotonic()
+                if delay > 0:
+                    time.sleep(delay)
+                c.sendall(x)
+            time.sleep(hold)
+    t = threading.Thread(target=send, daemon=True)
+    t.start()
+    return t
+
+
+def read_for(sdr, seconds):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        sdr.read(1000, timeout=0.2)
+
+
+class TestMeasuredRate:
+    """How fast samples arrive is measured, and checks the declared Fs (it never sets it)"""
+
+    def test_measured_and_agreeing(self, listening, recwarn):
+        assert listening.measured_rate is None   # nothing arrived yet
+        listening.set_rx_sample_rate(200e3)
+        listening.start_rx()
+        sender = paced_sender(listening.port, 200e3, 2.0)
+        read_for(listening, 1.8)
+        assert listening.measured_rate == pytest.approx(200e3, rel=0.1)
+        assert listening.get_rx_sample_rate() == 200e3
+        assert not [w for w in recwarn if "Fs is declared" in str(w.message)]
+        sender.join()
+
+    def test_a_mismatch_is_warned_once(self, listening):
+        listening.RATE_WINDOWS = 1
+        listening.start_rx()   # declared 1 MS/s; the sender streams 200 kS/s
+        sender = paced_sender(listening.port, 200e3, 3.0)
+        with pytest.warns(UserWarning, match="Fs is declared as 1,000,000") as caught:   # warn.RateMismatch
+            read_for(listening, 2.8)
+        assert len([w for w in caught if "Fs is declared" in str(w.message)]) == 1
+        assert listening.get_rx_sample_rate() == 1e6   # untouched
+        sender.join()
+
+    def test_unknown_once_nothing_arrives(self, listening):
+        listening.start_rx()
+        sender = paced_sender(listening.port, 200e3, 1.5, hold=4.0)
+        assert wait_for(lambda: listening.measured_rate, timeout=3.0)   # still connected, sending
+        assert wait_for(lambda: listening.measured_rate is None, timeout=4.0)   # still connected, silent
+        assert listening.peer is not None
+        sender.join()
+
+    def test_a_client_leaving_forgets_it(self, listening):
+        listening.start_rx()
+        paced_sender(listening.port, 200e3, 1.5).join()
+        assert wait_for(lambda: listening.peer is None)
+        assert listening.measured_rate is None

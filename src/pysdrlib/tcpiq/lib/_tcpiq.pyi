@@ -68,6 +68,9 @@ class device:
     def port(self) -> int:
         ...
     @property
+    def rate_windows(self) -> int:
+        ...
+    @property
     def replaced(self) -> int:
         ...
     @property
@@ -79,6 +82,11 @@ class device:
     @property
     def rtl_tuner(self) -> int:
         ...
+    @property
+    def rx_rate(self) -> float:
+        """
+        Samples per second arriving (latest ~1 s window); 0.0 when not known
+        """
     @property
     def rx_slots(self) -> int:
         ...

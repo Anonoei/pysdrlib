@@ -66,6 +66,12 @@ namespace {
 constexpr size_t CHUNK_BYTES = 1 << 18;     // one read
 constexpr int RCVBUF_BYTES = 4 << 20;       // the kernel's buffer: room for a burst while the thread converts
 constexpr int POLL_MS = 100;                // how soon the thread notices a stop
+// The arrival rate: measured over windows of RATE_WINDOW, after RATE_WARMUP of a stream (or after a pause longer than
+// RATE_GAP) is skipped; reported as unknown once nothing has arrived for RATE_STALE
+constexpr auto RATE_WINDOW = std::chrono::milliseconds(1000);
+constexpr auto RATE_WARMUP = std::chrono::milliseconds(250);
+constexpr auto RATE_GAP = std::chrono::milliseconds(500);
+constexpr auto RATE_STALE = std::chrono::milliseconds(2000);
 
 struct AddrInfo {
     addrinfo* list = nullptr;
@@ -269,6 +275,7 @@ void TcpIqDevice::start_rx() {
     if (listening_) return;   // the thread is already reading
     if (io_.joinable()) io_.join();   // a stream that ended by itself
     if (eof_) return;
+    rate_reset();   // what queued in the kernel while not reading arrives as a burst
     stop_ = false;
     io_ = std::thread([this] { io_loop(); });
 }
@@ -304,6 +311,7 @@ void TcpIqDevice::drop_client() {
 
 // A connection's stream starts: nothing carried, and its first bytes are checked for an rtl_tcp header
 void TcpIqDevice::new_stream() {
+    rate_reset();
     carry_ = 0;
     head_len_ = 0;
     sniffing_ = true;
@@ -340,12 +348,53 @@ size_t TcpIqDevice::sniff_header(size_t got) {
     return got - take;
 }
 
+void TcpIqDevice::rate_reset() {
+    rate_t0_ = clock::time_point{};
+    rate_warm_ = false;
+    rate_bytes_ = 0;
+    rx_rate_ = 0.0;
+}
+
+// `bytes` of samples arrived
+void TcpIqDevice::rate_count(size_t bytes) {
+    const auto now = clock::now();
+    const bool paused = rate_t0_ != clock::time_point{} && now - rate_last_ > RATE_GAP;
+    rate_last_ = now;
+    rate_last_ns_ = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+    if (rate_t0_ == clock::time_point{} || paused) {   // the first bytes, or the first after a pause: start over
+        rate_t0_ = now;                                  // (the warm-up, or the window, from here)
+        rate_bytes_ = 0;
+        return;
+    }
+    if (!rate_warm_) {
+        if (now - rate_t0_ < RATE_WARMUP) return;
+        rate_warm_ = true;
+        rate_t0_ = now;
+        return;
+    }
+    rate_bytes_ += bytes;
+    const std::chrono::duration<double> dt = now - rate_t0_;
+    if (now - rate_t0_ >= RATE_WINDOW) {
+        rx_rate_ = static_cast<double>(rate_bytes_) / format_.bytes_per_sample() / dt.count();
+        ++rate_windows_;
+        rate_t0_ = now;
+        rate_bytes_ = 0;
+    }
+}
+
+double TcpIqDevice::rx_rate() const {
+    const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now().time_since_epoch()).count();
+    if (now - rate_last_ns_ > std::chrono::duration_cast<std::chrono::nanoseconds>(RATE_STALE).count()) return 0.0;
+    return rx_rate_;
+}
+
 // `got` new bytes are in buf_ after the carried ones: queue the whole samples (while receiving), keep a split one
 void TcpIqDevice::receive(size_t got) {
     if (sniffing_) {
         got = sniff_header(got);
         if (!got) return;
     }
+    rate_count(got);
     const size_t bps = format_.bytes_per_sample();
     const size_t total = carry_ + got;
     const size_t whole = total - total % bps;

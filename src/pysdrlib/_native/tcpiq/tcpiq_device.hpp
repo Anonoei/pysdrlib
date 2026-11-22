@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -58,6 +59,11 @@ public:
     bool rtl_header() const { return rtl_seen_; }
     uint32_t rtl_tuner() const { return rtl_tuner_; }
     uint32_t rtl_gain_count() const { return rtl_gains_; }
+    // How fast samples arrive (per second, over the latest window of about a second), whether receiving or not; 0
+    // until a window is in, and when nothing has arrived for a while. Only a sender paced in real time (a radio)
+    // arrives at its sample rate, so it is a check on the declared rate, not a source of it
+    double rx_rate() const;
+    uint64_t rate_windows() const { return rate_windows_; }   // windows measured since open
 
 protected:
     HardwareError not_open_error() const override;
@@ -70,6 +76,8 @@ private:
     void new_stream();
     bool accept_client(TcpIqConn* c);
     size_t sniff_header(size_t got);
+    void rate_reset();
+    void rate_count(size_t bytes);
 
     SampleFormat format_{SampleKind::Float, 32, 32, false};
     std::thread io_;
@@ -93,4 +101,14 @@ private:
     std::atomic<bool> rtl_seen_{false};
     std::atomic<uint32_t> rtl_tuner_{0};
     std::atomic<uint32_t> rtl_gains_{0};
+    // The arrival rate (receive thread only, but for the atomics). A stream's first bytes are a burst (what the sender
+    // and the kernel buffered), so windows start after a warm-up, and again after a pause
+    using clock = std::chrono::steady_clock;
+    clock::time_point rate_t0_{};      // the window's start (or the warm-up's); none: no bytes yet
+    bool rate_warm_ = false;
+    clock::time_point rate_last_{};    // the latest bytes
+    uint64_t rate_bytes_ = 0;          // bytes since rate_t0_
+    std::atomic<double> rx_rate_{0.0};
+    std::atomic<int64_t> rate_last_ns_{0};
+    std::atomic<uint64_t> rate_windows_{0};
 };

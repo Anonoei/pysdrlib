@@ -2,7 +2,7 @@
 from ..base import convert
 from ..base.caps import Capabilities, Range
 from ..base.native import NativeDevice
-from .. import err
+from .. import err, warn
 
 from . import lib
 
@@ -25,6 +25,8 @@ class TcpIq(NativeDevice):
     STALL_TIMEOUT = None          # the sender sets the pace, and a server may have no client yet
     MAX_BUFFER_SAMPLES = 2**24    # the rate is only declared: don't let it size a huge queue
     SAMPLE_FORMAT = convert.FLOAT32   # the default; `open(sample_format=...)` gives an instance its own
+    RATE_TOLERANCE = 0.1   # warn when samples arrive this far (relatively) from the declared rate ...
+    RATE_WINDOWS = 3       # ... in this many measurements in a row (about a second each)
 
     device: lib.tcpiq.device   # the extension's device (None until `open`)
 
@@ -70,6 +72,39 @@ class TcpIq(NativeDevice):
         """The local port (the one chosen, after listening on port 0)"""
         return self.device.port if self.device is not None else None
 
+    @property
+    def measured_rate(self):
+        """Samples per second arriving, over the latest second or so (receiving or not), or None when not known yet
+        (or nothing is arriving). Only a sender paced in real time arrives at its sample rate: this checks the declared
+        `Fs` (a warning when they disagree), it never sets it"""
+        rate = self.device.rx_rate if self.device is not None else 0.0
+        return rate or None
+
+    def _check_counters(self, *counters, have_samples):
+        super()._check_counters(*counters, have_samples=have_samples)
+        d = self.device
+        windows = d.rate_windows
+        if windows == getattr(self, "_rate_seen", None):
+            return
+        self._rate_seen = windows
+        rate = d.rx_rate
+        stream = d.connections
+        if stream != getattr(self, "_rate_stream", None):   # a new client: judge it afresh
+            self._rate_stream, self._rate_off, self._rate_warned = stream, 0, False
+        if not rate or abs(rate - self._Fs) <= self.RATE_TOLERANCE * self._Fs:
+            self._rate_off = 0
+            return
+        self._rate_off += 1
+        if self._rate_off >= self.RATE_WINDOWS and not self._rate_warned:
+            self._rate_warned = True
+            warn.RateMismatch(f"{self.NAME}: samples arrive at {rate:,.0f}/s, but Fs is declared as {self._Fs:,.0f}; "
+                              "set_rx_sample_rate() to what the sender streams (a sender not paced in real time, "
+                              "replaying a file, also arrives faster)")
+
+    def _set_rx_sample_rate(self, Fs, channel=0):
+        self._rate_off, self._rate_warned = 0, False   # judge the new rate afresh
+        self._rate_changed()
+
     RTL_TUNERS = {0: "unknown", 1: "E4000", 2: "FC0012", 3: "FC0013", 4: "FC2580", 5: "R820T", 6: "R828D"}
 
     @property
@@ -84,8 +119,6 @@ class TcpIq(NativeDevice):
 
     def _set_rx_freq(self, freq, channel=0):
         pass   # declared, not sent: the sender decides what it streams
-    def _set_rx_sample_rate(self, Fs, channel=0):
-        self._rate_changed()
 
     def _set_rx_gain(self, gain, channel=0):
         return {}   # a stream has no gain to set (initialize asks)
