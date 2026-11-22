@@ -24,7 +24,8 @@ So `cf32` is two float32 (numpy `complex64`, a GNU Radio `.cfile`), `ci8` two in
 ## The formats
 
 "C type" is what one value (real formats) or one I/Q pair (complex) looks like in memory. Everything is
-little-endian.
+little-endian, except the `_be` formats: each format wider than a byte (not one's complement) also comes big-endian
+(network order), as `<name>_be`: `ci16_be`, `cf32_be`, `ui16_be`... Read, they come back in this machine's order.
 
 | Name | Bytes | Per value | C type | Range (per value) |
 | --- | --- | --- | --- | --- |
@@ -147,9 +148,25 @@ class Formats(Enum):
     cf32 = IO.Layout("f", 32, cplx=True)
     cf64 = IO.Layout("f", 64, cplx=True)
 
+    # Big-endian (network order), for values wider than a byte
+    ui16_be = IO.Layout("u", 16, big=True)
+    ui32_be = IO.Layout("u", 32, big=True)
+    i16t_be = IO.Layout("i", 16, big=True)
+    i32t_be = IO.Layout("i", 32, big=True)
+    f16_be = IO.Layout("f", 16, big=True)
+    f32_be = IO.Layout("f", 32, big=True)
+    f64_be = IO.Layout("f", 64, big=True)
+    ci16t_be = IO.Layout("i", 16, cplx=True, big=True)
+    ci32t_be = IO.Layout("i", 32, cplx=True, big=True)
+    cui16_be = IO.Layout("u", 16, cplx=True, big=True)
+    cf16_be = IO.Layout("f", 16, cplx=True, big=True)
+    cf32_be = IO.Layout("f", 32, cplx=True, big=True)
+    cf64_be = IO.Layout("f", 64, cplx=True, big=True)
+
     # Two's complement is the default: the same members without the `t` (aliases, not listed by `ls`)
     i4, i8, i16, i32 = i4t, i8t, i16t, i32t
     ci4, ci8, ci16, ci32 = ci4t, ci8t, ci16t, ci32t
+    i16_be, i32_be, ci16_be, ci32_be = i16t_be, i32t_be, ci16t_be, ci32t_be
 
     def read(self, io, count):
         """`count` elements (-1: to the end) from a file object"""
@@ -236,16 +253,16 @@ class Formats(Enum):
             return cls[name]
         if name in _FROM_SIGMF:
             return cls[_FROM_SIGMF[name]]
-        if isinstance(name, str) and name.endswith("_be"):
-            raise KeyError(f"{name!r}: big-endian files are not supported (only little-endian, '_le')")
         raise KeyError(f"unknown format {name!r}: one of {', '.join(cls.ls())}, or a SigMF datatype "
                          f"({', '.join(sorted(_FROM_SIGMF))})")
 
-# SigMF `core:datatype` of each format SigMF can describe (little-endian; 8-bit types have no byte order)
+# SigMF `core:datatype` of each format SigMF can describe (8-bit types have no byte order)
 _TO_SIGMF = {
     "cf32": "cf32_le", "cf64": "cf64_le", "ci8t": "ci8", "ci16t": "ci16_le", "ci32t": "ci32_le",
     "cui8": "cu8", "cui16": "cu16_le",
     "f32": "rf32_le", "f64": "rf64_le", "i8t": "ri8", "i16t": "ri16_le", "i32t": "ri32_le",
     "ui8": "ru8", "ui16": "ru16_le", "ui32": "ru32_le",
 }
-_FROM_SIGMF = {v: k for k, v in _TO_SIGMF.items()} | {"cu16": "cui16"}
+_TO_SIGMF |= {f"{name}_be": _TO_SIGMF[name].replace("_le", "_be")
+              for name in ("cf32", "cf64", "ci16t", "ci32t", "cui16", "f32", "f64", "i16t", "i32t", "ui16", "ui32")}
+_FROM_SIGMF = {v: k for k, v in _TO_SIGMF.items()} | {"cu16": "cui16", "cu16_be": "cui16_be"}

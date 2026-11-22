@@ -179,6 +179,8 @@ ROUND_TRIP = {
     "cui8":  ([0 + 255j, 128 + 127j], "c"),
     "cui16": ([0 + 65535j, 1 + 2j], "c"),
 }
+ROUND_TRIP.update({f"{name}_be": case for name, case in ROUND_TRIP.items()   # big-endian: the same values
+                   if f"{name}_be" in formats.Formats.__members__})
 
 
 class TestRoundTrip:
@@ -187,7 +189,7 @@ class TestRoundTrip:
 
     @staticmethod
     def _tol(name):
-        return {"f16": 1e-3, "f32": 1e-6, "cf32": 1e-6}.get(name, 0)
+        return {"f16": 1e-3, "f32": 1e-6, "cf32": 1e-6}.get(name.removesuffix("_be"), 0)
 
     def _roundtrip(self, name, values, count=None):
         fmt = formats.Formats[name]
@@ -283,7 +285,7 @@ class TestRoundTrip:
         for name, (values, _) in ROUND_TRIP.items():
             if name.startswith("c"):
                 _, _, result = self._roundtrip(name, values)
-                assert result.dtype == (np.complex128 if name == "cf64" else np.complex64), name
+                assert result.dtype == (np.complex128 if name.startswith("cf64") else np.complex64), name
 
     def test_integer_formats_round_floats(self):
         buf = _io.BytesIO()
@@ -354,3 +356,26 @@ def test_unscale_is_the_inverse_of_scale(tmp_path):
             out.write(x)
         with File(tmp_path / name, name, scale=True) as f:
             assert np.allclose(f.next(256), x, atol=1.5 / fmt.full_scale + 1e-3), name
+
+
+def test_big_endian_formats_round_trip_and_match_numpy(tmp_path):
+    import io as _io
+    import numpy as np
+    rng = np.random.default_rng(1)
+    for name, le in [("ui16_be", "ui16"), ("i32_be", "i32"), ("f16_be", "f16"), ("f64_be", "f64"), ("ci16_be", "ci16"),
+                     ("cui16_be", "cui16"), ("cf32_be", "cf32"), ("cf64_be", "cf64")]:
+        fmt, little = formats.Formats.get(name), formats.Formats.get(le)
+        assert fmt.value.big and fmt.bits == little.bits and fmt.bytes == little.bytes and name in formats.Formats.__members__
+        lo, hi = little.value.limits() or (-1e6, 1e6)
+        vals = rng.uniform(max(lo, -1000), min(hi, 1000), 64).round()
+        data = vals[0::2] + 1j * vals[1::2] if little.is_complex else vals
+        a, b = _io.BytesIO(), _io.BytesIO()
+        fmt.write(a, data)
+        little.write(b, data)
+        swapped = np.frombuffer(b.getvalue(), little.value.dtype).byteswap().tobytes()
+        assert a.getvalue() == swapped, name   # the same values, the other byte order
+        a.seek(0)
+        got = fmt.read(a, -1)
+        assert got.dtype.isnative and np.array_equal(got, little.read(_io.BytesIO(b.getvalue()), -1)), name
+    for bad in ("i8", "ci8", "i16o"):
+        assert f"{bad}_be" not in formats.Formats.__members__

@@ -28,14 +28,18 @@ def t2o(buff, width, otype):
 class Layout:
     """One format: `kind` "i" (signed), "u" (unsigned) or "f" (float), `bits` per value (I or Q of a complex format),
     one's complement (`ones`, signed only), and `cplx`: interleaved I, Q. 4-bit values are packed two to a byte, the
-    first in the high nibble, so they are read and written an even count at a time"""
-    def __init__(self, kind, bits, ones=False, cplx=False):
-        self.kind, self.bits, self.ones, self.cplx = kind, bits, ones, cplx
-        self.dtype = None if bits == 4 else np.dtype(f"<{'u' if ones else kind}{bits // 8}")   # one value, on disk
+    first in the high nibble, so they are read and written an even count at a time. `big`: big-endian on disk (values
+    wider than a byte)"""
+    def __init__(self, kind, bits, ones=False, cplx=False, big=False):
+        if big and (bits <= 8 or ones):
+            raise ValueError("big-endian is for values wider than a byte, in two's complement")
+        self.kind, self.bits, self.ones, self.cplx, self.big = kind, bits, ones, cplx, big
+        order = ">" if big else "<"
+        self.dtype = None if bits == 4 else np.dtype(f"{order}{'u' if ones else kind}{bits // 8}")   # one value, on disk
         self.out = np.complex128 if cplx and kind == "f" and bits == 64 else np.complex64      # what complex reads give
 
     def __repr__(self):
-        return f"Layout({self.kind!r}, {self.bits}, ones={self.ones}, cplx={self.cplx})"
+        return f"Layout({self.kind!r}, {self.bits}, ones={self.ones}, cplx={self.cplx}, big={self.big})"
 
     @property
     def bytes(self):
@@ -79,7 +83,7 @@ class Layout:
             if self.ones:
                 vals = o2t(vals, self.bits, np.dtype(f"i{self.bits // 8}"))
         if not self.cplx:
-            return vals
+            return vals.astype(vals.dtype.newbyteorder("=")) if self.big else vals   # in this machine's order
         return vals.astype(np.float64 if self.out == np.complex128 else np.float32).view(self.out)
 
     def write(self, f, data):

@@ -28,8 +28,10 @@ class TestFormats:
         assert Formats.get("cu8") is Formats.cui8
         assert Formats.get("ci16_le") is Formats.ci16t
         assert Formats.get(Formats.cf64) is Formats.cf64
-        with pytest.raises(KeyError, match="big-endian"):
-            Formats.get("ci16_be")
+        assert Formats.get("ci16_be") is Formats.ci16t_be and Formats.ci16t_be.sigmf == "ci16_be"
+        assert Formats.get("rf32_be") is Formats.f32_be and Formats.get("cu16_be") is Formats.cui16_be
+        with pytest.raises(KeyError, match="unknown format"):
+            Formats.get("ci8_be")
 
     def test_every_sigmf_format_round_trips(self):
         for fmt in Formats:
@@ -150,7 +152,7 @@ class TestRead:
 
     def test_unreadable_recordings(self, tmp_path):
         (tmp_path / "a.sigmf-data").write_bytes(b"")
-        (tmp_path / "a.sigmf-meta").write_text(json.dumps({"global": {"core:datatype": "ci16_be"}}))
+        (tmp_path / "a.sigmf-meta").write_text(json.dumps({"global": {"core:datatype": "ci64_le"}}))
         with pytest.raises(ValueError, match="not supported"):
             File(tmp_path / "a.sigmf")
         (tmp_path / "a.sigmf-meta").write_text(json.dumps({"global": {"core:datatype": "cf32_le", "core:num_channels": 2}}))
@@ -162,3 +164,14 @@ class TestRead:
         assert File(tmp_path / "x.cfile", "cf32").meta is None
         with pytest.raises(ValueError, match="fmt"):
             File(tmp_path / "x.cfile")
+
+
+def test_big_endian_recordings(tmp_path):
+    x = (tone(300) * 30000).round()
+    with FileSink(tmp_path / "be.sigmf", "ci16_be", rate=1e6) as out:
+        out.write(x)
+    assert meta_of(tmp_path / "be.sigmf")["global"]["core:datatype"] == "ci16_be"
+    raw = np.fromfile(tmp_path / "be.sigmf-data", ">i2")
+    assert np.array_equal(raw[0::2], x.real) and np.array_equal(raw[1::2], x.imag)
+    with File(tmp_path / "be") as f:
+        assert f.fmt is Formats.ci16t_be and np.array_equal(f.next(300), x)
