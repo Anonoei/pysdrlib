@@ -36,6 +36,7 @@ static void sockets_init() {
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -86,6 +87,30 @@ void resolve(AddrInfo& out, const std::string& host, uint16_t port, bool passive
 void set_rcvbuf(sock_t s) {
     int size = RCVBUF_BYTES;
     setsockopt(s, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&size), sizeof(size));
+}
+
+// A client that vanishes without closing (crashed, its network dropped) is noticed within ~KEEPALIVE_IDLE + 3 *
+// KEEPALIVE_INTERVAL seconds, so a listening device goes back to waiting for one, instead of on a dead connection
+constexpr int KEEPALIVE_IDLE = 5, KEEPALIVE_INTERVAL = 2, KEEPALIVE_COUNT = 3;
+
+void set_keepalive(sock_t s) {
+    int on = 1;
+    setsockopt(s, SOL_SOCKET, SO_KEEPALIVE, reinterpret_cast<const char*>(&on), sizeof(on));
+#if defined(TCP_KEEPIDLE)
+    int idle = KEEPALIVE_IDLE;
+    setsockopt(s, IPPROTO_TCP, TCP_KEEPIDLE, reinterpret_cast<const char*>(&idle), sizeof(idle));
+#elif defined(TCP_KEEPALIVE)   // macOS
+    int idle = KEEPALIVE_IDLE;
+    setsockopt(s, IPPROTO_TCP, TCP_KEEPALIVE, reinterpret_cast<const char*>(&idle), sizeof(idle));
+#endif
+#if defined(TCP_KEEPINTVL)
+    int interval = KEEPALIVE_INTERVAL;
+    setsockopt(s, IPPROTO_TCP, TCP_KEEPINTVL, reinterpret_cast<const char*>(&interval), sizeof(interval));
+#endif
+#if defined(TCP_KEEPCNT)
+    int count = KEEPALIVE_COUNT;
+    setsockopt(s, IPPROTO_TCP, TCP_KEEPCNT, reinterpret_cast<const char*>(&count), sizeof(count));
+#endif
 }
 
 std::string addr_text(const sockaddr* sa, socklen_t len) {
@@ -211,6 +236,7 @@ void TcpIqDevice::open_listen(const std::string& host, uint16_t port, const Samp
         listening_ = true;
         eof_ = false;
         connections_ = 0;
+        replaced_ = 0;
         buf_.assign(CHUNK_BYTES + format.bytes_per_sample() + RTL_HEADER, 0);
         new_stream();
         handle_ = c;
@@ -330,33 +356,56 @@ void TcpIqDevice::receive(size_t got) {
     if (carry_) std::memmove(buf_.data(), buf_.data() + whole, carry_);
 }
 
+// Listening: take a client waiting on the listener. One already connected is dropped for it: a sender that reconnects
+// does so because its connection died, though this end may not have noticed yet
+bool TcpIqDevice::accept_client(TcpIqConn* c) {
+    sockaddr_storage from{};
+    socklen_t len = sizeof(from);
+    sock_t s = accept(c->listener, reinterpret_cast<sockaddr*>(&from), &len);
+    if (s == NO_SOCKET) return false;
+    if (c->client != NO_SOCKET) {
+        drop_client();
+        ++replaced_;
+    }
+    set_blocking(s, true);
+    set_rcvbuf(s);
+    set_keepalive(s);
+    c->client = s;
+    new_stream();
+    {
+        std::lock_guard<std::mutex> lock(peer_mutex_);
+        peer_ = addr_text(reinterpret_cast<sockaddr*>(&from), len);
+    }
+    ++connections_;
+    return true;
+}
+
 void TcpIqDevice::io_loop() {
     TcpIqConn* c = handle_;   // valid until close(), which joins this thread first
     while (!stop_) {
-        pollfd p{};
-        p.events = POLLIN;
         if (c->client == NO_SOCKET) {   // listening, no client: wait for one
+            pollfd p{};
             p.fd = c->listener;
-            if (sock_poll(&p, 1, POLL_MS) <= 0) continue;
-            sockaddr_storage from{};
-            socklen_t len = sizeof(from);
-            sock_t s = accept(c->listener, reinterpret_cast<sockaddr*>(&from), &len);
-            if (s == NO_SOCKET) continue;
-            set_blocking(s, true);
-            set_rcvbuf(s);
-            c->client = s;
-            new_stream();
-            {
-                std::lock_guard<std::mutex> lock(peer_mutex_);
-                peer_ = addr_text(reinterpret_cast<sockaddr*>(&from), len);
-            }
-            ++connections_;
+            p.events = POLLIN;
+            if (sock_poll(&p, 1, POLL_MS) > 0) accept_client(c);
             continue;
         }
-        p.fd = c->client;
-        int r = sock_poll(&p, 1, POLL_MS);
+        pollfd p[2]{};
+        p[0].fd = c->client;
+        p[0].events = POLLIN;
+        unsigned n_fds = 1;
+        if (listening_) {   // and for a client reconnecting
+            p[1].fd = c->listener;
+            p[1].events = POLLIN;
+            n_fds = 2;
+        }
+        int r = sock_poll(p, n_fds, POLL_MS);
         if (r == 0) continue;
         if (r < 0 && interrupted(sock_errno())) continue;
+        if (r > 0 && listening_ && (p[1].revents & POLLIN)) {
+            accept_client(c);
+            continue;
+        }
         long n = -1;
         if (r > 0) {
             n = static_cast<long>(recv(c->client, reinterpret_cast<char*>(buf_.data() + carry_),
@@ -367,9 +416,9 @@ void TcpIqDevice::io_loop() {
             }
             if (n < 0 && interrupted(sock_errno())) continue;
         }
-        // the other end closed, or the connection failed
+        // the other end closed, or the connection failed (or keepalive found it dead)
         if (listening_) {
-            drop_client();   // and accept the next
+            drop_client();   // and wait for the next, or the same one reconnecting
             continue;
         }
         eof_ = true;

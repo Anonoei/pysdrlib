@@ -61,6 +61,11 @@ class TcpIq(NativeDevice):
         """Clients accepted since `open` (listening)"""
         return self.device.connections if self.device is not None else 0
     @property
+    def reconnects(self):
+        """Clients that connected while one was (listening): each took over, as a sender reconnecting after its
+        connection died does"""
+        return self.device.replaced if self.device is not None else 0
+    @property
     def port(self):
         """The local port (the one chosen, after listening on port 0)"""
         return self.device.port if self.device is not None else None

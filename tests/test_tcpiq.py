@@ -261,3 +261,49 @@ class TestRtlTcpHeader:
                 assert wait_for(lambda: listening.rtl_tcp is not None and listening.rtl_tcp["tuner_type"] == tuner)
             assert wait_for(lambda: listening.peer is None)
         listening.stop_rx()
+
+
+class TestReconnect:
+    """Listening: a client that drops is waited for, and the stream goes on when it (or another) connects"""
+
+    def test_streams_again_after_the_client_reconnects(self, listening):
+        x = tone(20_000)
+        listening.start_rx()
+        with client(listening) as c:
+            c.sendall(x[:10_000].tobytes())
+            first = listening.read(10_000, timeout=2.0)
+        assert wait_for(lambda: listening.peer is None)   # dropped: waiting
+        assert listening.state["rx"]
+        with client(listening) as c:
+            c.sendall(x[10_000:].tobytes())
+            second = listening.read(10_000, timeout=2.0)
+        np.testing.assert_array_equal(np.concatenate([first, second]), x)
+        assert listening.connections == 2 and listening.reconnects == 0
+        listening.stop_rx()
+
+    def test_a_read_waits_through_the_gap(self, listening):
+        listening.start_rx()
+        got = {}
+        reader = threading.Thread(target=lambda: got.update(x=listening.read(5000, timeout=5.0)))
+        reader.start()
+        time.sleep(0.3)   # nobody connected yet
+        with client(listening) as c:
+            c.sendall(tone(5000).tobytes())
+            reader.join(5)
+        assert len(got["x"]) == 5000
+        listening.stop_rx()
+
+    def test_a_reconnecting_client_takes_over_a_dead_connection(self, listening):
+        listening.start_rx()
+        stale = client(listening)   # connected, then silent: as a connection whose client vanished
+        try:
+            assert wait_for(lambda: listening.peer is not None)
+            old = listening.peer
+            with client(listening) as c:
+                c.sendall(tone(5000).tobytes())
+                y = listening.read(5000, timeout=2.0)
+                assert listening.peer != old and listening.reconnects == 1
+            np.testing.assert_array_equal(y, tone(5000))
+        finally:
+            stale.close()
+        listening.stop_rx()

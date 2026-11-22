@@ -68,6 +68,9 @@ class device:
     def port(self) -> int:
         ...
     @property
+    def replaced(self) -> int:
+        ...
+    @property
     def rtl_gain_count(self) -> int:
         ...
     @property

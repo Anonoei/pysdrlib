@@ -27,8 +27,10 @@ struct TcpIqConn;
 // (hardware_rx.hpp: complex64 conversion and the ring), never touching Python. The socket is drained as fast
 // as the network delivers: if Python reads too slowly the ring drops the oldest samples, the sender is never held up.
 //
-// Listening, the thread runs from open to close: it serves one client at a time and accepts the next when one
-// disconnects, and reads (and discards) what arrives while not receiving. Connected, it reads while receiving.
+// Listening, the thread runs from open to close: it serves one client at a time, and reads (and discards) what arrives
+// while not receiving. When the client disconnects it waits for the next (or the same one again) and streams on; a
+// client that connects while one is connected takes over (a sender reconnecting after its connection died), and TCP
+// keepalive notices a client that vanished without closing. Connected, it reads while receiving.
 class TcpIqDevice : public HardwareDevice<TcpIqConn*> {
 public:
     TcpIqDevice() = default;
@@ -50,6 +52,7 @@ public:
     bool eof() const { return eof_; }                       // connected: the server closed the stream
     std::string peer() const;                               // "host:port" of the other end; "" when none
     uint64_t connections() const { return connections_; }  // clients accepted since open (listening)
+    uint64_t replaced() const { return replaced_; }        // ... of which took over from a connected one (reconnects)
     uint16_t port() const { return port_; }                 // the local port
     // The rtl_tcp header the stream began with ("RTL0", tuner type, gain count; skipped, not samples), if it did
     bool rtl_header() const { return rtl_seen_; }
@@ -65,6 +68,7 @@ private:
     void drop_client();
     void receive(size_t got);
     void new_stream();
+    bool accept_client(TcpIqConn* c);
     size_t sniff_header(size_t got);
 
     SampleFormat format_{SampleKind::Float, 32, 32, false};
@@ -76,6 +80,7 @@ private:
     std::atomic<bool> streaming_{false};
     std::atomic<bool> eof_{false};
     std::atomic<uint64_t> connections_{0};
+    std::atomic<uint64_t> replaced_{0};
     bool listening_ = false;
     uint16_t port_ = 0;
     std::vector<unsigned char> buf_;   // a read, after `carry_` bytes of a sample split by the previous one
