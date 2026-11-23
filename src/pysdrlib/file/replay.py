@@ -311,7 +311,7 @@ class Replay(NativeDevice):
     def _tx_write(self, samples, timeout, slot=0):
         tx = self._tx
         if self.realtime:
-            now = time.monotonic()
+            now = time.perf_counter()   # (monotonic ticks every ~15.6 ms on Windows before Python 3.13)
             if tx["t0"] is None or self._sent(now) >= tx["written"]:   # the first, or written after it all went out
                 if tx["t0"] is not None:
                     tx["underruns"] += 1
@@ -331,7 +331,7 @@ class Replay(NativeDevice):
 
     def _tx_stats(self, slot=0):
         tx = self._tx
-        sent = self._sent(time.monotonic())
+        sent = self._sent(time.perf_counter())
         return {"written": tx["written"], "sent": sent, "underruns": tx["underruns"], "pending": tx["written"] - sent}
     def _set_rx_channels(self, channels):
         pass

@@ -3,7 +3,14 @@
 What changed in each release, newest first. Each release is tagged `vX.Y.Z` on GitHub, and the same version is on
 PyPI.
 
-## 0.5.0 (unreleased)
+## 0.5.1 (unreleased)
+
+### Fixes
+
+- `file` transmitting in real time paces with `time.perf_counter()`. On Windows before Python 3.13, `time.monotonic()`
+  ticks every ~15.6 ms, so `write` could leave more queued than `TX_BUFFER_SECONDS` allows.
+
+## 0.5.0 (2026-11-22)
 
 ### Breaking
 
