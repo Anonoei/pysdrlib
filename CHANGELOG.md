@@ -7,12 +7,19 @@ PyPI.
 
 ### Added
 
-- **Simulated radios share an air** (`pysdrlib.sim.air`): `Sim(transmit=True, air="lab")` transmits into it and every
-  `Sim(air="lab")` hears it, in this process or another on the machine (each transmitter a shared-memory stream):
-  shifted to the receiver's frequency, resampled to its rate, attenuated by the air's `loss_db`, then the receiver's
-  gain, noise and ADC. Realtime sims are on the wall clock (transmitting is paced, a pause is silence); others count
-  their own samples, so one process is exact and repeatable. With an air, `transmitted` is not kept
+- **An air that devices transmit into and receive from** (`pysdrlib.air`): `Sim(transmit=True, air="lab")` (or
+  `pysdrlib.open("sim", air="lab", transmit=True)`, and a server's `--open sim:air=lab,transmit=true`) transmits into
+  it, and every `Sim(air="lab")` hears it, in this process or another on the machine (each transmit channel a
+  shared-memory stream): shifted to the receiver's frequency, resampled to its rate, attenuated by the air's
+  `loss_db`, then the receiver's gain, noise and ADC. Realtime sims are on the wall clock (transmitting is paced, a
+  pause is silence); others count their own samples, so one process is exact and repeatable. Anything can attach
+  channels without a sim (`air.tx_channel()`, `air.rx_channel()`). With an air, `transmitted` is not kept
   (`get_tx_stats()` counts what was written).
+- A transmitting sim has a transmit gain stage, "PA" (0-47 dB, full scale at 47): `set_tx_gain`, `set_tx_gain_db` and
+  `set_tx_pa_gain` scale what it transmits.
+- `pysdrlib.find(virtual=True)` lists a simulated radio in each air in use. An air's transmit channels are `shm`
+  streams that `find()` lists only with `virtual=True`.
+- `pysdrlib.shm.streams(prefix=)` lists only the streams whose name starts with it.
 
 ### Fixes
 

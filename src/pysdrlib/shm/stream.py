@@ -55,11 +55,12 @@ def manifest_path(name, directory=None) -> str:
     return os.path.join(stream_dir(directory), f"{name}.json")
 
 
-def streams(directory=None, live=True) -> list:
-    """The manifests of the streams published here, by name. live: only those whose writer is still running"""
+def streams(directory=None, live=True, prefix="") -> list:
+    """The manifests of the streams published here, by name. live: only those whose writer is still running. prefix:
+    only the streams whose name starts with it (the others' manifests aren't read)"""
     d = stream_dir(directory)
     try:
-        files = sorted(f for f in os.listdir(d) if f.endswith(".json"))
+        files = sorted(f for f in os.listdir(d) if f.endswith(".json") and f.startswith(prefix))
     except OSError:
         return []
     found = []

@@ -54,11 +54,16 @@ class ShmDevice(NativeDevice):
 
     @classmethod
     def find(cls, directory=None):
-        """The streams published on this machine"""
+        """The streams published on this machine (a transmit channel in an air (`pysdrlib.air`) is virtual: listed by
+        `find(virtual=True)`)"""
         from ..devices import DeviceInfo
-        return [DeviceInfo("shm", f"{m['name']} ({m['Fs'] / 1e6:g} MS/s at {m['cf'] / 1e6:g} MHz)", m["name"],
-                           open_args={"name": m["name"]}, extra={"info": m.get("info", {})})
-                for m in stream.streams(directory)]
+        found = []
+        for m in stream.streams(directory):
+            info = m.get("info") or {}
+            extra = {"info": info, "virtual": True} if info.get("air") else {"info": info}
+            found.append(DeviceInfo("shm", f"{m['name']} ({m['Fs'] / 1e6:g} MS/s at {m['cf'] / 1e6:g} MHz)", m["name"],
+                                    open_args={"name": m["name"]}, extra=extra))
+        return found
 
     def _open(self, name=None, serial_number=None, directory=None):
         """name: the stream's name; serial: its name, or the end of it (what a target string "shm@NAME" gives);

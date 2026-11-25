@@ -23,8 +23,9 @@ For testing what reads it, the signal can instead be built from parts, and the s
     sdr.stall(2.0); sdr.resume()    # stop delivering (for 2 s, or until resume()); what would have come is lost
     sdr.disconnect()                # unplugged: once what is queued is read, read raises err.Lost
 
-Sims can share an air (`air="lab"`, `pysdrlib.sim.air`): what one transmits, every one in it hears, in this process or
-another, shifted to its frequency and resampled to its rate.
+Sims can share an air (`air="lab"`, `pysdrlib.air`): what one transmits, every one in it hears, in this process or
+another, shifted to its frequency and resampled to its rate. The transmit gain (the "PA" stage, 0-47 dB, full scale at
+47) scales what goes into it.
 """
 import threading
 import time
@@ -32,9 +33,12 @@ import time
 import numpy as np
 
 from ..base import convert
+from ..air import Air
 from ..base.caps import Capabilities, GainStage, Range
 from ..base.lib import samples as _samples
 from ..base.native import NativeDevice
+
+TX_GAIN = GainStage(1, 0, 47, 47)   # the "PA" stage of a transmitting sim: 47 dB is full scale, each dB less is 1 dB down
 
 class Sim(NativeDevice):
     NAME = "Simulated"
@@ -60,8 +64,8 @@ class Sim(NativeDevice):
         tone: tone frequency in Hz relative to center (default Fs / 8).
         sample_format: layout of the raw stream the "driver" delivers (convert.SampleFormat).
         channels: RX (and TX) channels, like a multi-channel radio: channel k is the same tone turned by k*90 degrees
-        transmit: accept start_tx/write; what is written is kept per channel in `transmitted` (with an `air`: sent into it
-            instead)
+        transmit: accept start_tx/write; what is written (scaled by the transmit gain) is kept per channel in `transmitted`
+            (with an `air`: sent into it instead)
         tones: instead of the one tone, these: (offset Hz, level dBFS) each, or a dict with "offset" (from the center) or
             "freq" (fixed in RF: it moves when the radio retunes) and "level"
         noise: dBFS of complex white noise added (None: none)
@@ -71,16 +75,18 @@ class Sim(NativeDevice):
         retune_delay: seconds of samples after `set_rx_freq` before the new frequency shows in the signal
         seed: of the noise and burst symbols
         channel_db: dB added to the built signal of each channel (a list, one per channel): channels of different strength
-        air: an `air.Air`, or its name: transmit into it, and hear it (see `pysdrlib.sim.air`)
+        air: a `pysdrlib.air.Air`, or its name: transmit into it, and hear it (see `pysdrlib.air`)
+
+        `transmit` and `air` can also be given to `open` (so `pysdrlib.open("sim", air="lab", transmit=True)` works, and a
+        server's `--open sim:air=lab,transmit=true`)
         """
         self.channels = int(channels)
         self.transmit = bool(transmit)
-        from .air import Air
-        self.air = air if isinstance(air, Air) or air is None else Air(str(air))
-        self._own_air = self.air is not None and not isinstance(air, Air)   # (one given is the caller's: left open)
-        self._air_tx = {}       # tx channel -> its stream in the air
+        self.air = self._air(air)
+        self._air_rx = None     # the receive channel from the air (while open)
+        self._air_tx = {}       # tx channel -> its transmit channel into the air
         self._tx_written = {}   # tx channel -> samples written
-        self._air_t0 = 0.0      # the time of receive sample 0, on the air's clock
+        self._tx_gain = {}      # tx channel -> PA gain (dB)
         self.transmitted = {ch: [] for ch in range(self.channels)}
         super().__init__()
         self.SAMPLE_FORMAT = sample_format
@@ -204,6 +210,10 @@ class Sim(NativeDevice):
         part.setdefault("level", -6.0)
         return part
 
+    @staticmethod
+    def _air(air):
+        return air if isinstance(air, Air) or air is None else Air(str(air))
+
     @property
     def _synthetic(self):
         return bool(self.tones or self.bursts or self.noise is not None or self.gain_ref is not None
@@ -272,7 +282,7 @@ class Sim(NativeDevice):
             sigma = np.sqrt(10 ** (self.noise / 10) / 2)
             out += sigma * (self._rng.standard_normal(n, dtype=np.float32) + 1j * self._rng.standard_normal(n, dtype=np.float32))
         if self.air is not None:
-            out += self.air.hear(first, n, cf, fs, self._air_t0, self._clock)
+            out += self._air_rx.receive(first, n, cf, fs, self._clock)
         return out
 
     @staticmethod
@@ -346,10 +356,16 @@ class Sim(NativeDevice):
             else:
                 time.sleep(0)  # let the consumer thread run
 
-    def _open(self, serial_number=None, index=None, **signal):
-        """signal: as `configure`'s (anything else raises TypeError). serial_number and index pick a unit on a radio: a
-        sim is any unit asked for"""
+    def _open(self, serial_number=None, index=None, air=None, transmit=None, **signal):
+        """air, transmit: as the constructor's (None: as it was given). signal: as `configure`'s (anything else raises
+        TypeError). serial_number and index pick a unit on a radio: a sim is any unit asked for"""
         self.configure(**signal)
+        if air is not None:
+            self.air = self._air(air)
+        if transmit is not None:
+            self.transmit = bool(transmit)
+        if self.air is not None:
+            self._air_rx = self.air.rx_channel()   # (on the samples clock its sample 0 is at 0)
         dev = _samples.NullDevice()
         fmt = self.SAMPLE_FORMAT
         dev.set_format(fmt.kind, fmt.bits, fmt.storage, fmt.packed)
@@ -362,16 +378,18 @@ class Sim(NativeDevice):
         for tx in self._air_tx.values():   # (a transmission lasts until the sim is closed: a receiver behind hears it all)
             tx.close()
         self._air_tx = {}
-        if self._own_air:
-            self.air.close()
+        if self._air_rx is not None:
+            self._air_rx.close()
+            self._air_rx = None
         self.device.close()
 
     def _start_rx(self):
         super()._start_rx()
         self._stamp = True
-        # A block is delivered as its last sample is taken (a radio's transfer): it covers the time just before
-        lag = self.air.latency if self.air is not None else 0.0
-        self._air_t0 = time.time() - (self._produced + self.block_samples) / self._Fs - lag if self.realtime else 0.0
+        if self._air_rx is not None and self.realtime:
+            # A block is delivered as its last sample is taken (a radio's transfer): it covers the time just before, and
+            # the air is heard `latency` late
+            self._air_rx.anchor(time.time() - self.block_samples / self._Fs - self.air.latency, self._produced)
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="pysdrlib-sim", daemon=True)
         self._thread.start()
@@ -384,6 +402,8 @@ class Sim(NativeDevice):
 
     def _capabilities(self, caps):
         caps.channels = {"rx": self.channels, "tx": self.channels if self.transmit else 0}
+        if self.transmit:
+            caps.gains["tx"] = {"PA": TX_GAIN}
         return caps
     def _set_rx_channels(self, channels):
         if self.state["rx"]:
@@ -401,17 +421,28 @@ class Sim(NativeDevice):
     def _tx_write(self, samples, timeout, slot=0):
         ch = self._tx_channels[slot]
         self._tx_written[ch] = self._tx_written.get(ch, 0) + len(samples)
+        scale = 10 ** ((self._tx_gain.get(ch, TX_GAIN.max) - TX_GAIN.max) / 20)
         if self.air is None:
-            self.transmitted[ch].append(np.array(samples, dtype=np.complex64))
+            x = np.array(samples, dtype=np.complex64)
+            self.transmitted[ch].append(x * np.float32(scale) if scale != 1 else x)
             return len(samples)
         Fs = self.get_tx_sample_rate(ch) or self._Fs
         cf = self.get_tx_freq(ch)
         cf = self._cf if cf is None else cf
         tx = self._air_tx.get(ch)
         if tx is None:
-            tx = self._air_tx[ch] = self.air.transmitter(Fs, cf, self._clock)
-        tx.write(samples, Fs, cf)
+            tx = self._air_tx[ch] = self.air.tx_channel(Fs, cf, self._clock)
+        tx.write(samples, Fs, cf, scale=scale)
         return len(samples)
+
+    def set_tx_pa_gain(self, gain=None, channel=0):
+        """TX PA gain [dB], 0-47 in 1 dB steps (default 47: what is written goes out at full scale; each dB less, 1 dB
+        down). None: the default. `channel`: which channel's. Returns the gain set"""
+        self._ensure_open("set_tx_pa_gain")
+        self._check_channel("tx", channel)
+        return self._set_gain_stage("TX", "PA", gain, self._set_tx_pa_gain, channel)
+    def _set_tx_pa_gain(self, gain, channel=0):
+        self._tx_gain[channel] = gain
     def _tx_stats(self, slot=0):
         written = self._tx_written.get(self._tx_channels[slot], 0)
         return {"written": written, "sent": written, "underruns": 0, "pending": 0}
