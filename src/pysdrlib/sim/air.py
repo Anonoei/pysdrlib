@@ -15,12 +15,12 @@ whose centre is beyond +-Fs/2 of the receiver's is not heard. A sim hears its ow
 **Time.** A realtime sim is on the wall clock: what it transmits is paced to its rate (`write` waits, as a radio's
 queue does) and placed at the time it goes out; written late, after a pause, it starts again at the time it is written
 (the pause is silence). Processes on one machine share the clock, so a receiver in one hears a transmitter in another,
-in time. A sim that isn't realtime counts its own samples from 0 instead (receive: from `open`; transmit: from
+in time, `latency` (0.1 s) late. A sim that isn't realtime counts its own samples from 0 instead (receive: from `open`; transmit: from
 `start_tx`), so in one process a test is exact and repeatable: write, then `pump` the receiver. Realtime and not don't
 hear each other.
 
-**Lifetime.** A transmitter's stream lasts until its sim is closed (`stop_tx` is silence), so a receiver that is behind
-still hears all of it. Each ring holds `capacity` samples (default: a second); a receiver further behind than that
+**Lifetime.** A transmitter's stream lasts until its sim is closed (`stop_tx` is silence); a receiver that has seen it
+hears it to its end even after that (its transmitter's process may be gone), so one that is behind still hears it all. A sim closes an air it made from a name; an `Air` given to it is the caller's to close. Each ring holds `capacity` samples (default: a second); a receiver further behind than that
 misses the oldest.
 
 Resampling is linear (exact when the rates are equal: the nearest sample, on the time grid). It is a simulator: no
@@ -36,15 +36,18 @@ _IDS = itertools.count()
 
 class Air:
     """A shared medium: a name (letters, digits, `_`, `-`), the streams under `air-<name>.` in the shm directory.
-    loss_db: attenuation from any transmitter to any receiver. capacity: samples each transmitter's ring holds"""
-    def __init__(self, name="sim", directory=None, loss_db=0.0, capacity=None):
+    loss_db: attenuation from any transmitter to any receiver. capacity: samples each transmitter's ring holds.
+    latency: seconds a realtime receiver hears the air late (a radio's transfer latency), so what was just written, by
+    a transmitter just made, is there to hear"""
+    def __init__(self, name="sim", directory=None, loss_db=0.0, capacity=None, latency=0.1):
         if not name or not all(c.isalnum() or c in "_-" for c in name):
             raise ValueError(f"{name!r}: an air's name is letters, digits, '_' and '-'")
         self.name, self.directory = name, directory
-        self.loss_db, self.capacity = float(loss_db), capacity
+        self.loss_db, self.capacity, self.latency = float(loss_db), capacity, float(latency)
         self.prefix = f"air-{name}."
         self._readers = {}   # segment -> ShmReader
         self._manifests, self._listed = [], 0.0
+        self._seen = {}      # segment -> manifest: a stream heard is heard to its end, even once its transmitter is gone
 
     def __repr__(self):
         return f"Air({self.name!r})"
@@ -78,6 +81,9 @@ class Air:
         t_first = t0 + first / Fs
         gain = np.float32(10 ** (-self.loss_db / 20))
         for m in self.streams(fresh=clock == "samples"):
+            if m.get("wall_time") is not None:
+                self._seen[m["segment"]] = m
+        for seg, m in list(self._seen.items()):
             info = m.get("info") or {}
             if info.get("clock") != clock or m.get("wall_time") is None:
                 continue
@@ -91,9 +97,19 @@ class Air:
             step = fs_tx / Fs
             k0 = int(np.floor(u0))
             k1 = int(np.ceil(u0 + (n - 1) * step)) + 2
-            if k1 <= m["wall_index"] or k0 >= r.head:
+            try:
+                head = r.head
+                if k0 >= head and r.closed: # Heard to its end, and its transmitter is gone: forgotten
+                    self._seen.pop(seg, None)
+                    self._readers.pop(seg, None).close()
+                    continue
+                if k1 <= m["wall_index"] or k0 >= head:
+                    continue
+                buf = self._read(r, k0, k1)
+            except ValueError: # (the ring was let go of)
+                self._readers.pop(seg, None)
+                self._seen.pop(seg, None)
                 continue
-            buf = self._read(r, k0, k1)
             if step == 1.0:   # the same rate: the nearest sample, on our grid
                 off = int(np.floor(u0 - k0 + 0.5))
                 seg = buf[off:off + n]
@@ -126,7 +142,7 @@ class Air:
     def close(self):
         for r in self._readers.values():
             r.close()
-        self._readers = {}
+        self._readers, self._seen = {}, {}
 
 class Transmitter:
     """One transmitting channel's stream in an air: `write(samples, Fs, cf)` places them at their time"""
@@ -136,11 +152,13 @@ class Transmitter:
         self.Fs, self.cf = float(Fs), float(cf)
         self.stream = ShmStream(f"{air.prefix}{os.getpid()}-{next(_IDS)}", self.Fs, self.cf, capacity=air.capacity,
                                 directory=air.directory, clock=clock, air=air.name)
-        self.t0 = time.time() if clock == "wall" else 0.0   # the time of index 0 of this generation
+        self.t0 = None if clock == "wall" else 0.0   # the time of index 0 of this generation (wall: at the first write)
         self.index = 0
 
     def write(self, samples, Fs, cf):
         x = np.ascontiguousarray(samples, dtype=np.complex64)
+        if self.t0 is None:
+            self.t0 = time.time()
         if (float(Fs), float(cf)) != (self.Fs, self.cf):   # retuned: a new generation, its indices from 0
             self.t0 = time.time() if self.clock == "wall" else self.t0 + self.index / self.Fs
             self.Fs, self.cf, self.index = float(Fs), float(cf), 0

@@ -77,6 +77,7 @@ class Sim(NativeDevice):
         self.transmit = bool(transmit)
         from .air import Air
         self.air = air if isinstance(air, Air) or air is None else Air(str(air))
+        self._own_air = self.air is not None and not isinstance(air, Air)   # (one given is the caller's: left open)
         self._air_tx = {}       # tx channel -> its stream in the air
         self._tx_written = {}   # tx channel -> samples written
         self._air_t0 = 0.0      # the time of receive sample 0, on the air's clock
@@ -361,14 +362,16 @@ class Sim(NativeDevice):
         for tx in self._air_tx.values():   # (a transmission lasts until the sim is closed: a receiver behind hears it all)
             tx.close()
         self._air_tx = {}
-        if self.air is not None:
+        if self._own_air:
             self.air.close()
         self.device.close()
 
     def _start_rx(self):
         super()._start_rx()
         self._stamp = True
-        self._air_t0 = time.time() - self._produced / self._Fs if self.realtime else 0.0
+        # A block is delivered as its last sample is taken (a radio's transfer): it covers the time just before
+        lag = self.air.latency if self.air is not None else 0.0
+        self._air_t0 = time.time() - (self._produced + self.block_samples) / self._Fs - lag if self.realtime else 0.0
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="pysdrlib-sim", daemon=True)
         self._thread.start()

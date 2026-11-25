@@ -138,3 +138,50 @@ def test_across_processes_in_time(tmp_path):
     on = np.abs(y) > 0.25
     assert abs(on.sum() / 500e3 - 0.6) < 0.1   # (a block's start-up either side; more on a loaded machine)
     assert abs(peak(y[on][:65536], 500e3) - 40e3) < 100
+
+
+def test_a_transmission_starting_mid_block_is_heard_whole(air):
+    """Realtime, in one process: a block is delivered as its last sample is taken, so a transmission that starts while
+    it is being taken is in it, not lost"""
+    import threading
+    import time
+    rx = Sim(air=air, block_samples=12000)   # 50 ms blocks
+    rx.open()
+    rx.initialize(cf=100e6, Fs=240e3)
+    rx.start_rx()
+    def send():
+        time.sleep(0.12)   # (inside a block)
+        tx = Sim(transmit=True, air=air)
+        tx.open()
+        tx.set_tx_freq(100e6)
+        tx.set_tx_sample_rate(240e3)
+        tx.start_tx()
+        tx.write(np.full(24000, 0.5 + 0j, np.complex64))   # 100 ms
+        time.sleep(0.2)
+        tx.close()
+    t = threading.Thread(target=send)
+    t.start()
+    y = rx.read(int(0.6 * 240e3))
+    t.join()
+    rx.stop_rx()
+    rx.close()
+    assert abs((np.abs(y) > 0.25).sum() - 24000) <= 2
+
+
+def test_an_air_given_is_left_open(air):
+    tx, rx = pair(air, rx_cf=100e6, rx_fs=1e6, block=4096)
+    tx.set_tx_freq(100e6)
+    tx.set_tx_sample_rate(1e6)
+    tx.start_tx()
+    tx.write(np.full(4096, 0.5 + 0j, np.complex64))
+    tx.close()   # (the transmitter gone: what it sent is gone with it, and the receiver goes on)
+    assert np.abs(heard(rx, 1)).max() == 0
+    tx2 = Sim(realtime=False, transmit=True, air=air)
+    tx2.open()
+    tx2.set_tx_freq(100e6)
+    tx2.set_tx_sample_rate(1e6)
+    tx2.start_tx()
+    tx2.write(np.full(8192, 0.5 + 0j, np.complex64))
+    assert (np.abs(heard(rx, 1)) > 0.4).all()   # the air the receiver shares still works
+    tx2.close()
+    rx.close()
