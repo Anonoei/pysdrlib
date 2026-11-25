@@ -5,6 +5,15 @@ PyPI.
 
 ## 0.5.1 (unreleased)
 
+### Added
+
+- **Simulated radios share an air** (`pysdrlib.sim.air`): `Sim(transmit=True, air="lab")` transmits into it and every
+  `Sim(air="lab")` hears it, in this process or another on the machine (each transmitter a shared-memory stream):
+  shifted to the receiver's frequency, resampled to its rate, attenuated by the air's `loss_db`, then the receiver's
+  gain, noise and ADC. Realtime sims are on the wall clock (transmitting is paced, a pause is silence); others count
+  their own samples, so one process is exact and repeatable. With an air, `transmitted` is not kept
+  (`get_tx_stats()` counts what was written).
+
 ### Fixes
 
 - `file` transmitting in real time paces with `time.perf_counter()`. On Windows before Python 3.13, `time.monotonic()`

@@ -21,7 +21,7 @@ public signatures in one file).
 | `<driver>/` | `rtl_sdr`, `hackrf`, `uhd` (B210, X310, X410), `bladerf`, `extio` (RX-888), `tcpiq`: `__init__.py` (docstring = the radio's page, `Device`, `find`), `<module>.py` (the class), `lib/` (the extension import), `vendor/` (the vendored library) |
 | `_ext/<driver>.py` | `LIB` (how the vendor library is found or built) and `get()` (the extension, for setup.py); `_ext/build.py` is `pysdrlib build` |
 | `_native/<driver>/` | C++: `<name>_device.hpp/.cpp` (the wrapper) and `<name>_pybind.cpp`; `_native/include/` is shared (queue, shm ring) |
-| `sim/` | A simulated radio on the real native streaming path: tones, noise, bursts, channels, drops/stalls on demand |
+| `sim/` | A simulated radio on the real native streaming path: tones, noise, bursts, channels, drops/stalls on demand; `air.py`: the air sims share, transmit to receive, across processes |
 | `file/` | `File`, `FileSink`, SigMF, `Replay` (`open("file", path=...)`: a recording as a radio, and transmit into a file) |
 | `shm/` | Streams in shared memory: `ShmStream` publishes under a name (ring + JSON manifest), the `shm` driver receives it (`open("shm@NAME")`); `ring.py` (`ShmWriter`/`ShmReader`) is also the remote server's local transport |
 | `remote/` | ZeroMQ server/client, controllers and viewers, shared-memory transport on one machine, relays, mDNS discovery, the `pysdrlib server/client/relay/discover` commands |

@@ -22,6 +22,9 @@ For testing what reads it, the signal can instead be built from parts, and the s
     sdr.drop(10_000)                # lose samples, as a radio's overflow: readers see a gap
     sdr.stall(2.0); sdr.resume()    # stop delivering (for 2 s, or until resume()); what would have come is lost
     sdr.disconnect()                # unplugged: once what is queued is read, read raises err.Lost
+
+Sims can share an air (`air="lab"`, `pysdrlib.sim.air`): what one transmits, every one in it hears, in this process or
+another, shifted to its frequency and resampled to its rate.
 """
 import threading
 import time
@@ -50,14 +53,15 @@ class Sim(NativeDevice):
 
     def __init__(self, realtime=True, block_samples=BLOCK_SAMPLES, tone=None, sample_format=convert.INT8, channels=1,
                  transmit=False, *, tones=None, noise=None, bursts=None, gain_ref=None, retune_delay=0.0, seed=None,
-                 channel_db=None):
+                 channel_db=None, air=None):
         """
         realtime: pace delivery to the sample rate. False delivers as fast as the host allows.
         block_samples: complex samples per callback.
         tone: tone frequency in Hz relative to center (default Fs / 8).
         sample_format: layout of the raw stream the "driver" delivers (convert.SampleFormat).
         channels: RX (and TX) channels, like a multi-channel radio: channel k is the same tone turned by k*90 degrees
-        transmit: accept start_tx/write; what is written is kept per channel in `transmitted`
+        transmit: accept start_tx/write; what is written is kept per channel in `transmitted` (with an `air`: sent into it
+            instead)
         tones: instead of the one tone, these: (offset Hz, level dBFS) each, or a dict with "offset" (from the center) or
             "freq" (fixed in RF: it moves when the radio retunes) and "level"
         noise: dBFS of complex white noise added (None: none)
@@ -67,9 +71,15 @@ class Sim(NativeDevice):
         retune_delay: seconds of samples after `set_rx_freq` before the new frequency shows in the signal
         seed: of the noise and burst symbols
         channel_db: dB added to the built signal of each channel (a list, one per channel): channels of different strength
+        air: an `air.Air`, or its name: transmit into it, and hear it (see `pysdrlib.sim.air`)
         """
         self.channels = int(channels)
         self.transmit = bool(transmit)
+        from .air import Air
+        self.air = air if isinstance(air, Air) or air is None else Air(str(air))
+        self._air_tx = {}       # tx channel -> its stream in the air
+        self._tx_written = {}   # tx channel -> samples written
+        self._air_t0 = 0.0      # the time of receive sample 0, on the air's clock
         self.transmitted = {ch: [] for ch in range(self.channels)}
         super().__init__()
         self.SAMPLE_FORMAT = sample_format
@@ -196,7 +206,12 @@ class Sim(NativeDevice):
     @property
     def _synthetic(self):
         return bool(self.tones or self.bursts or self.noise is not None or self.gain_ref is not None
-                    or any(self.channel_db))
+                    or any(self.channel_db) or self.air is not None)
+
+    @property
+    def _clock(self):
+        """The air's clock this sim is on: the wall clock when realtime, else its own samples"""
+        return "wall" if self.realtime else "samples"
 
     def _center(self, index):
         """The frequency the signal is at, at sample `index` (a delayed retune switches there)"""
@@ -234,7 +249,7 @@ class Sim(NativeDevice):
         cf, fs = self._center(first), self._Fs
         idx = first + np.arange(n, dtype=np.float64)
         out = np.zeros(n, dtype=np.complex64)
-        tones = self.tones or ([] if self.bursts or self.noise is not None else
+        tones = self.tones or ([] if self.bursts or self.noise is not None or self.air is not None else
                                [{"offset": self._tone if self._tone is not None else fs / 8, "level": 20 * np.log10(0.5)}])
         for t in tones:
             if not self._in_band(t, cf, fs):
@@ -255,6 +270,8 @@ class Sim(NativeDevice):
         if self.noise is not None:
             sigma = np.sqrt(10 ** (self.noise / 10) / 2)
             out += sigma * (self._rng.standard_normal(n, dtype=np.float32) + 1j * self._rng.standard_normal(n, dtype=np.float32))
+        if self.air is not None:
+            out += self.air.hear(first, n, cf, fs, self._air_t0, self._clock)
         return out
 
     @staticmethod
@@ -341,11 +358,17 @@ class Sim(NativeDevice):
     def _close(self):
         if self.state["rx"]:
             self.stop_rx()
+        for tx in self._air_tx.values():   # (a transmission lasts until the sim is closed: a receiver behind hears it all)
+            tx.close()
+        self._air_tx = {}
+        if self.air is not None:
+            self.air.close()
         self.device.close()
 
     def _start_rx(self):
         super()._start_rx()
         self._stamp = True
+        self._air_t0 = time.time() - self._produced / self._Fs if self.realtime else 0.0
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="pysdrlib-sim", daemon=True)
         self._thread.start()
@@ -373,10 +396,21 @@ class Sim(NativeDevice):
     def _tx_check(self):
         pass
     def _tx_write(self, samples, timeout, slot=0):
-        self.transmitted[self._tx_channels[slot]].append(np.array(samples, dtype=np.complex64))
+        ch = self._tx_channels[slot]
+        self._tx_written[ch] = self._tx_written.get(ch, 0) + len(samples)
+        if self.air is None:
+            self.transmitted[ch].append(np.array(samples, dtype=np.complex64))
+            return len(samples)
+        Fs = self.get_tx_sample_rate(ch) or self._Fs
+        cf = self.get_tx_freq(ch)
+        cf = self._cf if cf is None else cf
+        tx = self._air_tx.get(ch)
+        if tx is None:
+            tx = self._air_tx[ch] = self.air.transmitter(Fs, cf, self._clock)
+        tx.write(samples, Fs, cf)
         return len(samples)
     def _tx_stats(self, slot=0):
-        written = sum(len(x) for x in self.transmitted[self._tx_channels[slot]])
+        written = self._tx_written.get(self._tx_channels[slot], 0)
         return {"written": written, "sent": written, "underruns": 0, "pending": 0}
 
     def _set_rx_sample_rate(self, Fs, channel=0):
