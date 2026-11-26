@@ -246,3 +246,23 @@ class TestRxContext:
         done = dataclasses.replace(ctx, undone=True)
         assert ctx.inverted and not done.inverted and done.chain.invert # (the chain is what it is)
         assert pysdrlib.RxContext.from_json(done.json()) == done
+
+    def test_how_well_the_reference_and_lo_are_known_travels_too(self, tmp_path):
+        from pysdrlib.base import caps
+        chain = caps.Chain(lo=9.7503e9, lo_accuracy=2e3, name="measured LNB")
+        d = pysdrlib.device("sim", realtime=False)
+        d.open()
+        try:
+            d.set_chains([chain])
+            d.initialize(cf=11.7e9, Fs=1e6)
+            d.set_freq_correction(-14.2, accuracy=0.3)
+            assert d.get_freq_correction_accuracy() == 0.3
+            ctx = d.get_rx_context()
+        finally:
+            d.close()
+        assert ctx.ppm == -14.2 and ctx.ppm_accuracy == 0.3 and ctx.chain.lo_accuracy == 2e3
+        with FileSink(tmp_path / "cal.sigmf", "cf32", context=ctx) as s:
+            s.write(tone(10))
+        back = sigmf.read(tmp_path / "cal.sigmf").context
+        assert back == ctx and meta_of(tmp_path / "cal.sigmf")["global"]["core:extensions"][0]["version"] == "1.1.0"
+        assert pysdrlib.RxContext.from_json({"freq": 1.0}).ppm_accuracy is None # (a 1.0.0 recording: not known)

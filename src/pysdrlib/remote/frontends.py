@@ -17,6 +17,7 @@ just ask for the over-the-air frequency they want (see `choose`, `pysdrlib.base.
           "port": "RX2",                        // the radio's antenna port it is behind (leave out: any port)
           "antenna": "ANT500",
           "lo": 9.75e9,                         // external LO, Hz (leave out: none): the radio tunes RF - lo, as behind an LNB
+          // "lo_accuracy": 25e3,               // how well lo is known, Hz (a standard error; a measured LO's)
           "name": "universal LNB"
           // "invert": true                     // the LO is above the signal instead: radio tunes lo - RF, spectrum mirrored
           // "usable": [[10.7e9, 12.75e9]], "optimal": [[11e9, 12e9]]    // override the antenna's
@@ -37,7 +38,7 @@ from ..base import caps as _caps
 
 _ANTENNA_KEYS = {"usable", "optimal", "doc", "kind", "size", "length", "impedance"}
 _RADIO_KEYS = {"driver", "serial", "label", "chain"}
-_CHAIN_KEYS = {"direction", "port", "antenna", "lo", "invert", "usable", "optimal", "name"}
+_CHAIN_KEYS = {"direction", "port", "antenna", "lo", "invert", "lo_accuracy", "usable", "optimal", "name"}
 
 
 def _check(where, table, allowed):
@@ -117,6 +118,7 @@ def parse(data) -> Frontends:
                 _antennas.get(c["antenna"])    # raises, naming the known ones
             chains.append(_caps.Chain(direction=c.get("direction", "rx"), port=c.get("port"), antenna=c.get("antenna"),
                                       lo=float(c.get("lo", 0.0)), invert=bool(c.get("invert", False)),
+                                      lo_accuracy=float(c["lo_accuracy"]) if "lo_accuracy" in c else None,
                                       usable=_ranges(f"{cwhere} usable", c.get("usable", [])),
                                       optimal=_ranges(f"{cwhere} optimal", c.get("optimal", [])), name=str(c.get("name", ""))))
         radios.append((match, chains))

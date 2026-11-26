@@ -172,6 +172,7 @@ direction = "rx"
 port = "RX2"
 antenna = "MYWHIP"
 lo = 9.75e9
+lo_accuracy = 25e3
 name = "lnb"
 [[radio.chain]]
 direction = "tx"
@@ -181,6 +182,7 @@ lo = 9e9
         fe = frontends.load(path)
         chains = fe.chains_for("hackrf", "ABC123", "HackRF One")
         assert [c.direction for c in chains] == ["rx", "tx"] and chains[0].optimal_ranges() == [Range(430e6, 440e6)]
+        assert chains[0].lo_accuracy == 25e3 and chains[1].lo_accuracy is None
         assert fe.chains_for("hackrf", "other") == []
         c = radio()
         assert fe.apply(c, "hackrf", "ABC123").chains == chains and c.chains == []      # the class's own caps are untouched

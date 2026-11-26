@@ -143,6 +143,7 @@ class Device:
         self.strict = False         # out-of-range values raise err.InvalidValue instead of being clamped
         self.dc_correction = False  # remove the DC offset (a slow running mean) from what `read` returns
         self._ppm = 0.0
+        self._ppm_accuracy = None   # how well _ppm is known [ppm] (None: not known)
         self._gain_values = {}      # (DIRECTION, channel) -> {stage: gain}
         self._gain_mode = {}        # (direction, channel) -> mode
         self._bandwidth = {}        # (direction, channel) -> Hz
@@ -335,7 +336,7 @@ class Device:
         the rate, the chain (its LO, whether it inverts), the reference correction and clock source, gains, antenna port"""
         serial = self.caps.info.get("serial")
         return RxContext(freq=self.get_rx_freq(channel), rate=self.get_rx_sample_rate(channel), chain=self._chain("rx", channel),
-                         ppm=self._ppm, clock_source=self._clock_source, gains=self.get_rx_gains_db(channel),
+                         ppm=self.get_freq_correction(channel), ppm_accuracy=self.get_freq_correction_accuracy(channel), clock_source=self._clock_source, gains=self.get_rx_gains_db(channel),
                          port=self.get_rx_antenna(channel), hw=f"{type(self).NAME}" + (f" {serial}" if serial else ""))
     def get_rx_freq(self, channel=0):
         """Receive center frequency [Hz] last set for this channel (over the air, whatever converter is on the radio)"""
@@ -407,13 +408,17 @@ class Device:
         if direction == "tx" and not self.caps.channels.get("tx"):
             raise err.NotSupported(f"{type(self).NAME} can't transmit")
 
-    def set_freq_correction(self, ppm, channel=0):
+    def set_freq_correction(self, ppm, channel=0, accuracy=None):
         """Error of the device's frequency reference in parts per million (positive: it runs fast). Tuning and
         sample rate are both corrected, so `set_rx_freq(f)` gives f and `set_rx_sample_rate(r)` gives r (the rate only
-        where the device has continuous rates). Re-applies them."""
+        where the device has continuous rates). Re-applies them. accuracy: how well `ppm` is known, a standard error
+        [ppm] (a calibration's; None: not known), which `get_rx_context` passes on so a reader can say what a frequency is worth"""
         self._ensure_open("set_freq_correction")
         self._check_channel("rx", channel)
+        if accuracy is not None and not accuracy >= 0:
+            raise ValueError(f"accuracy is a standard error in ppm (>= 0), not {accuracy!r}")
         self._ppm = float(ppm)
+        self._ppm_accuracy = None if accuracy is None else float(accuracy)
         for kind, setter in (("freq", self._tune_freq), ("rate", self._tune_rate)):
             shared = self.caps.shared.get(kind, "channel")
             both = self._tuning.get((kind, "rx", 0)) == self._tuning.get((kind, "tx", 0))
@@ -429,6 +434,9 @@ class Device:
     def get_freq_correction(self, channel=0):
         """Frequency reference error [ppm] last set with `set_freq_correction`"""
         return self._ppm
+    def get_freq_correction_accuracy(self, channel=0):
+        """How well the reference's error is known [ppm, a standard error], as given to `set_freq_correction` (None: not known)"""
+        return self._ppm_accuracy
 
     # ------------------------------------------------------------------ gain
     # A gain is a fraction of the device's range (set_rx_gain: the call for code that should run on any radio) or in

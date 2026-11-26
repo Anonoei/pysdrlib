@@ -27,14 +27,16 @@ class RxContext:
     freq: the centre frequency over the air [Hz] (through `chain`); rate: the sample rate [Hz]. chain: the `caps.Chain`
     between the radio and the air (None: nothing), whose `invert` says the spectrum arrives mirrored: the samples are
     left as the radio gives them, so a reader conjugates them. ppm: the reference correction applied while tuning
-    (`set_freq_correction`); clock_source: the reference selected (None: never set, the radio's own); gains: {stage: dB}
-    as last set; port: the antenna port; hw: which radio (its driver's name, and the serial where known); undone: the
+    (`set_freq_correction`); ppm_accuracy: how well the reference is known after it [ppm, a standard error; None: not
+    known] (with the chain's `lo_accuracy`, what a frequency read off these samples is worth); clock_source: the
+    reference selected (None: never set, the radio's own); gains: {stage: dB} as last set; port: the antenna port; hw: which radio (its driver's name, and the serial where known); undone: the
     samples were conjugated after the radio (by whoever wrote them), so the chain's inversion is already put right
     """
     freq: Optional[float] = None
     rate: Optional[float] = None
     chain: Optional[object] = None
     ppm: float = 0.0
+    ppm_accuracy: Optional[float] = None
     clock_source: Optional[str] = None
     gains: dict = field(default_factory=dict)
     port: Optional[str] = None
@@ -48,7 +50,7 @@ class RxContext:
 
     def json(self):
         return {"freq": self.freq, "rate": self.rate, "chain": None if self.chain is None else self.chain.json(),
-                "inverted": self.inverted, "ppm": self.ppm, "clock_source": self.clock_source, "gains": dict(self.gains),
+                "inverted": self.inverted, "ppm": self.ppm, "ppm_accuracy": self.ppm_accuracy, "clock_source": self.clock_source, "gains": dict(self.gains),
                 "port": self.port, "hw": self.hw, "undone": self.undone}
 
     @classmethod
@@ -56,7 +58,7 @@ class RxContext:
         from .caps import chain_from_json
         c = obj.get("chain")
         return cls(freq=obj.get("freq"), rate=obj.get("rate"), chain=None if c is None else chain_from_json(c),
-                   ppm=float(obj.get("ppm", 0.0) or 0.0), clock_source=obj.get("clock_source"),
+                   ppm=float(obj.get("ppm", 0.0) or 0.0), ppm_accuracy=obj.get("ppm_accuracy"), clock_source=obj.get("clock_source"),
                    gains=dict(obj.get("gains") or {}), port=obj.get("port"), hw=obj.get("hw"),
                    undone=bool(obj.get("undone", False)))
 

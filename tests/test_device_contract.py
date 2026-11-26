@@ -80,6 +80,17 @@ class TestTuning:
             sdr.set_chains(None)
         assert not sdr.get_rx_context().inverted
 
+    def test_the_context_has_the_whole_correction_and_how_well_it_is_known(self, sdr, spec):
+        """set_freq_correction(accuracy=) on every driver (one that overrides it too); get_rx_context's ppm is the whole
+        correction, however the driver splits it between the hardware and the tuning"""
+        sdr.set_freq_correction(3.25, accuracy=0.5)
+        c = sdr.get_rx_context()
+        assert c.ppm == sdr.get_freq_correction() == 3.25 and c.ppm_accuracy == sdr.get_freq_correction_accuracy() == 0.5
+        sdr.set_freq_correction(0)
+        assert sdr.get_freq_correction_accuracy() is None   # a new correction: how well it is known, not said
+        with pytest.raises(ValueError):
+            sdr.set_freq_correction(1, accuracy=-1)
+
     def test_a_chain_given_after_tuning_says_where_the_radio_is_over_the_air(self, sdr, spec):
         """set_chains doesn't move the radio: get_rx_freq becomes what its IF is through the new chain, and back"""
         from pysdrlib.base import caps

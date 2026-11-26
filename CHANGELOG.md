@@ -26,7 +26,13 @@ PyPI.
   and radio. `FileSink(..., context=)` keeps it in a SigMF recording as `pysdrlib:rx` (an optional `core:extensions`
   namespace), `sigmf.read(...).context` and `File(...).meta.context` give it back, a replayed recording reports it
   (`open("file", ...).get_rx_context()`), `pysdrlib client ... rx/watch -o x.sigmf` writes it (a viewer can ask too),
-  and `pysdrlib play --info` prints it.
+  and `pysdrlib play --info` prints it. A remote radio on a server older than 0.5.1 raises `NotSupported` saying so
+  (`client ... -o x.sigmf` too; a raw recording doesn't ask). Any call to a method the server's pysdrlib doesn't have
+  raises `NotSupported` naming the method and the server's version, before it is sent.
+- **How well the receiver is known travels with it.** `set_freq_correction(ppm, accuracy=)` (a standard error, ppm;
+  `get_freq_correction_accuracy`) and `caps.Chain(lo_accuracy=)` (Hz; `lo_accuracy` in a frontends file: a measured LO's)
+  are in `RxContext` (`ppm_accuracy`, `chain.lo_accuracy`), so a reader can say what a frequency read off the samples is
+  worth; `pysdrlib:rx` is version 1.1.0 for them, and `play --info` shows them.
 - `Device.set_chains([caps.Chain(lo=5.15e9, invert=True)])` puts an LNB or converter in front of a radio on this
   machine: frequencies are over the air from then on (the radio stays where it is tuned, and `get_rx_freq` says what
   that is through the new chain). A remote radio's chains are its server's frontends file: `set_chains` on one raises

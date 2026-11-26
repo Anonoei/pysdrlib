@@ -57,14 +57,15 @@ def _received(c):
     """How a recording was received (its `RxContext`), in a line"""
     parts = []
     if c.chain is not None and c.chain.lo:
-        parts.append(f"through {c.chain.name or 'a converter'} (LO {_hz(c.chain.lo)}"
+        acc = f" +-{_hz(c.chain.lo_accuracy)}" if c.chain.lo_accuracy is not None else ""
+        parts.append(f"through {c.chain.name or 'a converter'} (LO {_hz(c.chain.lo)}{acc}"
                      + (", inverted" if c.inverted else ", inversion undone" if c.chain.invert else "") + ")")
     if c.port:
         parts.append(f"on port {c.port}")
     if c.gains:
         parts.append("gains " + ", ".join(f"{k} {v:g} dB" for k, v in c.gains.items()))
-    if c.ppm:
-        parts.append(f"{c.ppm:+g} ppm")
+    if c.ppm or c.ppm_accuracy is not None:
+        parts.append(f"{c.ppm:+g}" + (f" +-{c.ppm_accuracy:g}" if c.ppm_accuracy is not None else "") + " ppm")
     if c.clock_source:
         parts.append(f"clock {c.clock_source}")
     return ", ".join(parts) or "directly"

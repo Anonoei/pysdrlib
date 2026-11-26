@@ -79,7 +79,9 @@ class TestRead:
         s.start_rx()
         try:
             s.read(1000, timeout=2)
-            time.sleep(0.3)
+            deadline = time.monotonic() + 10   # until the ring has overflowed (a loaded machine floods it slower)
+            while s.stats.dropped == 0 and time.monotonic() < deadline:
+                time.sleep(0.05)
             _, m = s.read(1000, timeout=2, meta=True)
         finally:
             s.stop_rx()
