@@ -3,7 +3,66 @@
 What changed in each release, newest first. Each release is tagged `vX.Y.Z` on GitHub, and the same version is on
 PyPI.
 
-## 0.5.0 (unreleased)
+## 0.5.1 (2026-11-26)
+
+### Added
+
+- **An air that devices transmit into and receive from** (`pysdrlib.air`): `Sim(transmit=True, air="lab")` (or
+  `pysdrlib.open("sim", air="lab", transmit=True)`, and a server's `--open sim:air=lab,transmit=true`) transmits into
+  it, and every `Sim(air="lab")` hears it, in this process or another on the machine (each transmit channel a
+  shared-memory stream): shifted to the receiver's frequency, resampled to its rate, attenuated by the air's
+  `loss_db`, then the receiver's gain, noise and ADC. Realtime sims are on the wall clock (transmitting is paced, a
+  pause is silence); others count their own samples, so one process is exact and repeatable. Anything can attach
+  channels without a sim (`air.tx_channel()`, `air.rx_channel()`). With an air, `transmitted` is not kept
+  (`get_tx_stats()` counts what was written).
+- A transmitting sim has a transmit gain stage, "PA" (0-47 dB, full scale at 47): `set_tx_gain`, `set_tx_gain_db` and
+  `set_tx_pa_gain` scale what it transmits.
+- `pysdrlib.find(virtual=True)` lists a simulated radio in each air with a transmitter in it (a transmitting sim from
+  its first `write`, not from `open`). An air's transmit channels are `shm` streams that `find()` lists only with
+  `virtual=True`.
+- `pysdrlib.shm.streams(prefix=)` lists only the streams whose name starts with it.
+- **Recordings say how the radio received.** `Device.get_rx_context()` gives a channel's `RxContext`: the frequency over the
+  air and the rate, the `caps.Chain` in front of the radio (its LO, and `inverted` when the LO is above the signal and
+  the spectrum arrives mirrored), the reference correction (`set_freq_correction`) and clock source, gains, antenna port
+  and radio. `FileSink(..., context=)` keeps it in a SigMF recording as `pysdrlib:rx` (an optional `core:extensions`
+  namespace), `sigmf.read(...).context` and `File(...).meta.context` give it back, a replayed recording reports it
+  (`open("file", ...).get_rx_context()`), `pysdrlib client ... rx/watch -o x.sigmf` writes it (a viewer can ask too),
+  and `pysdrlib play --info` prints it. A remote radio on a server older than 0.5.1 raises `NotSupported` saying so
+  (`client ... -o x.sigmf` too; a raw recording doesn't ask). Any call to a method the server's pysdrlib doesn't have
+  raises `NotSupported` naming the method and the server's version, before it is sent.
+- **How well the receiver is known travels with it.** `set_freq_correction(ppm, accuracy=)` (a standard error, ppm;
+  `get_freq_correction_accuracy`) and `caps.Chain(lo_accuracy=)` (Hz; `lo_accuracy` in a frontends file: a measured LO's)
+  are in `RxContext` (`ppm_accuracy`, `chain.lo_accuracy`), so a reader can say what a frequency read off the samples is
+  worth, and `play --info` shows them.
+- **Levels in dBm.** `Device.set_level_calibration(offset_db, accuracy=, span=)`: dBm at the antenna port = dBFS (full
+  scale |x| = 1 in the complex64 samples) + `offset_db`, made at the gains and frequency current then.
+  `RxContext.level_offset` / `level_accuracy` (dB) carry it while the gains (and gain mode) are unchanged and the
+  frequency is within `span` (default: the sample rate when it was set); otherwise both are None.
+  `get_level_calibration()` says what was set and whether it still `holds`. It crosses the wire, and `play --info`
+  shows it.
+- **A chain names its feed and channel.** `caps.Chain(polarization="H" | "V" | "RHCP" | "LHCP")` says what the feed takes
+  in, and `caps.Chain(channel=)` puts a chain on one channel of a radio whose channels' ports share a name (a B210's RX2
+  on channels 0 and 1, a dual-feed LNB's two outputs). Both are keys of a frontends file too, and `get_rx_context(channel=k)`
+  gives each channel's chain. Recordings written by 0.5.1 mark `pysdrlib:rx` as version 1.2.0; whatever a
+  recording doesn't have reads as None.
+- `Device.set_chains([caps.Chain(lo=5.15e9, invert=True)])` puts an LNB or converter in front of a radio on this
+  machine: frequencies are over the air from then on (the radio stays where it is tuned, and `get_rx_freq` says what
+  that is through the new chain). A remote radio's chains are its server's frontends file: `set_chains` on one raises
+  `NotSupported`.
+- `pysdrlib.open("sim", realtime=False)` works: `realtime` is taken by `open` as well as the constructor, as `air` and
+  `transmit` are (and a server's `--open sim:realtime=false`).
+
+### Fixes
+
+- `set_rx_gain(fraction)` / `set_tx_gain(fraction)` no longer warn "... gain must be a multiple of N": a fraction
+  nearly always falls between a stage's steps, so rounding it to one is expected (and with `strict = True` it no longer
+  raises). `set_rx_gain_db` still warns when the decibels asked for can't be set exactly.
+- A replayed recording's `get_rx_freq()` is the recording's frequency from the start (it was the default, 100 MHz,
+  until playback began).
+- `file` transmitting in real time paces with `time.perf_counter()`. On Windows before Python 3.13, `time.monotonic()`
+  ticks every ~15.6 ms, so `write` could leave more queued than `TX_BUFFER_SECONDS` allows.
+
+## 0.5.0 (2026-11-22)
 
 ### Breaking
 

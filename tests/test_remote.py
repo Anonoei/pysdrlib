@@ -109,7 +109,9 @@ class TestRemoteDevice:
     def test_remote_errors_keep_their_type(self, dev):
         with pytest.raises(err.NotOpen):
             RemoteDevice(dev.address, id=dev.id).start_rx()
-        with pytest.raises(AttributeError):
+        with pytest.raises(AttributeError):   # (the server's refusal, sent round the client's own check)
+            dev._ctrl.exchange("call", method="_open", args=[], kwargs={}, token=dev.token)
+        with pytest.raises(err.NotSupported, match="which has no _open"):   # the client's: not a method the server has
             dev._call("_open")
 
     def test_capabilities(self, dev):
@@ -951,3 +953,53 @@ def test_find_gain_remotely(server):
         assert d.get_rx_gain() == pytest.approx(f)
     finally:
         d.close()
+
+
+def test_a_hosted_radio_says_how_it_receives(tmp_path):
+    """get_rx_context crosses the wire (a viewer may ask), with the chain from the server's frontends; the chains are the server's"""
+    from pysdrlib.base.caps import Chain
+    from pysdrlib.file import sigmf
+    from pysdrlib.remote import frontends
+    lnb = Chain(lo=5.15e9, invert=True, name="C-band LNB")
+    with Server("tcp://127.0.0.1:0", devices=["sim"], lease=0, frontends=frontends.Frontends([({"driver": "sim"}, [lnb])])) as s:
+        with RemoteDevice(s.endpoint, "sim") as d:
+            d.initialize(cf=3.9e9, Fs=1e6)
+            d.set_freq_correction(2.5)
+            c = d.get_rx_context()
+            assert isinstance(c, pysdrlib.RxContext) and c.chain == lnb and c.inverted
+            assert c.freq == 3.9e9 and c.rate == 1e6 and c.ppm == 2.5 and c.hw.startswith("Simulated")
+            assert d.get_chains() == [lnb]
+            with pytest.raises(err.NotSupported):
+                d.set_chains([])
+            with RemoteDevice(s.endpoint, id=d.id) as v:
+                assert v.get_rx_context() == c
+        cli(["client", s.endpoint, "rx", "sim", "--freq", "3.9e9", "--rate", "1e6", "-n", "4096", "-o", str(tmp_path / "rec.sigmf")])
+        assert sigmf.read(tmp_path / "rec.sigmf").context.chain == lnb
+
+
+def test_an_older_server_says_it_has_no_such_method(monkeypatch, tmp_path):
+    """A server older than 0.5.1 has no get_rx_context: NotSupported naming the method and its version, and a SigMF
+    recording (the only kind that keeps a context) says so; a raw one doesn't need it"""
+    monkeypatch.setattr(protocol, "BLOCKED_METHODS", protocol.BLOCKED_METHODS | {"get_rx_context"})
+    with Server("tcp://127.0.0.1:0", devices=["sim"], lease=0) as s:
+        with RemoteDevice(s.endpoint, "sim") as d:
+            with pytest.raises(err.NotSupported, match=r"pysdrlib \S+, which has no get_rx_context: update it"):
+                d.get_rx_context()
+        rx = ["client", s.endpoint, "rx", "sim", "--freq", "100e6", "--rate", "1e6", "-n", "4096", "-o"]
+        with pytest.raises(SystemExit, match="get_rx_context"):
+            cli(rx + [str(tmp_path / "old.sigmf")])
+        cli(rx + [str(tmp_path / "old.cfile")])
+    assert (tmp_path / "old.cfile").stat().st_size == 4096 * 8
+
+
+def test_how_well_the_reference_is_known_crosses_the_wire():
+    with Server("tcp://127.0.0.1:0", devices=["sim"], lease=0) as s:
+        with RemoteDevice(s.endpoint, "sim") as d:
+            d.initialize(cf=100e6, Fs=1e6)
+            d.set_freq_correction(-1.5, accuracy=0.2)
+            assert d.get_freq_correction_accuracy() == 0.2 and d.get_rx_context().ppm_accuracy == 0.2
+            cal = d.set_level_calibration(-55.0, accuracy=1.0)
+            assert cal["holds"] and d.get_level_calibration() == cal
+            assert (d.get_rx_context().level_offset, d.get_rx_context().level_accuracy) == (-55.0, 1.0)
+            d.set_rx_freq(200e6)
+            assert d.get_rx_context().level_offset is None

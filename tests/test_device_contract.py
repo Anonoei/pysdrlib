@@ -65,6 +65,65 @@ class TestTuning:
             sdr.set_rx_freq(spec.caps.freq[0].lo // 2)
         assert spec.freqs(sdr)[-1] == int(spec.caps.freq[0].lo)
 
+    def test_a_chain_moves_the_radio_to_its_if_and_is_in_the_context(self, sdr, spec):
+        """set_chains: frequencies are over the air, the radio tunes the IF; get_rx_context says the chain and the rest"""
+        from pysdrlib.base import caps
+        f_if = spec.caps.default_freq
+        chain = caps.Chain(lo=f_if + 5e9, invert=True, name="test LNB")
+        sdr.set_chains([chain])
+        try:
+            rf = chain.to_rf(f_if)
+            assert sdr.set_rx_freq(rf) == rf and spec.freqs(sdr)[-1] == int(f_if)
+            c = sdr.get_rx_context()
+            assert c.freq == rf and c.chain == chain and c.inverted and c.rate == sdr.get_rx_sample_rate()
+        finally:
+            sdr.set_chains(None)
+        assert not sdr.get_rx_context().inverted
+
+    def test_the_context_has_the_whole_correction_and_how_well_it_is_known(self, sdr, spec):
+        """set_freq_correction(accuracy=) on every driver (one that overrides it too); get_rx_context's ppm is the whole
+        correction, however the driver splits it between the hardware and the tuning"""
+        sdr.set_freq_correction(3.25, accuracy=0.5)
+        c = sdr.get_rx_context()
+        assert c.ppm == sdr.get_freq_correction() == 3.25 and c.ppm_accuracy == sdr.get_freq_correction_accuracy() == 0.5
+        sdr.set_freq_correction(0)
+        assert sdr.get_freq_correction_accuracy() is None   # a new correction: how well it is known, not said
+        with pytest.raises(ValueError):
+            sdr.set_freq_correction(1, accuracy=-1)
+
+    def test_a_level_calibration_holds_while_the_gains_and_frequency_do(self, sdr, spec):
+        """set_level_calibration: get_rx_context carries it at the gains and frequency it was made at, None off them"""
+        f = sdr.set_rx_freq(spec.caps.default_freq)
+        sdr.set_rx_gain(0.5)
+        cal = sdr.set_level_calibration(-60.0, accuracy=0.5, span=4e6)
+        assert cal["holds"] and cal["freq"] == f and cal["span"] == 4e6 and cal == sdr.get_level_calibration()
+        c = sdr.get_rx_context()
+        assert c.level_offset == -60.0 and c.level_accuracy == 0.5
+        if [r for r in spec.caps.freq if r.lo <= f + 10e6 <= r.hi]:
+            sdr.set_rx_freq(f + 10e6)    # off the span
+            assert sdr.get_rx_context().level_offset is None and not sdr.get_level_calibration()["holds"]
+            sdr.set_rx_freq(f)
+        assert sdr.get_rx_context().level_offset == -60.0
+        if sdr.get_rx_gain() != 0.0:
+            sdr.set_rx_gain(0.0)         # another gain
+            assert sdr.get_rx_context().level_offset is None and sdr.get_rx_context().level_accuracy is None
+        sdr.set_level_calibration(None)
+        assert sdr.get_level_calibration() is None and sdr.get_rx_context().level_offset is None
+        with pytest.raises(ValueError):
+            sdr.set_level_calibration(-60, accuracy=-1)
+
+    def test_a_chain_given_after_tuning_says_where_the_radio_is_over_the_air(self, sdr, spec):
+        """set_chains doesn't move the radio: get_rx_freq becomes what its IF is through the new chain, and back"""
+        from pysdrlib.base import caps
+        f_if = sdr.set_rx_freq(spec.caps.default_freq)
+        chain = caps.Chain(lo=f_if + 5e9, invert=True)
+        sdr.set_chains([chain])
+        try:
+            assert sdr.get_rx_freq() == chain.to_rf(f_if) and spec.freqs(sdr)[-1] == int(f_if)
+        finally:
+            sdr.set_chains(None)
+        assert sdr.get_rx_freq() == f_if
+
     def test_defaults_when_none(self, sdr, spec):
         sdr.set_rx_freq()
         sdr.set_rx_sample_rate()

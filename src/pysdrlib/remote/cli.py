@@ -201,6 +201,7 @@ def _record(dev, args):
     """Record the stream to `args.output` until -n samples or -t seconds (or Ctrl-C). The RxMeta of every block goes to
     the sink: a SigMF recording gets the rate, frequency, retunes and lost samples"""
     from ..file import FileSink
+    from ..file.sigmf import is_sigmf
     from ..base import Formats
     if args.samples is None and args.time is None:
         raise SystemExit("give a stop condition: -n SAMPLES and/or -t SECONDS")
@@ -211,7 +212,9 @@ def _record(dev, args):
     rate = dev.get_rx_sample_rate() or 1e6
     total = 0
     start = time.monotonic()
-    sink = FileSink(args.output, fmt.name, clip=True, scale=True, sigmf=True if args.sigmf else None, hw=dev.id)
+    sigmf = bool(args.sigmf) or is_sigmf(args.output)
+    context = dev.get_rx_context() if sigmf else None   # (the chain, reference and gains: only SigMF keeps them)
+    sink = FileSink(args.output, fmt.name, clip=True, scale=True, sigmf=sigmf, hw=dev.id, context=context)
     with sink:
         try:
             while args.samples is None or total < args.samples:
@@ -348,9 +351,11 @@ def _relay(args):
 
 def format_chain(chain):
     """A chain as one line for `list`: its direction, port, the LO it has and the antenna on it"""
-    where = f"{chain['direction']}" + (f" {chain['port']}" if chain.get("port") else "")
+    where = f"{chain['direction']}" + (f" {chain['port']}" if chain.get("port") else "") + \
+        (f" (channel {chain['channel']})" if chain.get("channel") is not None else "")
     lo = f", LO {chain['lo'] / 1e6:g} MHz{' (inverted)' if chain.get('invert') else ''}" if chain.get("lo") else ""
-    return f"antenna {where}: {format_antenna(chain.get('antenna'))}{lo}"
+    pol = f", {chain['polarization']}" if chain.get("polarization") else ""
+    return f"antenna {where}: {format_antenna(chain.get('antenna'))}{lo}{pol}"
 
 def print_list(c):
     """Print what the server `c` (a `Client`) allows, hosts and has attached, as `client ADDRESS list` does"""

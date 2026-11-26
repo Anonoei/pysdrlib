@@ -40,6 +40,28 @@ def test_a_chain_maps_both_ways():
         Chain(direction="up")
 
 
+def test_a_chain_names_its_feed_and_channel():
+    c = Chain(lo=9.75e9, channel=1, polarization="V", name="dual LNB V")
+    assert _caps.chain_from_json(json.loads(json.dumps(c.json()))) == c
+    assert _caps.chain_from_json({"lo": 1e9}).polarization is None and _caps.chain_from_json({"lo": 1e9}).channel is None
+    with pytest.raises(ValueError, match="H, V, RHCP, LHCP"):
+        Chain(polarization="horizontal")
+    with pytest.raises(ValueError, match="channel"):
+        Chain(channel=-1)
+    with pytest.raises(ValueError, match="channel"):
+        Chain(channel=True)
+
+
+def test_a_frontends_file_says_polarization_and_channel(tmp_path):
+    body = {"radio": [{"driver": "uhd", "chain": [{"port": "RX2", "channel": 0, "lo": 9.75e9, "polarization": "H"},
+                                                  {"port": "RX2", "channel": 1, "lo": 9.75e9, "polarization": "V"}]}]}
+    chains = frontends.parse(body).chains_for("uhd", "S")
+    assert [(c.channel, c.polarization) for c in chains] == [(0, "H"), (1, "V")]
+    body["radio"][0]["chain"][0]["polarization"] = "X"
+    with pytest.raises(ValueError, match=r"chain #1: .*polarization"):
+        frontends.parse(body)
+
+
 def test_capabilities_carry_their_chains_over_the_wire():
     c = radio([Chain(lo=9.75e9, antenna="ANT500", port="RX2", name="lnb")])
     back = _caps.from_json(c.json())
@@ -172,6 +194,7 @@ direction = "rx"
 port = "RX2"
 antenna = "MYWHIP"
 lo = 9.75e9
+lo_accuracy = 25e3
 name = "lnb"
 [[radio.chain]]
 direction = "tx"
@@ -181,6 +204,7 @@ lo = 9e9
         fe = frontends.load(path)
         chains = fe.chains_for("hackrf", "ABC123", "HackRF One")
         assert [c.direction for c in chains] == ["rx", "tx"] and chains[0].optimal_ranges() == [Range(430e6, 440e6)]
+        assert chains[0].lo_accuracy == 25e3 and chains[1].lo_accuracy is None
         assert fe.chains_for("hackrf", "other") == []
         c = radio()
         assert fe.apply(c, "hackrf", "ABC123").chains == chains and c.chains == []      # the class's own caps are untouched

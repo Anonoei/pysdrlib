@@ -10,6 +10,7 @@ Scripts in [`examples/`](https://github.com/Anonoei/pysdrlib/tree/main/examples)
 | `controls.py` | `caps`, gain as a fraction, in dB and by stage, settings, `strict` | [Controls](guide/controls.md) |
 | `channels.py` | Two channels received and transmitted together | [Controls](guide/controls.md#channels) |
 | `files.py` | Raw files, SigMF with stream metadata, a recording as a radio, transmitting into a file | [Sample files](guide/files.md) |
+| `air.py` | Simulated radios sharing an air: exact in one process, and in time on the wall clock | [Simulated radios](guide/simulating.md) |
 | `remote.py` | A server, a controller and a viewer, the server's lists and counters (needs `pysdrlib[remote]`) | [Remote radios](guide/remote.md) |
 | `custom_driver.py` | A `Device` written and registered outside pysdrlib | [Drivers of your own](guide/custom-drivers.md) |
 

@@ -28,11 +28,24 @@ def segments():
 
 
 @pytest.fixture
-def server(tmp_path):
-    before = segments()
+def made(monkeypatch):
+    """The names of the segments made in this test: only those are its to check (pytest -n runs other tests that make
+    and remove theirs in /dev/shm at the same time)"""
+    names = []
+    init = shm.ShmWriter.__init__
+
+    def recording(self, *args, **kwargs):
+        init(self, *args, **kwargs)
+        names.append(self.name)
+    monkeypatch.setattr(shm.ShmWriter, "__init__", recording)
+    return names
+
+
+@pytest.fixture
+def server(tmp_path, made):
     with Server(f"ipc://{tmp_path}/c2", devices=["sim"], lease=0) as s:
         yield s
-    assert segments() == before, "the server left shared memory behind"
+    assert not set(made) & set(segments()), "the server left shared memory behind"
 
 
 def open_sim(server, realtime=True, **kw):
@@ -283,6 +296,7 @@ r.close()
 
     def test_a_process_of_its_own_reads_what_the_server_wrote_and_leaves_the_segment_alone(self):
         writer = shm.ShmWriter(1 << 18, 1)
+        name = writer.name   # (destroy forgets it)
         try:
             writer.publish((np.arange(1000) % 1000).astype(np.complex64), 0)
             for _ in range(2):   # and again: the first reader exiting must not have removed it
@@ -293,7 +307,7 @@ r.close()
                 assert "resource_tracker" not in out.stderr and "leaked" not in out.stderr
         finally:
             writer.destroy()
-        assert not [s for s in segments() if s == writer.name]
+        assert name not in segments()
 
     def test_a_segment_that_is_not_there_is_not_found(self):
         with pytest.raises(FileNotFoundError):

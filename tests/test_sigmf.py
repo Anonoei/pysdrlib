@@ -175,3 +175,135 @@ def test_big_endian_recordings(tmp_path):
     assert np.array_equal(raw[0::2], x.real) and np.array_equal(raw[1::2], x.imag)
     with File(tmp_path / "be") as f:
         assert f.fmt is Formats.ci16t_be and np.array_equal(f.next(300), x)
+
+
+class TestRxContext:
+    """How a channel receives (Device.get_rx_context) travels with a recording as pysdrlib:rx"""
+
+    @staticmethod
+    def lnb():
+        from pysdrlib.base import caps
+        return caps.Chain(lo=5.15e9, invert=True, name="C-band LNB")
+
+    def test_a_device_says_its_chain_and_reference(self):
+        d = pysdrlib.device("sim", realtime=False)
+        d.open()
+        try:
+            d.set_chains([self.lnb()])
+            d.initialize(cf=3.9e9, Fs=1e6)
+            d.set_freq_correction(12.5)
+            c = d.get_rx_context()
+            assert c.freq == 3.9e9 and c.rate == 1e6 and c.inverted and c.chain.lo == 5.15e9 and c.ppm == 12.5
+            assert c.chain.to_if(c.freq) == 1.25e9 # the radio tunes the IF
+            d.set_chains(None)
+            assert not d.get_rx_context().inverted and d.get_rx_context().chain is None
+        finally:
+            d.close()
+
+    def test_the_context_travels_with_the_recording(self, tmp_path):
+        ctx = pysdrlib.RxContext(freq=3.9e9, rate=1e6, chain=self.lnb(), ppm=14.8, clock_source="external",
+                                 gains={"LNA": 20}, port="RX2", hw="X310 31BE973")
+        with FileSink(tmp_path / "rec.sigmf", "cf32", context=ctx) as s:
+            s.write(tone(100))
+        m = sigmf.read(tmp_path / "rec.sigmf")
+        assert m.context == ctx and m.rate == 1e6 and m.freq == 3.9e9 # (rate and freq from the context)
+        g = meta_of(tmp_path / "rec.sigmf")["global"]
+        assert {"name": "pysdrlib", "version": sigmf.EXTENSION_VERSION, "optional": True} in g["core:extensions"]
+        assert g["core:hw"] == "X310 31BE973"
+        assert File(tmp_path / "rec.sigmf").meta.context.inverted
+        from pysdrlib.file.play import describe
+        with File(tmp_path / "rec.sigmf") as f:
+            line = next(l for l in describe(f, 1e6) if "received" in l)
+        assert "C-band LNB (LO 5.15 GHz, inverted)" in line and "port RX2" in line and "+14.8 ppm" in line
+
+    def test_numpy_numbers_in_the_context_are_written(self, tmp_path):
+        # (a gain split across stages, or a frequency given as numpy, is a numpy scalar)
+        ctx = pysdrlib.RxContext(freq=np.float32(1e9), rate=np.float64(1e6), ppm=np.float32(1.5),
+                                 ppm_accuracy=np.float32(0.25), gains={"LNA": np.float32(10.0), "VGA": np.int64(20)})
+        with FileSink(tmp_path / "rec.sigmf", "cf32", context=ctx) as s:
+            s.write(tone(10))
+        c = sigmf.read(tmp_path / "rec.sigmf").context
+        assert c.freq == 1e9 and c.gains == {"LNA": 10.0, "VGA": 20.0} and c.ppm_accuracy == 0.25
+        sigmf.write(tmp_path / "x.sigmf", "cf32", np.float32(1e6), extra={"core:hw": "x", "y:n": np.int32(3)})
+        assert meta_of(tmp_path / "x.sigmf")["global"]["y:n"] == 3
+
+    def test_the_level_calibration_and_feeds_travel_with_each_channel(self, tmp_path):
+        """A two-feed capture: two recordings, one per channel, each with its channel's chain (its feed's polarization)
+        and level calibration"""
+        from pysdrlib.base import caps
+        from pysdrlib.file.play import describe
+        feeds = [caps.Chain(lo=9.75e9, channel=k, polarization=p, name=f"LNB {p}") for k, p in enumerate("HV")]
+        d = pysdrlib.device("sim", realtime=False, channels=2)
+        d.open()
+        try:
+            d.set_chains(feeds)
+            d.initialize(cf=11.7e9, Fs=1e6)
+            d.set_level_calibration(-72.5, accuracy=0.3, channel=0)
+            d.set_level_calibration(-71.0, channel=1)
+            d.start_rx(channels=(0, 1))
+            x = d.read(4096, channel=(0, 1))
+            ctx = [d.get_rx_context(channel=k) for k in (0, 1)]
+        finally:
+            d.close()
+        assert [c.chain.polarization for c in ctx] == ["H", "V"]
+        assert (ctx[0].level_offset, ctx[0].level_accuracy, ctx[1].level_offset, ctx[1].level_accuracy) == (-72.5, 0.3, -71.0, None)
+        for k in (0, 1):
+            with FileSink(tmp_path / f"ch{k}.sigmf", "cf32", context=ctx[k]) as s:
+                s.write(x[k])
+            assert sigmf.read(tmp_path / f"ch{k}.sigmf").context == ctx[k]
+        with File(tmp_path / "ch0.sigmf") as f:
+            line = next(l for l in describe(f, 1e6) if "received" in l)
+        assert "LNB H (LO 9.75 GHz, H)" in line and "level dBm = dBFS -72.5 +-0.3 dB" in line
+        old = pysdrlib.RxContext.from_json({"freq": 1.0, "chain": {"lo": 9.75e9}})   # (a 1.1.0 recording: not said)
+        assert old.level_offset is None and old.level_accuracy is None and old.chain.polarization is None
+
+    def test_the_extension_is_declared_once(self, tmp_path):
+        ext = {"name": "pysdrlib", "version": "0.9.0", "optional": True}
+        sigmf.write(tmp_path / "x.sigmf", "cf32", 1e6, extra={"core:extensions": [ext, {"name": "other", "version": "1"}]},
+                    context=pysdrlib.RxContext(freq=1e9))
+        names = [e["name"] for e in meta_of(tmp_path / "x.sigmf")["global"]["core:extensions"]]
+        assert sorted(names) == ["other", "pysdrlib"]
+
+    def test_a_recording_without_it_says_none(self, tmp_path):
+        with FileSink(tmp_path / "plain.sigmf", "cf32", rate=1e6, freq=1e9) as s:
+            s.write(tone(10))
+        assert sigmf.read(tmp_path / "plain.sigmf").context is None
+
+    def test_a_replay_gives_the_recordings_context(self, tmp_path):
+        ctx = pysdrlib.RxContext(freq=3.9e9, rate=1e6, chain=self.lnb())
+        with FileSink(tmp_path / "rec.sigmf", "cf32", context=ctx) as s:
+            s.write(tone(4096))
+        d = pysdrlib.open("file", path=str(tmp_path / "rec.sigmf"), realtime=False)
+        try:
+            assert d.get_rx_freq() == 3.9e9   # the recording's, before it plays
+            c = d.get_rx_context()
+            assert c.inverted and c.chain.lo == 5.15e9 and c.freq == 3.9e9
+        finally:
+            d.close()
+
+    def test_samples_put_right_after_the_radio_are_not_mirrored(self):
+        import dataclasses
+        ctx = pysdrlib.RxContext(freq=3.9e9, rate=1e6, chain=self.lnb())
+        done = dataclasses.replace(ctx, undone=True)
+        assert ctx.inverted and not done.inverted and done.chain.invert # (the chain is what it is)
+        assert pysdrlib.RxContext.from_json(done.json()) == done
+
+    def test_how_well_the_reference_and_lo_are_known_travels_too(self, tmp_path):
+        from pysdrlib.base import caps
+        chain = caps.Chain(lo=9.7503e9, lo_accuracy=2e3, name="measured LNB")
+        d = pysdrlib.device("sim", realtime=False)
+        d.open()
+        try:
+            d.set_chains([chain])
+            d.initialize(cf=11.7e9, Fs=1e6)
+            d.set_freq_correction(-14.2, accuracy=0.3)
+            assert d.get_freq_correction_accuracy() == 0.3
+            ctx = d.get_rx_context()
+        finally:
+            d.close()
+        assert ctx.ppm == -14.2 and ctx.ppm_accuracy == 0.3 and ctx.chain.lo_accuracy == 2e3
+        with FileSink(tmp_path / "cal.sigmf", "cf32", context=ctx) as s:
+            s.write(tone(10))
+        back = sigmf.read(tmp_path / "cal.sigmf").context
+        assert back == ctx and meta_of(tmp_path / "cal.sigmf")["global"]["core:extensions"][0]["version"] == sigmf.EXTENSION_VERSION
+        assert pysdrlib.RxContext.from_json({"freq": 1.0}).ppm_accuracy is None # (a 1.0.0 recording: not known)

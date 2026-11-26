@@ -38,7 +38,7 @@ in place of the manifest.
 ## The manifest
 
 `<directory>/<name>.json`, replaced at once (never half written). The directory is `$PYSDRLIB_SHM_DIR`, else
-`pysdrlib-shm` in the temporary directory. `stream.streams()` lists the manifests of running publishers.
+`pysdrlib-shm` in the temporary directory. `stream.streams()` lists the manifests of running publishers (`prefix=`: only names starting with it).
 
 | Field | |
 | --- | --- |

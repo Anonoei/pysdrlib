@@ -224,8 +224,8 @@ class DeviceWorker:
                 "wire": protocol.wire_name(self.wire),
                 "rx_channels": list(getattr(self.device, "rx_channels", (0,))),
                 "tx_channels": list(getattr(self.device, "tx_channels", (0,))),
-                "chains": [{"direction": c.direction, "port": c.port, "name": c.name, "lo": c.lo, "invert": c.invert,
-                            "antenna": c.describe()} for c in self.device.caps.chains],
+                "chains": [{"direction": c.direction, "port": c.port, "channel": c.channel, "name": c.name, "lo": c.lo,
+                            "invert": c.invert, "polarization": c.polarization, "antenna": c.describe()} for c in self.device.caps.chains],
             }
             return dict(self._last_status)
         finally:
@@ -855,7 +855,7 @@ class Server:
         serial = (unit.serial if unit is not None else None) or device.caps.info.get("serial")
         fitted = self.frontends.apply(device.caps, dtype, serial, unit.label if unit is not None else module.Device.NAME)
         if fitted is not device.caps:
-            device.caps.chains = fitted.chains
+            device.set_chains(fitted.chains)
         n = self._counts[dtype] = self._counts.get(dtype, -1) + 1
         try:
             worker = DeviceWorker(self, f"{dtype}-{n}", dtype, device, wire or self.wire, self.shm, self.shm_samples)

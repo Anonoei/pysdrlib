@@ -27,6 +27,7 @@ from .. import logger
 from ..base import caps as _caps
 from ..base import convert
 from ..base.device import Device
+from ..base.stream import RxContext
 from ..base.watchdog import StreamStats
 from . import choose
 from . import protocol
@@ -188,6 +189,7 @@ class RemoteDevice(Device):
         self.id = id
         self.token = None
         self.capabilities = None
+        self.server_version = None  # the server's pysdrlib (its hello)
         self.dropped_blocks = 0     # RX blocks lost between server and here (detected by sequence number)
         self._init = (list(init_args), dict(init_kwargs or {}))
         self._wire = wire
@@ -246,7 +248,8 @@ class RemoteDevice(Device):
             return
         self._c2 = _Channel(self.address, self.timeout)
         try:
-            lease = _hello(self._c2, self.address)["lease"]
+            hello = _hello(self._c2, self.address)
+            lease, self.server_version = hello["lease"], hello.get("pysdrlib")
             if self.id is None:
                 res = self._c2.request("open", type=self.type, args=list(args), kwargs=kwargs,
                                        init_args=self._init[0], init_kwargs=self._init[1], wire=self._wire,
@@ -409,6 +412,9 @@ class RemoteDevice(Device):
     # --- remote calls --- #
     def _call(self, method, *args, **kwargs):
         self._ensure_open(method)
+        if self.capabilities is not None and method not in self.capabilities.get("methods", {}):
+            raise err.NotSupported(f"the server at {self.address} runs pysdrlib {self.server_version or '(an older version)'}, "
+                                   f"which has no {method}: update it (pip install -U pysdrlib)")
         if method == "start_rx":   # what is still queued belongs to the last stream
             self._drop_received()
         reply = self._ctrl.exchange("call", method=method, args=list(args), kwargs=kwargs, token=self.token)
@@ -488,6 +494,17 @@ class RemoteDevice(Device):
     def __dir__(self):
         caps = self.__dict__.get("capabilities")
         return sorted(set(super().__dir__()) | set(caps["methods"] if caps else ()))
+
+    def get_rx_context(self, channel=0):
+        """How the hosted radio receives on this channel (`RxContext`; see `Device.get_rx_context`). Raises
+        `err.NotSupported` from a server whose pysdrlib is older than 0.5.1"""
+        return RxContext.from_json(self._call("get_rx_context", channel))
+    def get_chains(self):
+        """The hosted radio's chains, from the server's frontends file (`caps.chains`)"""
+        return list(self.caps.chains)
+    def set_chains(self, chains):
+        """A server's chains are the operator's: its frontends file (`pysdrlib server --frontends`)"""
+        raise err.NotSupported("a server's chains are in its frontends file (pysdrlib server --frontends FILE)")
 
     @property
     def caps(self):

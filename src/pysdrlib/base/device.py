@@ -37,7 +37,7 @@ from .. import logger
 from .. import warn
 from .. import err
 from . import caps as _caps
-from .stream import Event, RxMeta, RxStream, sample_time
+from .stream import Event, RxContext, RxMeta, RxStream, sample_time
 
 _OPEN = weakref.WeakSet()   # the devices that are open (see `_close_open_devices`)
 
@@ -143,6 +143,8 @@ class Device:
         self.strict = False         # out-of-range values raise err.InvalidValue instead of being clamped
         self.dc_correction = False  # remove the DC offset (a slow running mean) from what `read` returns
         self._ppm = 0.0
+        self._ppm_accuracy = None   # how well _ppm is known [ppm] (None: not known)
+        self._level_cal = {}        # rx channel -> level calibration (see set_level_calibration)
         self._gain_values = {}      # (DIRECTION, channel) -> {stage: gain}
         self._gain_mode = {}        # (direction, channel) -> mode
         self._bandwidth = {}        # (direction, channel) -> Hz
@@ -150,6 +152,7 @@ class Device:
         self._tuning = {}           # (kind "freq"/"rate", direction, channel) -> value set (nominal)
         self._clock_source = None
         self._settings = {}         # (name, channel) -> value
+        self._chains = None   # chains given with set_chains (None: the driver's own, or a server's frontends file)
         self._caps = None
         self._caps_open = False
         self._rx_channels = (0,)    # what the receive stream carries (slot k: the k-th of them)
@@ -329,6 +332,53 @@ class Device:
         flip it (`samples[::-1]` of the spectrum, or conjugate the samples) to read it the right way round"""
         chain = self._chain("rx", channel)
         return bool(chain and chain.invert)
+    def get_rx_context(self, channel=0):
+        """How this channel's samples are received, for a recording to keep (`RxContext`): the frequency over the air and
+        the rate, the chain (its LO, whether it inverts), the reference correction and clock source, gains, antenna port"""
+        serial = self.caps.info.get("serial")
+        cal = self.get_level_calibration(channel)
+        held = cal is not None and cal["holds"]
+        return RxContext(freq=self.get_rx_freq(channel), rate=self.get_rx_sample_rate(channel), chain=self._chain("rx", channel),
+                         ppm=self.get_freq_correction(channel), ppm_accuracy=self.get_freq_correction_accuracy(channel), clock_source=self._clock_source, gains=self.get_rx_gains_db(channel),
+                         level_offset=cal["offset_db"] if held else None, level_accuracy=cal["accuracy"] if held else None,
+                         port=self.get_rx_antenna(channel), hw=f"{type(self).NAME}" + (f" {serial}" if serial else ""))
+
+    def set_level_calibration(self, offset_db, accuracy=None, span=None, channel=0):
+        """What a level in these samples is at the antenna port: dBm = dBFS + `offset_db`, where dBFS has full scale at
+        |x| = 1 in the complex64 samples `read` returns. Measured at, and holding for, the receive gains (and gain mode)
+        and frequency current now: `get_rx_context` carries it (`level_offset`, `level_accuracy`) while the gains are
+        unchanged and the frequency is within `span`, and says None otherwise. accuracy: a standard error [dB] (None:
+        not known). span: the width [Hz] centred on the frequency now that it holds over (None: the sample rate now, the
+        band it was measured in). offset_db None: forget it. Returns `get_level_calibration`"""
+        self._ensure_open("set_level_calibration")
+        self._check_channel("rx", channel)
+        if offset_db is None:
+            self._level_cal.pop(channel, None)
+            return None
+        if accuracy is not None and not accuracy >= 0:
+            raise ValueError(f"accuracy is a standard error in dB (>= 0), not {accuracy!r}")
+        if span is None:
+            span = self.get_rx_sample_rate(channel)
+        if span is None or not span > 0:
+            raise ValueError(f"span is a width in Hz (> 0), not {span!r}: give one, or set a sample rate first")
+        self._level_cal[channel] = {"offset_db": float(offset_db), "accuracy": None if accuracy is None else float(accuracy),
+                                    "freq": float(self.get_rx_freq(channel)), "span": float(span),
+                                    "gains": self._level_gains(channel)}
+        return self.get_level_calibration(channel)
+    def get_level_calibration(self, channel=0):
+        """The level calibration given to `set_level_calibration` (None: none): {"offset_db", "accuracy", "freq", "span",
+        "gains", "gain_mode", "holds"}, where freq, span, gains and gain_mode are what it was made at, and holds says whether the gains and
+        frequency now are still those"""
+        cal = self._level_cal.get(channel)
+        if cal is None:
+            return None
+        freq = self.get_rx_freq(channel)
+        holds = cal["gains"] == self._level_gains(channel) and freq is not None and abs(freq - cal["freq"]) <= cal["span"] / 2
+        return {**cal, "gains": dict(cal["gains"]["db"]), "gain_mode": cal["gains"]["mode"], "holds": bool(holds)}
+    def _level_gains(self, channel):
+        """The receive gain state a level calibration is made at: each stage's dB, and the gain mode"""
+        return {"db": {str(k): float(v) for k, v in self.get_rx_gains_db(channel).items()},
+                "mode": self.get_rx_gain_mode(channel)}
     def get_rx_freq(self, channel=0):
         """Receive center frequency [Hz] last set for this channel (over the air, whatever converter is on the radio)"""
         return self._tuning.get(("freq", self._direction("rx", channel), channel), self._cf)
@@ -386,26 +436,33 @@ class Device:
     def _chain(self, direction, channel=0):
         """The chain (`caps.chains`) the signal of this direction goes through: the one of the antenna port selected, else the
         one for any port, else the first. None: nothing between the radio and the air"""
-        return self._chain_for_port(direction, self._antenna.get((direction, channel)))
+        return self._chain_for_port(direction, self._antenna.get((direction, channel)), channel)
 
-    def _chain_for_port(self, direction, port):
-        chains = [c for c in self.caps.chains if c.direction == direction]
+    def _chain_for_port(self, direction, port, channel=0):
+        """The chain behind `port` on `channel`: of those on this channel (or any), the one of the port, else the one for any
+        port, else the first; one on the channel itself before one on any"""
+        chains = [c for c in self.caps.chains if c.direction == direction and c.channel in (None, channel)]
         if not chains:
             return None
-        return next((c for c in chains if port is not None and c.port == port), None) or \
-            next((c for c in chains if c.port is None), chains[0])
+        def rank(c):
+            return (0 if port is not None and c.port == port else 1 if c.port is None else 2, c.channel is None)
+        return min(chains, key=rank)
 
     def _need_tx(self, direction):
         if direction == "tx" and not self.caps.channels.get("tx"):
             raise err.NotSupported(f"{type(self).NAME} can't transmit")
 
-    def set_freq_correction(self, ppm, channel=0):
+    def set_freq_correction(self, ppm, channel=0, accuracy=None):
         """Error of the device's frequency reference in parts per million (positive: it runs fast). Tuning and
         sample rate are both corrected, so `set_rx_freq(f)` gives f and `set_rx_sample_rate(r)` gives r (the rate only
-        where the device has continuous rates). Re-applies them."""
+        where the device has continuous rates). Re-applies them. accuracy: how well `ppm` is known, a standard error
+        [ppm] (a calibration's; None: not known), which `get_rx_context` passes on so a reader can say what a frequency is worth"""
         self._ensure_open("set_freq_correction")
         self._check_channel("rx", channel)
+        if accuracy is not None and not accuracy >= 0:
+            raise ValueError(f"accuracy is a standard error in ppm (>= 0), not {accuracy!r}")
         self._ppm = float(ppm)
+        self._ppm_accuracy = None if accuracy is None else float(accuracy)
         for kind, setter in (("freq", self._tune_freq), ("rate", self._tune_rate)):
             shared = self.caps.shared.get(kind, "channel")
             both = self._tuning.get((kind, "rx", 0)) == self._tuning.get((kind, "tx", 0))
@@ -421,6 +478,9 @@ class Device:
     def get_freq_correction(self, channel=0):
         """Frequency reference error [ppm] last set with `set_freq_correction`"""
         return self._ppm
+    def get_freq_correction_accuracy(self, channel=0):
+        """How well the reference's error is known [ppm, a standard error], as given to `set_freq_correction` (None: not known)"""
+        return self._ppm_accuracy
 
     # ------------------------------------------------------------------ gain
     # A gain is a fraction of the device's range (set_rx_gain: the call for code that should run on any radio) or in
@@ -483,7 +543,13 @@ class Device:
                 raise err.InvalidValue(f"set_{d}_gain takes a fraction of the gain range, 0 to 1, not {fraction}: "
                                        f"for decibels use set_{d}_gain_db({fraction})")
             gain = lo + fraction * (hi - lo)
-        self._set_gain_db(d, gain, stage, channel, flush)
+        # A fraction lands between a stage's steps nearly always: rounding it to one is the call working, not a bad value
+        quiet = getattr(self, "_quiet_gain_rounding", False)
+        self._quiet_gain_rounding = True
+        try:
+            self._set_gain_db(d, gain, stage, channel, flush)
+        finally:
+            self._quiet_gain_rounding = quiet
         return self._get_gain(d, stage, channel)
 
     def _set_gain_db(self, d, gain, stage, channel, flush):
@@ -618,7 +684,7 @@ class Device:
         chosen = self._antenna.get((d, channel))
         out = []
         for port in ports:
-            chain = self._chain_for_port(d, port)
+            chain = self._chain_for_port(d, port, channel)
             out.append({"port": port, "chain": (chain.name or None) if chain else None,
                         "antenna": chain.describe() if chain else None, "inverted": bool(chain and chain.invert),
                         "selected": True if len(ports) == 1 else (None if chosen is None else port == chosen)})
@@ -713,8 +779,36 @@ class Device:
                 c.settings["bias_t"] = _caps.Setting(bool, "Power on the antenna port (bias tee)", "set_bias_t", default=False)
             if is_open:
                 c = self._capabilities(c) or c
+            if self._chains is not None:
+                c.chains = list(self._chains)
             self._caps, self._caps_open = c, is_open
         return self._caps
+    def set_chains(self, chains):
+        """The hardware between this radio and the air (`caps.Chain`: an LNB, a converter, and the antenna on it), for a
+        radio on this machine (a server's are in its frontends file, `pysdrlib.remote.frontends`). Frequencies are over
+        the air from then on: the radio tunes the chain's IF. [] or None: back to the driver's own.
+        The radio stays where it is tuned: `get_rx_freq` (and a stream's metadata) then says what that is over the air"""
+        for c in chains or []:
+            if not isinstance(c, _caps.Chain):
+                raise TypeError(f"set_chains takes caps.Chain, not {type(c).__name__}")
+        tuned = [(key, self._chain(key[1], key[2])) for key in self._tuning if key[0] == "freq"]
+        cf_chain = self._chain("rx", 0)
+        self._chains = list(chains) if chains else None
+        self._caps = None
+
+        def moved(freq, direction, channel, before):   # the same radio frequency, through the new chain
+            radio = freq if before is None else before.to_if(freq)
+            after = self._chain(direction, channel)
+            return radio if after is None else after.to_rf(radio)
+        self._cf = moved(self._cf, "rx", 0, cf_chain)
+        at = self._rx_mark()
+        for key, before in tuned:
+            self._tuning[key] = value = moved(self._tuning[key], key[1], key[2], before)
+            if key[1] == "rx":
+                self._note("freq", value, key[2], False, at=at)
+    def get_chains(self):
+        """The chains in use (`caps.chains`)"""
+        return list(self.caps.chains)
     def get_caps(self):
         """`caps` as plain types (what a remote client receives)"""
         return self.caps.json()

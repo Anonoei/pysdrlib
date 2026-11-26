@@ -83,14 +83,14 @@ class RTLSDR(NativeDevice):
         """Bias tee on the antenna port (RTL-SDR Blog V3 and V4 only; no effect on other dongles)"""
         self.device.set_bias_t(bool(bias))
 
-    def set_freq_correction(self, ppm, channel=0):
+    def set_freq_correction(self, ppm, channel=0, accuracy=None):
         """Correct for the crystal's frequency error, in parts per million: whole ppm in the hardware (tuner and
-        resampler), the fraction left over in what it is asked for"""
+        resampler), the fraction left over in what it is asked for. accuracy: as `Device.set_freq_correction`"""
         self._ensure_open("set_freq_correction")
         whole = int(round(ppm))
         self.device.set_freq_correction(whole)
         self._ppm_hw = whole
-        super().set_freq_correction(ppm - whole, channel)
+        super().set_freq_correction(ppm - whole, channel, accuracy)
         return ppm
     def get_freq_correction(self, channel=0):
         return self._ppm_hw + self._ppm
