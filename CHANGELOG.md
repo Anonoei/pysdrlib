@@ -3,7 +3,7 @@
 What changed in each release, newest first. Each release is tagged `vX.Y.Z` on GitHub, and the same version is on
 PyPI.
 
-## 0.5.1 (unreleased)
+## 0.5.1 (2026-11-26)
 
 ### Added
 
@@ -33,7 +33,7 @@ PyPI.
 - **How well the receiver is known travels with it.** `set_freq_correction(ppm, accuracy=)` (a standard error, ppm;
   `get_freq_correction_accuracy`) and `caps.Chain(lo_accuracy=)` (Hz; `lo_accuracy` in a frontends file: a measured LO's)
   are in `RxContext` (`ppm_accuracy`, `chain.lo_accuracy`), so a reader can say what a frequency read off the samples is
-  worth; `pysdrlib:rx` is version 1.1.0 for them, and `play --info` shows them.
+  worth, and `play --info` shows them.
 - **Levels in dBm.** `Device.set_level_calibration(offset_db, accuracy=, span=)`: dBm at the antenna port = dBFS (full
   scale |x| = 1 in the complex64 samples) + `offset_db`, made at the gains and frequency current then.
   `RxContext.level_offset` / `level_accuracy` (dB) carry it while the gains (and gain mode) are unchanged and the
@@ -43,22 +43,20 @@ PyPI.
 - **A chain names its feed and channel.** `caps.Chain(polarization="H" | "V" | "RHCP" | "LHCP")` says what the feed takes
   in, and `caps.Chain(channel=)` puts a chain on one channel of a radio whose channels' ports share a name (a B210's RX2
   on channels 0 and 1, a dual-feed LNB's two outputs). Both are keys of a frontends file too, and `get_rx_context(channel=k)`
-  gives each channel's chain. `pysdrlib:rx` is version 1.2.0 for these and the level calibration (older recordings
-  read as None).
+  gives each channel's chain. Recordings written by 0.5.1 mark `pysdrlib:rx` as version 1.2.0; whatever a
+  recording doesn't have reads as None.
 - `Device.set_chains([caps.Chain(lo=5.15e9, invert=True)])` puts an LNB or converter in front of a radio on this
   machine: frequencies are over the air from then on (the radio stays where it is tuned, and `get_rx_freq` says what
   that is through the new chain). A remote radio's chains are its server's frontends file: `set_chains` on one raises
   `NotSupported`.
-
 - `pysdrlib.open("sim", realtime=False)` works: `realtime` is taken by `open` as well as the constructor, as `air` and
   `transmit` are (and a server's `--open sim:realtime=false`).
 
 ### Fixes
 
 - `set_rx_gain(fraction)` / `set_tx_gain(fraction)` no longer warn "... gain must be a multiple of N": a fraction
-  nearly always falls between a stage's steps, so rounding it to one is expected. `set_rx_gain_db` still warns when
-  the decibels asked for can't be set exactly.
-
+  nearly always falls between a stage's steps, so rounding it to one is expected (and with `strict = True` it no longer
+  raises). `set_rx_gain_db` still warns when the decibels asked for can't be set exactly.
 - A replayed recording's `get_rx_freq()` is the recording's frequency from the start (it was the default, 100 MHz,
   until playback began).
 - `file` transmitting in real time paces with `time.perf_counter()`. On Windows before Python 3.13, `time.monotonic()`
