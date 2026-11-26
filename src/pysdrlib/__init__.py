@@ -18,7 +18,7 @@ Guides (installing, receiving, controls, files, remote radios, drivers of your o
 | `pysdrlib.testing`, `pysdrlib.contributing`, `pysdrlib.scaffold` | Adding a driver for a new radio: the checks, the guide, the skeleton |
 """
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 __author__ = "Anonoei <to+dev@an0.us>"
 
 from . import err
