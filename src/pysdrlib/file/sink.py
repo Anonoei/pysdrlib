@@ -24,13 +24,15 @@ class FileSink:
     ("N samples clipped") when the sink closes. `clipped` holds the running count. Usable as a context manager.
 
     A SigMF recording is written for a path ending in ".sigmf" (or ".sigmf-data"/".sigmf-meta"), or with `sigmf=True`:
-    the samples in `<name>.sigmf-data`, and `<name>.sigmf-meta` with the format, `rate`, `freq` and `hw` (a description
-    of the radio). The meta file is written on open and kept up to date by `flush` and `close`. `write(samples, meta=m)`
+    the samples in `<name>.sigmf-data`, and `<name>.sigmf-meta` with the format, `rate`, `freq`, `hw` (a description
+    of the radio) and `context` (how it received: `Device.get_rx_context()`, kept as `pysdrlib:rx`; its rate, frequency
+    and radio fill in those not given). The meta file is written on open and kept up to date by `flush` and `close`. `write(samples, meta=m)`
     with a device's `RxMeta` fills in the rate and frequency, starts a new capture at each retune, and annotates where
     samples were lost; `retune(freq)` starts a capture by hand.
     """
     def __init__(self, path, fmt: str | None = None, append: bool = False, open: bool = False, clip: bool = False,
-                 scale: bool = False, sigmf: bool | None = None, rate: float | None = None, freq: float | None = None, hw: str | None = None):
+                 scale: bool = False, sigmf: bool | None = None, rate: float | None = None, freq: float | None = None, hw: str | None = None,
+                 context=None):
         self.log = logger.new("device.FileSink")
         self.sigmf = _sigmf.is_sigmf(path) if sigmf is None else bool(sigmf)
         self.path = _sigmf.paths(path)[0] if self.sigmf else Path(path)
@@ -44,6 +46,11 @@ class FileSink:
         self.scale = scale   # samples come with full scale at +-1, like a device's (see Formats.unscale)
         self.count = 0    # samples written through this sink
         self.clipped = 0  # samples that were saturated (clip=True only)
+        self.context = context   # how the radio received (RxContext), for SigMF
+        if context is not None:
+            rate = context.rate if rate is None else rate
+            freq = context.freq if freq is None else freq
+            hw = context.hw if hw is None else hw
         self.rate = rate
         self.hw = hw
         self.captures = [(0, freq)]   # (first sample, frequency) (SigMF)
@@ -185,4 +192,4 @@ class FileSink:
     def _write_meta(self):
         captures = [c for k, c in enumerate(self.captures) if k == 0 or c[0] < max(self.count, 1)]
         _sigmf.write(self.path, self.fmt, self.rate, captures, self._datetime, self.annotations,
-                     {"core:hw": self.hw} if self.hw else None)
+                     {"core:hw": self.hw} if self.hw else None, self.context)

@@ -27,6 +27,7 @@ from .. import logger
 from ..base import caps as _caps
 from ..base import convert
 from ..base.device import Device
+from ..base.stream import RxContext
 from ..base.watchdog import StreamStats
 from . import choose
 from . import protocol
@@ -488,6 +489,16 @@ class RemoteDevice(Device):
     def __dir__(self):
         caps = self.__dict__.get("capabilities")
         return sorted(set(super().__dir__()) | set(caps["methods"] if caps else ()))
+
+    def get_rx_context(self, channel=0):
+        """How the hosted radio receives on this channel (`RxContext`; see `Device.get_rx_context`)"""
+        return RxContext.from_json(self._call("get_rx_context", channel))
+    def get_chains(self):
+        """The hosted radio's chains, from the server's frontends file (`caps.chains`)"""
+        return list(self.caps.chains)
+    def set_chains(self, chains):
+        """A server's chains are the operator's: its frontends file (`pysdrlib server --frontends`)"""
+        raise err.NotSupported("a server's chains are in its frontends file (pysdrlib server --frontends FILE)")
 
     @property
     def caps(self):

@@ -37,7 +37,7 @@ from .. import logger
 from .. import warn
 from .. import err
 from . import caps as _caps
-from .stream import Event, RxMeta, RxStream, sample_time
+from .stream import Event, RxContext, RxMeta, RxStream, sample_time
 
 _OPEN = weakref.WeakSet()   # the devices that are open (see `_close_open_devices`)
 
@@ -150,6 +150,7 @@ class Device:
         self._tuning = {}           # (kind "freq"/"rate", direction, channel) -> value set (nominal)
         self._clock_source = None
         self._settings = {}         # (name, channel) -> value
+        self._chains = None   # chains given with set_chains (None: the driver's own, or a server's frontends file)
         self._caps = None
         self._caps_open = False
         self._rx_channels = (0,)    # what the receive stream carries (slot k: the k-th of them)
@@ -329,6 +330,13 @@ class Device:
         flip it (`samples[::-1]` of the spectrum, or conjugate the samples) to read it the right way round"""
         chain = self._chain("rx", channel)
         return bool(chain and chain.invert)
+    def get_rx_context(self, channel=0):
+        """How this channel's samples are received, for a recording to keep (`RxContext`): the frequency over the air and
+        the rate, the chain (its LO, whether it inverts), the reference correction and clock source, gains, antenna port"""
+        serial = self.caps.info.get("serial")
+        return RxContext(freq=self.get_rx_freq(channel), rate=self.get_rx_sample_rate(channel), chain=self._chain("rx", channel),
+                         ppm=self._ppm, clock_source=self._clock_source, gains=self.get_rx_gains_db(channel),
+                         port=self.get_rx_antenna(channel), hw=f"{type(self).NAME}" + (f" {serial}" if serial else ""))
     def get_rx_freq(self, channel=0):
         """Receive center frequency [Hz] last set for this channel (over the air, whatever converter is on the radio)"""
         return self._tuning.get(("freq", self._direction("rx", channel), channel), self._cf)
@@ -713,8 +721,36 @@ class Device:
                 c.settings["bias_t"] = _caps.Setting(bool, "Power on the antenna port (bias tee)", "set_bias_t", default=False)
             if is_open:
                 c = self._capabilities(c) or c
+            if self._chains is not None:
+                c.chains = list(self._chains)
             self._caps, self._caps_open = c, is_open
         return self._caps
+    def set_chains(self, chains):
+        """The hardware between this radio and the air (`caps.Chain`: an LNB, a converter, and the antenna on it), for a
+        radio on this machine (a server's are in its frontends file, `pysdrlib.remote.frontends`). Frequencies are over
+        the air from then on: the radio tunes the chain's IF. [] or None: back to the driver's own.
+        The radio stays where it is tuned: `get_rx_freq` (and a stream's metadata) then says what that is over the air"""
+        for c in chains or []:
+            if not isinstance(c, _caps.Chain):
+                raise TypeError(f"set_chains takes caps.Chain, not {type(c).__name__}")
+        tuned = [(key, self._chain(key[1], key[2])) for key in self._tuning if key[0] == "freq"]
+        cf_chain = self._chain("rx", 0)
+        self._chains = list(chains) if chains else None
+        self._caps = None
+
+        def moved(freq, direction, channel, before):   # the same radio frequency, through the new chain
+            radio = freq if before is None else before.to_if(freq)
+            after = self._chain(direction, channel)
+            return radio if after is None else after.to_rf(radio)
+        self._cf = moved(self._cf, "rx", 0, cf_chain)
+        at = self._rx_mark()
+        for key, before in tuned:
+            self._tuning[key] = value = moved(self._tuning[key], key[1], key[2], before)
+            if key[1] == "rx":
+                self._note("freq", value, key[2], False, at=at)
+    def get_chains(self):
+        """The chains in use (`caps.chains`)"""
+        return list(self.caps.chains)
     def get_caps(self):
         """`caps` as plain types (what a remote client receives)"""
         return self.caps.json()

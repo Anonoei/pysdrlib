@@ -20,9 +20,22 @@ PyPI.
 - `pysdrlib.find(virtual=True)` lists a simulated radio in each air in use. An air's transmit channels are `shm`
   streams that `find()` lists only with `virtual=True`.
 - `pysdrlib.shm.streams(prefix=)` lists only the streams whose name starts with it.
+- **Recordings say how the radio received.** `Device.get_rx_context()` gives a channel's `RxContext`: the frequency over the
+  air and the rate, the `caps.Chain` in front of the radio (its LO, and `inverted` when the LO is above the signal and
+  the spectrum arrives mirrored), the reference correction (`set_freq_correction`) and clock source, gains, antenna port
+  and radio. `FileSink(..., context=)` keeps it in a SigMF recording as `pysdrlib:rx` (an optional `core:extensions`
+  namespace), `sigmf.read(...).context` and `File(...).meta.context` give it back, a replayed recording reports it
+  (`open("file", ...).get_rx_context()`), `pysdrlib client ... rx/watch -o x.sigmf` writes it (a viewer can ask too),
+  and `pysdrlib play --info` prints it.
+- `Device.set_chains([caps.Chain(lo=5.15e9, invert=True)])` puts an LNB or converter in front of a radio on this
+  machine: frequencies are over the air from then on (the radio stays where it is tuned, and `get_rx_freq` says what
+  that is through the new chain). A remote radio's chains are its server's frontends file: `set_chains` on one raises
+  `NotSupported`.
 
 ### Fixes
 
+- A replayed recording's `get_rx_freq()` is the recording's frequency from the start (it was the default, 100 MHz,
+  until playback began).
 - `file` transmitting in real time paces with `time.perf_counter()`. On Windows before Python 3.13, `time.monotonic()`
   ticks every ~15.6 ms, so `write` could leave more queued than `TX_BUFFER_SECONDS` allows.
 

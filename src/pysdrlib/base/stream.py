@@ -1,4 +1,5 @@
-"""What came with a block of samples (`Device.read(..., meta=True)`), and the stream object (`Device.stream`)
+"""What came with a block of samples (`Device.read(..., meta=True)`), the stream object (`Device.stream`), and how the
+samples were received (`Device.get_rx_context`: what a recording keeps of the receive chain)
 
     with sdr.stream(65536, meta=True) as s:        # starts receiving, stops (and flushes) on exit
         for x, m in s:
@@ -6,7 +7,7 @@
             if m.events: ...                       # the frequency / rate / gain changed inside it (m.events)
 """
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 @dataclass(frozen=True)
@@ -17,6 +18,47 @@ class Event:
     kind: str
     value: object
     channel: int = 0
+
+@dataclass(frozen=True)
+class RxContext:
+    """How one receive channel's samples came to be: what a recording keeps so a reader can place them over the air
+    (`Device.get_rx_context`; SigMF stores it as `pysdrlib:rx`, see `pysdrlib.file.sigmf`)
+
+    freq: the centre frequency over the air [Hz] (through `chain`); rate: the sample rate [Hz]. chain: the `caps.Chain`
+    between the radio and the air (None: nothing), whose `invert` says the spectrum arrives mirrored: the samples are
+    left as the radio gives them, so a reader conjugates them. ppm: the reference correction applied while tuning
+    (`set_freq_correction`); clock_source: the reference selected (None: never set, the radio's own); gains: {stage: dB}
+    as last set; port: the antenna port; hw: which radio (its driver's name, and the serial where known); undone: the
+    samples were conjugated after the radio (by whoever wrote them), so the chain's inversion is already put right
+    """
+    freq: Optional[float] = None
+    rate: Optional[float] = None
+    chain: Optional[object] = None
+    ppm: float = 0.0
+    clock_source: Optional[str] = None
+    gains: dict = field(default_factory=dict)
+    port: Optional[str] = None
+    hw: Optional[str] = None
+    undone: bool = False
+
+    @property
+    def inverted(self):
+        """Whether these samples are mirrored: an LO above the signal, not yet put right (`undone`)"""
+        return bool(self.chain is not None and self.chain.invert and not self.undone)
+
+    def json(self):
+        return {"freq": self.freq, "rate": self.rate, "chain": None if self.chain is None else self.chain.json(),
+                "inverted": self.inverted, "ppm": self.ppm, "clock_source": self.clock_source, "gains": dict(self.gains),
+                "port": self.port, "hw": self.hw, "undone": self.undone}
+
+    @classmethod
+    def from_json(cls, obj):
+        from .caps import chain_from_json
+        c = obj.get("chain")
+        return cls(freq=obj.get("freq"), rate=obj.get("rate"), chain=None if c is None else chain_from_json(c),
+                   ppm=float(obj.get("ppm", 0.0) or 0.0), clock_source=obj.get("clock_source"),
+                   gains=dict(obj.get("gains") or {}), port=obj.get("port"), hw=obj.get("hw"),
+                   undone=bool(obj.get("undone", False)))
 
 _EPOCH_2000 = 946684800.0   # 2000-01-01 UTC: a radio clock below it counts from power-up, not a date
 

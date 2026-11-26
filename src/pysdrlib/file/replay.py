@@ -1,6 +1,7 @@
 """A recording played back as a receiving device, and a file that what is transmitted is recorded to:
 `pysdrlib.open("file", path=..., tx_path=...)`"""
 import collections
+import dataclasses
 import threading
 import time
 
@@ -87,6 +88,8 @@ class Replay(NativeDevice):
         self._eof = False
         if self._rate is not None:
             self._Fs = self._rate
+        if self._freq is not None:   # get_rx_freq says the recording's before it plays
+            self._cf = self._freq
         if tx_path is not None:
             self.sink = FileSink(tx_path, tx_format, clip=True, scale=True, freq=freq,
                                  rate=self._rate, hw=type(self).NAME)
@@ -189,6 +192,13 @@ class Replay(NativeDevice):
         got = super().read_available(*args, **kwargs)
         self._take_retunes()   # after: the playback thread queues a retune before the samples it applies to
         return got
+    def get_rx_context(self, channel=0):
+        """How the recording was received (its `pysdrlib:rx`), at the playback position's frequency; a recording that
+        doesn't say: this replay's own (no chain)"""
+        rec = self.file.meta.context if self.file is not None and self.file.meta is not None else None
+        if rec is None:
+            return super().get_rx_context(channel)
+        return dataclasses.replace(rec, freq=self.get_rx_freq(channel), rate=self._rate if self._rate is not None else rec.rate)
     def get_rx_freq(self, channel=0):
         self._take_retunes()
         return super().get_rx_freq(channel)

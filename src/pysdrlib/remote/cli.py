@@ -202,6 +202,7 @@ def _record(dev, args):
     the sink: a SigMF recording gets the rate, frequency, retunes and lost samples"""
     from ..file import FileSink
     from ..base import Formats
+    from .. import err
     if args.samples is None and args.time is None:
         raise SystemExit("give a stop condition: -n SAMPLES and/or -t SECONDS")
     try:
@@ -211,7 +212,12 @@ def _record(dev, args):
     rate = dev.get_rx_sample_rate() or 1e6
     total = 0
     start = time.monotonic()
-    sink = FileSink(args.output, fmt.name, clip=True, scale=True, sigmf=True if args.sigmf else None, hw=dev.id)
+    try:
+        context = dev.get_rx_context()   # (the chain, reference and gains, for a SigMF recording)
+    except (AttributeError, err.NotSupported):   # a server too old to say: the recording goes without it
+        context = None
+    sink = FileSink(args.output, fmt.name, clip=True, scale=True, sigmf=True if args.sigmf else None, hw=dev.id,
+                    context=context)
     with sink:
         try:
             while args.samples is None or total < args.samples:

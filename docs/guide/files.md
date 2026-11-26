@@ -23,6 +23,11 @@ Giving `write` the `RxMeta` of each block records the stream as the radio saw it
 --8<-- "examples/files.py:sigmf"
 ```
 
+`FileSink(..., context=sdr.get_rx_context())` also keeps how the radio received: the LNB or converter in front of it
+(its LO, and whether the spectrum arrives mirrored), the reference correction and clock, gains and antenna port. It is
+stored as `pysdrlib:rx`, an optional SigMF extension that other readers skip. `sigmf.read(path).context` or
+`File(path).meta.context` gives it back, a replayed recording reports it, and `pysdrlib play --info` prints it.
+
 ## A recording as a radio
 
 ```python

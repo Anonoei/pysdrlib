@@ -45,11 +45,29 @@ def describe(f, rate):
             lines.append(f"  recorded {meta.datetime}" + (f" on {glob['core:hw']}" if glob.get("core:hw") else ""))
         lines.append(f"  {len(meta.captures)} capture(s): " + ", ".join(
             f"{_hz(fr)} from {start:,}" for start, fr in meta.captures[:8]) + (" ..." if len(meta.captures) > 8 else ""))
+        if meta.context is not None:
+            lines.append("  received " + _received(meta.context))
         if meta.annotations:
             lines.append(f"  {len(meta.annotations)} annotation(s): " + "; ".join(
                 f"{a.get('core:sample_start', '?'):,}: {a.get('core:comment') or a.get('core:label') or ''}".strip()
                 for a in meta.annotations[:4]) + (" ..." if len(meta.annotations) > 4 else ""))
     return lines
+
+def _received(c):
+    """How a recording was received (its `RxContext`), in a line"""
+    parts = []
+    if c.chain is not None and c.chain.lo:
+        parts.append(f"through {c.chain.name or 'a converter'} (LO {_hz(c.chain.lo)}"
+                     + (", inverted" if c.inverted else ", inversion undone" if c.chain.invert else "") + ")")
+    if c.port:
+        parts.append(f"on port {c.port}")
+    if c.gains:
+        parts.append("gains " + ", ".join(f"{k} {v:g} dB" for k, v in c.gains.items()))
+    if c.ppm:
+        parts.append(f"{c.ppm:+g} ppm")
+    if c.clock_source:
+        parts.append(f"clock {c.clock_source}")
+    return ", ".join(parts) or "directly"
 
 def _db(power):
     return 10 * np.log10(power) if power > 0 else -np.inf

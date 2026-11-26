@@ -2,6 +2,9 @@
 
 pysdrlib reads and writes the core namespace: the datatype, sample rate, the captures (the centre frequency from each
 sample on, and when the recording started), and annotations (pysdrlib marks samples lost while recording with one).
+How the radio received is its own extension, `pysdrlib:rx` in the global object (an `RxContext`: the chain between the
+radio and the air with its LO and whether it inverts the spectrum, the reference correction and clock source, gains,
+antenna port), declared in `core:extensions` as optional: other readers skip it, `Meta.context` gives it back.
 Only single-channel, little-endian recordings in a datatype `Formats` has (see `Formats.sigmf`).
 """
 import datetime as _dt
@@ -15,6 +18,7 @@ from .. import err as _err
 from ..base import Formats
 
 VERSION = "1.2.0"
+EXTENSION, EXTENSION_VERSION = "pysdrlib", "1.0.0" # Our namespace in a recording's global object (`pysdrlib:rx`)
 _SUFFIXES = (".sigmf-data", ".sigmf-meta", ".sigmf")
 
 def is_sigmf(path) -> bool:
@@ -57,6 +61,15 @@ class Meta:
             return None
 
     @property
+    def context(self):
+        """How the radio received (`RxContext`), when the recording says (`pysdrlib:rx`); None otherwise"""
+        obj = self.raw.get("global", {}).get(EXTENSION + ":rx")
+        if obj is None:
+            return None
+        from ..base.stream import RxContext
+        return RxContext.from_json(obj)
+
+    @property
     def freq(self):
         """Centre frequency of the first sample (None: not recorded)"""
         return self.captures[0][1] if self.captures else None
@@ -89,9 +102,10 @@ def read(path) -> Meta:
     rate = glob.get("core:sample_rate")
     return Meta(fmt, float(rate) if rate is not None else None, captures, when, raw.get("annotations", []), raw)
 
-def write(path, fmt, rate=None, captures=(), datetime=None, annotations=(), extra=None):
+def write(path, fmt, rate=None, captures=(), datetime=None, annotations=(), extra=None, context=None):
     """Write the `.sigmf-meta` of the recording `path` names. captures: [(first sample, frequency)]; extra: more
-    global fields ({"core:hw": ...}). Written to a temporary file and renamed, so a reader never sees half of it"""
+    global fields ({"core:hw": ...}); context: how the radio received (an `RxContext`, stored as `pysdrlib:rx`). Written
+    to a temporary file and renamed, so a reader never sees half of it"""
     fmt = Formats.get(fmt)
     if fmt.sigmf is None:
         raise ValueError(f"SigMF has no datatype for {fmt.name}: use one of "
@@ -102,6 +116,10 @@ def write(path, fmt, rate=None, captures=(), datetime=None, annotations=(), extr
     if rate is not None:
         glob["core:sample_rate"] = float(rate)
     glob.update(extra or {})
+    if context is not None:
+        glob["core:extensions"] = [*(e for e in glob.get("core:extensions", []) if e.get("name") != EXTENSION),
+                                   {"name": EXTENSION, "version": EXTENSION_VERSION, "optional": True}]
+        glob[EXTENSION + ":rx"] = context.json()
     caps = []
     for k, (start, freq) in enumerate(captures or [(0, None)]):
         c = {"core:sample_start": int(start)}

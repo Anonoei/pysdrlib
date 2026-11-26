@@ -10,7 +10,7 @@ public signatures in one file).
 
 | Where | What |
 | --- | --- |
-| `pysdrlib/__init__.py` | Re-exports: `find`, `open`, `device`, `connect`, `register`, `discover`, `Device`, `Capabilities`, `Range`, `Setting`, `RxMeta`, `Event`, `File`, `FileSink`, `Formats`, `err`, `warn` |
+| `pysdrlib/__init__.py` | Re-exports: `find`, `open`, `device`, `connect`, `register`, `discover`, `Device`, `Capabilities`, `Range`, `Setting`, `RxMeta`, `RxContext`, `Event`, `File`, `FileSink`, `Formats`, `err`, `warn` |
 | `devices.py` | The driver registry (`ls`, `get`; entry points `pysdrlib.drivers`), `find`, `open`, `device`, `connect`, `register`, `DeviceInfo` |
 | `targets.py` | `discover()` and target strings (`"hackrf@SERIAL"`, `"host/hackrf-0"`) |
 | `base/device.py` | `Device`: the API every driver presents, and the generic logic (gain fractions and splitting, range checks, `read`/`stream`/`sweep`, drop and stall reporting) |

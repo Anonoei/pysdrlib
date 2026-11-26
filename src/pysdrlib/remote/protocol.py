@@ -79,7 +79,8 @@ WIRE_FORMATS = {
 MAX_BLOCK_SAMPLES = 131072
 
 # Device methods that are never callable remotely: lifecycle is C2's job and samples are streamed.
-BLOCKED_METHODS = frozenset({"open", "close", "get_samples", "read", "read_into", "read_available", "wait_available", "stream", "flush", "write"})
+BLOCKED_METHODS = frozenset({"open", "close", "get_samples", "read", "read_into", "read_available", "wait_available", "stream", "flush", "write",
+                             "set_chains"})   # (a server's chains are its frontends file)
 
 # Errors are re-raised on the client as the same type if it is one of these
 _ERRORS = {
@@ -101,13 +102,15 @@ def mismatch(version, package, peer_version, peer_package, peer):
             f"pysdrlib {package} (protocol {version}): update the {older} (pip install -U pysdrlib)")
 
 def jsonable(obj):
-    """json.dumps default: numpy scalars/arrays and a few containers"""
+    """json.dumps default: numpy scalars/arrays, a few containers, and objects with a `json()`"""
     if isinstance(obj, np.generic):
         return obj.item()
     if isinstance(obj, np.ndarray):
         return obj.tolist()
     if isinstance(obj, (set, frozenset, tuple)):
         return list(obj)
+    if callable(getattr(obj, "json", None)):   # RxContext, caps.Chain...: their own plain form
+        return obj.json()
     raise TypeError(f"{type(obj).__name__} is not JSON serializable")
 
 def pack(msg: dict) -> bytes:

@@ -855,7 +855,7 @@ class Server:
         serial = (unit.serial if unit is not None else None) or device.caps.info.get("serial")
         fitted = self.frontends.apply(device.caps, dtype, serial, unit.label if unit is not None else module.Device.NAME)
         if fitted is not device.caps:
-            device.caps.chains = fitted.chains
+            device.set_chains(fitted.chains)
         n = self._counts[dtype] = self._counts.get(dtype, -1) + 1
         try:
             worker = DeviceWorker(self, f"{dtype}-{n}", dtype, device, wire or self.wire, self.shm, self.shm_samples)

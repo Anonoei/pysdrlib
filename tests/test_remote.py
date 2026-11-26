@@ -951,3 +951,25 @@ def test_find_gain_remotely(server):
         assert d.get_rx_gain() == pytest.approx(f)
     finally:
         d.close()
+
+
+def test_a_hosted_radio_says_how_it_receives(tmp_path):
+    """get_rx_context crosses the wire (a viewer may ask), with the chain from the server's frontends; the chains are the server's"""
+    from pysdrlib.base.caps import Chain
+    from pysdrlib.file import sigmf
+    from pysdrlib.remote import frontends
+    lnb = Chain(lo=5.15e9, invert=True, name="C-band LNB")
+    with Server("tcp://127.0.0.1:0", devices=["sim"], lease=0, frontends=frontends.Frontends([({"driver": "sim"}, [lnb])])) as s:
+        with RemoteDevice(s.endpoint, "sim") as d:
+            d.initialize(cf=3.9e9, Fs=1e6)
+            d.set_freq_correction(2.5)
+            c = d.get_rx_context()
+            assert isinstance(c, pysdrlib.RxContext) and c.chain == lnb and c.inverted
+            assert c.freq == 3.9e9 and c.rate == 1e6 and c.ppm == 2.5 and c.hw.startswith("Simulated")
+            assert d.get_chains() == [lnb]
+            with pytest.raises(err.NotSupported):
+                d.set_chains([])
+            with RemoteDevice(s.endpoint, id=d.id) as v:
+                assert v.get_rx_context() == c
+        cli(["client", s.endpoint, "rx", "sim", "--freq", "3.9e9", "--rate", "1e6", "-n", "4096", "-o", str(tmp_path / "rec.sigmf")])
+        assert sigmf.read(tmp_path / "rec.sigmf").context.chain == lnb
