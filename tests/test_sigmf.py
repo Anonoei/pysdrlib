@@ -227,6 +227,36 @@ class TestRxContext:
         sigmf.write(tmp_path / "x.sigmf", "cf32", np.float32(1e6), extra={"core:hw": "x", "y:n": np.int32(3)})
         assert meta_of(tmp_path / "x.sigmf")["global"]["y:n"] == 3
 
+    def test_the_level_calibration_and_feeds_travel_with_each_channel(self, tmp_path):
+        """A two-feed capture: two recordings, one per channel, each with its channel's chain (its feed's polarization)
+        and level calibration"""
+        from pysdrlib.base import caps
+        from pysdrlib.file.play import describe
+        feeds = [caps.Chain(lo=9.75e9, channel=k, polarization=p, name=f"LNB {p}") for k, p in enumerate("HV")]
+        d = pysdrlib.device("sim", realtime=False, channels=2)
+        d.open()
+        try:
+            d.set_chains(feeds)
+            d.initialize(cf=11.7e9, Fs=1e6)
+            d.set_level_calibration(-72.5, accuracy=0.3, channel=0)
+            d.set_level_calibration(-71.0, channel=1)
+            d.start_rx(channels=(0, 1))
+            x = d.read(4096, channel=(0, 1))
+            ctx = [d.get_rx_context(channel=k) for k in (0, 1)]
+        finally:
+            d.close()
+        assert [c.chain.polarization for c in ctx] == ["H", "V"]
+        assert (ctx[0].level_offset, ctx[0].level_accuracy, ctx[1].level_offset, ctx[1].level_accuracy) == (-72.5, 0.3, -71.0, None)
+        for k in (0, 1):
+            with FileSink(tmp_path / f"ch{k}.sigmf", "cf32", context=ctx[k]) as s:
+                s.write(x[k])
+            assert sigmf.read(tmp_path / f"ch{k}.sigmf").context == ctx[k]
+        with File(tmp_path / "ch0.sigmf") as f:
+            line = next(l for l in describe(f, 1e6) if "received" in l)
+        assert "LNB H (LO 9.75 GHz, H)" in line and "level dBm = dBFS -72.5 +-0.3 dB" in line
+        old = pysdrlib.RxContext.from_json({"freq": 1.0, "chain": {"lo": 9.75e9}})   # (a 1.1.0 recording: not said)
+        assert old.level_offset is None and old.level_accuracy is None and old.chain.polarization is None
+
     def test_the_extension_is_declared_once(self, tmp_path):
         ext = {"name": "pysdrlib", "version": "0.9.0", "optional": True}
         sigmf.write(tmp_path / "x.sigmf", "cf32", 1e6, extra={"core:extensions": [ext, {"name": "other", "version": "1"}]},
@@ -275,5 +305,5 @@ class TestRxContext:
         with FileSink(tmp_path / "cal.sigmf", "cf32", context=ctx) as s:
             s.write(tone(10))
         back = sigmf.read(tmp_path / "cal.sigmf").context
-        assert back == ctx and meta_of(tmp_path / "cal.sigmf")["global"]["core:extensions"][0]["version"] == "1.1.0"
+        assert back == ctx and meta_of(tmp_path / "cal.sigmf")["global"]["core:extensions"][0]["version"] == sigmf.EXTENSION_VERSION
         assert pysdrlib.RxContext.from_json({"freq": 1.0}).ppm_accuracy is None # (a 1.0.0 recording: not known)

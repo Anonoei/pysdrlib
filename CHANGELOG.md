@@ -34,6 +34,17 @@ PyPI.
   `get_freq_correction_accuracy`) and `caps.Chain(lo_accuracy=)` (Hz; `lo_accuracy` in a frontends file: a measured LO's)
   are in `RxContext` (`ppm_accuracy`, `chain.lo_accuracy`), so a reader can say what a frequency read off the samples is
   worth; `pysdrlib:rx` is version 1.1.0 for them, and `play --info` shows them.
+- **Levels in dBm.** `Device.set_level_calibration(offset_db, accuracy=, span=)`: dBm at the antenna port = dBFS (full
+  scale |x| = 1 in the complex64 samples) + `offset_db`, made at the gains and frequency current then.
+  `RxContext.level_offset` / `level_accuracy` (dB) carry it while the gains (and gain mode) are unchanged and the
+  frequency is within `span` (default: the sample rate when it was set); otherwise both are None.
+  `get_level_calibration()` says what was set and whether it still `holds`. It crosses the wire, and `play --info`
+  shows it.
+- **A chain names its feed and channel.** `caps.Chain(polarization="H" | "V" | "RHCP" | "LHCP")` says what the feed takes
+  in, and `caps.Chain(channel=)` puts a chain on one channel of a radio whose channels' ports share a name (a B210's RX2
+  on channels 0 and 1, a dual-feed LNB's two outputs). Both are keys of a frontends file too, and `get_rx_context(channel=k)`
+  gives each channel's chain. `pysdrlib:rx` is version 1.2.0 for these and the level calibration (older recordings
+  read as None).
 - `Device.set_chains([caps.Chain(lo=5.15e9, invert=True)])` puts an LNB or converter in front of a radio on this
   machine: frequencies are over the air from then on (the radio stays where it is tuned, and `get_rx_freq` says what
   that is through the new chain). A remote radio's chains are its server's frontends file: `set_chains` on one raises

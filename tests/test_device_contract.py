@@ -91,6 +91,27 @@ class TestTuning:
         with pytest.raises(ValueError):
             sdr.set_freq_correction(1, accuracy=-1)
 
+    def test_a_level_calibration_holds_while_the_gains_and_frequency_do(self, sdr, spec):
+        """set_level_calibration: get_rx_context carries it at the gains and frequency it was made at, None off them"""
+        f = sdr.set_rx_freq(spec.caps.default_freq)
+        sdr.set_rx_gain(0.5)
+        cal = sdr.set_level_calibration(-60.0, accuracy=0.5, span=4e6)
+        assert cal["holds"] and cal["freq"] == f and cal["span"] == 4e6 and cal == sdr.get_level_calibration()
+        c = sdr.get_rx_context()
+        assert c.level_offset == -60.0 and c.level_accuracy == 0.5
+        if [r for r in spec.caps.freq if r.lo <= f + 10e6 <= r.hi]:
+            sdr.set_rx_freq(f + 10e6)    # off the span
+            assert sdr.get_rx_context().level_offset is None and not sdr.get_level_calibration()["holds"]
+            sdr.set_rx_freq(f)
+        assert sdr.get_rx_context().level_offset == -60.0
+        if sdr.get_rx_gain() != 0.0:
+            sdr.set_rx_gain(0.0)         # another gain
+            assert sdr.get_rx_context().level_offset is None and sdr.get_rx_context().level_accuracy is None
+        sdr.set_level_calibration(None)
+        assert sdr.get_level_calibration() is None and sdr.get_rx_context().level_offset is None
+        with pytest.raises(ValueError):
+            sdr.set_level_calibration(-60, accuracy=-1)
+
     def test_a_chain_given_after_tuning_says_where_the_radio_is_over_the_air(self, sdr, spec):
         """set_chains doesn't move the radio: get_rx_freq becomes what its IF is through the new chain, and back"""
         from pysdrlib.base import caps

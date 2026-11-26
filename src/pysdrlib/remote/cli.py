@@ -351,9 +351,11 @@ def _relay(args):
 
 def format_chain(chain):
     """A chain as one line for `list`: its direction, port, the LO it has and the antenna on it"""
-    where = f"{chain['direction']}" + (f" {chain['port']}" if chain.get("port") else "")
+    where = f"{chain['direction']}" + (f" {chain['port']}" if chain.get("port") else "") + \
+        (f" (channel {chain['channel']})" if chain.get("channel") is not None else "")
     lo = f", LO {chain['lo'] / 1e6:g} MHz{' (inverted)' if chain.get('invert') else ''}" if chain.get("lo") else ""
-    return f"antenna {where}: {format_antenna(chain.get('antenna'))}{lo}"
+    pol = f", {chain['polarization']}" if chain.get("polarization") else ""
+    return f"antenna {where}: {format_antenna(chain.get('antenna'))}{lo}{pol}"
 
 def print_list(c):
     """Print what the server `c` (a `Client`) allows, hosts and has attached, as `client ADDRESS list` does"""

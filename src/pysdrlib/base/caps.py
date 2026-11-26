@@ -76,18 +76,23 @@ def contains(ranges, value):
 def _ranges_json(rs):
     return [[r.lo, r.hi, r.step] for r in rs]
 
+POLARIZATIONS = ("H", "V", "RHCP", "LHCP")   # what a chain's feed takes in (`Chain.polarization`)
+
 @dataclass(frozen=True)
 class Chain:
     """Hardware between a radio and the air that moves frequencies (an LNB, an up/downconverter, a mixer + power amplifier)
     and the antenna on it. Frequencies a program asks for are over the air ("RF"); the radio tunes "IF".
 
     direction: "rx" or "tx" (a radio can have a chain of each). port: the radio's antenna port it sits behind (None: the
-    one for any port that has no chain of its own). lo: Hz of the external LO (0: none, RF == IF); a measured one where it
+    one for any port that has no chain of its own). channel: the radio's channel it is on (None: any), for a radio whose
+    channels' ports share names (a B210's RX2 on channels 0 and 1, a dual-feed LNB's two outputs on them). lo: Hz of the external LO (0: none, RF == IF); a measured one where it
     has been measured. lo_accuracy: how well `lo` is known, a standard error [Hz] (None: not known; an LNB's LO is off by
     tens of kHz to a MHz unless measured or locked). invert: the LO is above the
     signal, RF = lo - IF and the spectrum arrives mirrored (RF = IF + lo otherwise).
     antenna: the standard of antenna fitted to it (see `pysdrlib.base.antennas`). usable: [Range] of RF Hz it works at at all
     (empty: the antenna's, else whatever the radio's tuning gives). optimal: [Range] of RF Hz it is best at (empty: the antenna's).
+    polarization: what the feed takes in, one of `POLARIZATIONS` ("H", "V", "RHCP", "LHCP"; None: not said). It describes
+    the feed, not the signal.
     """
     direction: str = "rx"
     port: Optional[str] = None
@@ -98,6 +103,8 @@ class Chain:
     usable: list = field(default_factory=list)
     optimal: list = field(default_factory=list)
     name: str = ""
+    channel: Optional[int] = None
+    polarization: Optional[str] = None
     info: dict = field(default_factory=dict, compare=False)     # the antenna's description as the server that sent this chain knew it
 
     def __post_init__(self):
@@ -107,6 +114,10 @@ class Chain:
             raise ValueError("an inverting chain needs an LO frequency (lo)")
         if self.lo_accuracy is not None and not self.lo_accuracy >= 0:
             raise ValueError(f"a chain's lo_accuracy is a standard error in Hz (>= 0), not {self.lo_accuracy!r}")
+        if self.polarization is not None and self.polarization not in POLARIZATIONS:
+            raise ValueError(f"a chain's polarization is one of {', '.join(POLARIZATIONS)} (or None), not {self.polarization!r}")
+        if self.channel is not None and not (isinstance(self.channel, int) and not isinstance(self.channel, bool) and self.channel >= 0):
+            raise ValueError(f"a chain's channel is a channel number (>= 0) or None, not {self.channel!r}")
 
     @property
     def identity(self):
@@ -156,7 +167,7 @@ class Chain:
 
     def json(self):
         return {"direction": self.direction, "port": self.port, "antenna": self.antenna, "lo": self.lo, "invert": self.invert,
-                "lo_accuracy": self.lo_accuracy,
+                "lo_accuracy": self.lo_accuracy, "channel": self.channel, "polarization": self.polarization,
                 "usable": _ranges_json(self.usable_ranges()), "optimal": _ranges_json(self.optimal_ranges()), "name": self.name,
                 "antenna_info": self.describe()}
 
@@ -171,7 +182,7 @@ def chain_from_json(obj) -> Chain:
     return Chain(direction=obj.get("direction", "rx"), port=obj.get("port"), antenna=obj.get("antenna"), lo=obj.get("lo", 0.0),
                  invert=obj.get("invert", False), lo_accuracy=obj.get("lo_accuracy"), usable=[Range(*r) for r in obj.get("usable", [])],
                  optimal=[Range(*r) for r in obj.get("optimal", [])], name=obj.get("name", ""),
-                 info=dict(obj.get("antenna_info") or {}))
+                 channel=obj.get("channel"), polarization=obj.get("polarization"), info=dict(obj.get("antenna_info") or {}))
 
 @dataclass(frozen=True)
 class Setting:

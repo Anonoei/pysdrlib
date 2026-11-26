@@ -29,7 +29,10 @@ class RxContext:
     left as the radio gives them, so a reader conjugates them. ppm: the reference correction applied while tuning
     (`set_freq_correction`); ppm_accuracy: how well the reference is known after it [ppm, a standard error; None: not
     known] (with the chain's `lo_accuracy`, what a frequency read off these samples is worth); clock_source: the
-    reference selected (None: never set, the radio's own); gains: {stage: dB} as last set; port: the antenna port; hw: which radio (its driver's name, and the serial where known); undone: the
+    reference selected (None: never set, the radio's own); level_offset: dB to add to a level in dBFS (full scale: |x| = 1
+    in the complex64 samples) for dBm at the antenna port (`Device.set_level_calibration`), and level_accuracy its
+    standard error [dB]; both None when not known: never calibrated, or the gains or frequency have moved off what the
+    calibration was made at; gains: {stage: dB} as last set; port: the antenna port; hw: which radio (its driver's name, and the serial where known); undone: the
     samples were conjugated after the radio (by whoever wrote them), so the chain's inversion is already put right
     """
     freq: Optional[float] = None
@@ -39,6 +42,8 @@ class RxContext:
     ppm_accuracy: Optional[float] = None
     clock_source: Optional[str] = None
     gains: dict = field(default_factory=dict)
+    level_offset: Optional[float] = None
+    level_accuracy: Optional[float] = None
     port: Optional[str] = None
     hw: Optional[str] = None
     undone: bool = False
@@ -54,6 +59,7 @@ class RxContext:
         return {"freq": num(self.freq), "rate": num(self.rate), "chain": None if self.chain is None else self.chain.json(),
                 "inverted": self.inverted, "ppm": float(self.ppm), "ppm_accuracy": num(self.ppm_accuracy),
                 "clock_source": self.clock_source, "gains": {str(k): num(v) for k, v in self.gains.items()},
+                "level_offset": num(self.level_offset), "level_accuracy": num(self.level_accuracy),
                 "port": self.port, "hw": self.hw, "undone": self.undone}
 
     @classmethod
@@ -62,7 +68,8 @@ class RxContext:
         c = obj.get("chain")
         return cls(freq=obj.get("freq"), rate=obj.get("rate"), chain=None if c is None else chain_from_json(c),
                    ppm=float(obj.get("ppm", 0.0) or 0.0), ppm_accuracy=obj.get("ppm_accuracy"), clock_source=obj.get("clock_source"),
-                   gains=dict(obj.get("gains") or {}), port=obj.get("port"), hw=obj.get("hw"),
+                   gains=dict(obj.get("gains") or {}), level_offset=obj.get("level_offset"),
+                   level_accuracy=obj.get("level_accuracy"), port=obj.get("port"), hw=obj.get("hw"),
                    undone=bool(obj.get("undone", False)))
 
 _EPOCH_2000 = 946684800.0   # 2000-01-01 UTC: a radio clock below it counts from power-up, not a date

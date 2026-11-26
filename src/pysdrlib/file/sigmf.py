@@ -18,8 +18,9 @@ from .. import err as _err
 from ..base import Formats
 
 VERSION = "1.2.0"
-EXTENSION, EXTENSION_VERSION = "pysdrlib", "1.1.0" # Our namespace in a recording's global object (`pysdrlib:rx`);
-                                                   # 1.1.0: ppm_accuracy, the chain's lo_accuracy
+EXTENSION, EXTENSION_VERSION = "pysdrlib", "1.2.0" # Our namespace in a recording's global object (`pysdrlib:rx`);
+                                                   # 1.1.0: ppm_accuracy, the chain's lo_accuracy; 1.2.0: level_offset,
+                                                   # level_accuracy, the chain's channel and polarization
 _SUFFIXES = (".sigmf-data", ".sigmf-meta", ".sigmf")
 
 def is_sigmf(path) -> bool:

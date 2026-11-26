@@ -56,14 +56,23 @@ def describe(f, rate):
 def _received(c):
     """How a recording was received (its `RxContext`), in a line"""
     parts = []
-    if c.chain is not None and c.chain.lo:
-        acc = f" +-{_hz(c.chain.lo_accuracy)}" if c.chain.lo_accuracy is not None else ""
-        parts.append(f"through {c.chain.name or 'a converter'} (LO {_hz(c.chain.lo)}{acc}"
-                     + (", inverted" if c.inverted else ", inversion undone" if c.chain.invert else "") + ")")
+    if c.chain is not None and (c.chain.lo or c.chain.polarization):
+        about = []
+        if c.chain.lo:
+            about.append(f"LO {_hz(c.chain.lo)}" + (f" +-{_hz(c.chain.lo_accuracy)}" if c.chain.lo_accuracy is not None else ""))
+        if c.chain.polarization:
+            about.append(c.chain.polarization)
+        if c.chain.invert:
+            about.append("inverted" if c.inverted else "inversion undone")
+        what = c.chain.name or ("a converter" if c.chain.lo else "a feed")
+        parts.append(f"through {what} ({', '.join(about)})")
     if c.port:
         parts.append(f"on port {c.port}")
     if c.gains:
         parts.append("gains " + ", ".join(f"{k} {v:g} dB" for k, v in c.gains.items()))
+    if c.level_offset is not None:
+        parts.append(f"level dBm = dBFS {c.level_offset:+g}" + (f" +-{c.level_accuracy:g}" if c.level_accuracy is not None else "")
+                     + " dB")
     if c.ppm or c.ppm_accuracy is not None:
         parts.append(f"{c.ppm:+g}" + (f" +-{c.ppm_accuracy:g}" if c.ppm_accuracy is not None else "") + " ppm")
     if c.clock_source:

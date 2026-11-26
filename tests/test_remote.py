@@ -998,3 +998,8 @@ def test_how_well_the_reference_is_known_crosses_the_wire():
             d.initialize(cf=100e6, Fs=1e6)
             d.set_freq_correction(-1.5, accuracy=0.2)
             assert d.get_freq_correction_accuracy() == 0.2 and d.get_rx_context().ppm_accuracy == 0.2
+            cal = d.set_level_calibration(-55.0, accuracy=1.0)
+            assert cal["holds"] and d.get_level_calibration() == cal
+            assert (d.get_rx_context().level_offset, d.get_rx_context().level_accuracy) == (-55.0, 1.0)
+            d.set_rx_freq(200e6)
+            assert d.get_rx_context().level_offset is None
