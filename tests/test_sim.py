@@ -191,6 +191,13 @@ class TestRealtime:
         assert dev.blocks > 100  # >> the 20 a real-time 1 MS/s stream would deliver
         dev.close()
 
+    def test_open_takes_realtime(self):
+        dev = pysdrlib.open("sim", realtime=False)
+        try:
+            assert dev.realtime is False
+        finally:
+            dev.close()
+
 
 class TestGain:
     def test_generic_gain_splits_across_stages(self, sim):
@@ -214,6 +221,19 @@ class TestGain:
     def test_out_of_range_is_clamped(self, sim):
         with pytest.warns(Warning):
             assert sim.set_rx_if_gain(100) == ConfigSim.stage("rx", "IF").max
+
+    def test_a_fraction_rounds_to_a_step_quietly(self, sim):
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            sim.set_rx_gain(0.5)   # 51 dB: IF 40 and BB 11, which rounds to BB's 2 dB step
+        assert sim.get_rx_gains_db() == {"IF": 40, "BB": 10}
+        assert not sim._quiet_gain_rounding
+        sim.strict = True
+        sim.set_rx_gain(0.5)       # (rounding a fraction is never an invalid value)
+        sim.strict = False
+        with pytest.warns(Warning, match="multiple of 2"):
+            sim.set_rx_gain_db(51)   # decibels asked for that can't be set: still said
 
     def test_freq_and_rate_clamped(self, sim):
         with pytest.warns(Warning):

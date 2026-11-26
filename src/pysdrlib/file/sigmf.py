@@ -103,6 +103,13 @@ def read(path) -> Meta:
     rate = glob.get("core:sample_rate")
     return Meta(fmt, float(rate) if rate is not None else None, captures, when, raw.get("annotations", []), raw)
 
+def _plain(obj):
+    """json.dump default: a numpy scalar (a gain, a frequency) as the Python number it holds"""
+    item = getattr(obj, "item", None)
+    if callable(item) and getattr(obj, "shape", None) == ():
+        return item()
+    raise TypeError(f"{type(obj).__name__} is not JSON serializable")
+
 def write(path, fmt, rate=None, captures=(), datetime=None, annotations=(), extra=None, context=None):
     """Write the `.sigmf-meta` of the recording `path` names. captures: [(first sample, frequency)]; extra: more
     global fields ({"core:hw": ...}); context: how the radio received (an `RxContext`, stored as `pysdrlib:rx`). Written
@@ -132,5 +139,5 @@ def write(path, fmt, rate=None, captures=(), datetime=None, annotations=(), extr
     doc = {"global": glob, "captures": caps, "annotations": list(annotations)}
     tmp = meta_path.with_name(meta_path.name + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(doc, f, indent=2)
+        json.dump(doc, f, indent=2, default=_plain)
     os.replace(tmp, meta_path)

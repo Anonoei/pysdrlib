@@ -17,8 +17,9 @@ PyPI.
   (`get_tx_stats()` counts what was written).
 - A transmitting sim has a transmit gain stage, "PA" (0-47 dB, full scale at 47): `set_tx_gain`, `set_tx_gain_db` and
   `set_tx_pa_gain` scale what it transmits.
-- `pysdrlib.find(virtual=True)` lists a simulated radio in each air in use. An air's transmit channels are `shm`
-  streams that `find()` lists only with `virtual=True`.
+- `pysdrlib.find(virtual=True)` lists a simulated radio in each air with a transmitter in it (a transmitting sim from
+  its first `write`, not from `open`). An air's transmit channels are `shm` streams that `find()` lists only with
+  `virtual=True`.
 - `pysdrlib.shm.streams(prefix=)` lists only the streams whose name starts with it.
 - **Recordings say how the radio received.** `Device.get_rx_context()` gives a channel's `RxContext`: the frequency over the
   air and the rate, the `caps.Chain` in front of the radio (its LO, and `inverted` when the LO is above the signal and
@@ -38,7 +39,14 @@ PyPI.
   that is through the new chain). A remote radio's chains are its server's frontends file: `set_chains` on one raises
   `NotSupported`.
 
+- `pysdrlib.open("sim", realtime=False)` works: `realtime` is taken by `open` as well as the constructor, as `air` and
+  `transmit` are (and a server's `--open sim:realtime=false`).
+
 ### Fixes
+
+- `set_rx_gain(fraction)` / `set_tx_gain(fraction)` no longer warn "... gain must be a multiple of N": a fraction
+  nearly always falls between a stage's steps, so rounding it to one is expected. `set_rx_gain_db` still warns when
+  the decibels asked for can't be set exactly.
 
 - A replayed recording's `get_rx_freq()` is the recording's frequency from the start (it was the default, 100 MHz,
   until playback began).

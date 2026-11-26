@@ -25,7 +25,8 @@ a receiver in another, such as pyspecan opening `sim` with `air="lab"`. A realti
 --8<-- "examples/air.py:realtime"
 ```
 
-`pysdrlib.find(virtual=True)` lists a simulated radio in each air in use. Each transmit channel is also a `shm` stream,
+`pysdrlib.find(virtual=True)` lists a simulated radio in each air with a transmitter in it: a transmitting sim joins the
+listing at its first `write`, not when it opens. Each transmit channel is also a `shm` stream,
 so `pysdrlib.open("shm@air-lab.<pid>-0")` receives one transmitter raw.
 
 ## Channels of your own

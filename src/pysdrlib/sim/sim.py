@@ -77,8 +77,8 @@ class Sim(NativeDevice):
         channel_db: dB added to the built signal of each channel (a list, one per channel): channels of different strength
         air: a `pysdrlib.air.Air`, or its name: transmit into it, and hear it (see `pysdrlib.air`)
 
-        `transmit` and `air` can also be given to `open` (so `pysdrlib.open("sim", air="lab", transmit=True)` works, and a
-        server's `--open sim:air=lab,transmit=true`)
+        `realtime`, `transmit` and `air` can also be given to `open` (so `pysdrlib.open("sim", realtime=False)` and
+        `pysdrlib.open("sim", air="lab", transmit=True)` work, and a server's `--open sim:air=lab,transmit=true`)
         """
         self.channels = int(channels)
         self.transmit = bool(transmit)
@@ -90,7 +90,7 @@ class Sim(NativeDevice):
         self.transmitted = {ch: [] for ch in range(self.channels)}
         super().__init__()
         self.SAMPLE_FORMAT = sample_format
-        self.realtime = realtime
+        self.realtime = bool(realtime)
         self.block_samples = int(block_samples)
         self.blocks = 0         # blocks delivered since start_rx / reset_stats
         self.max_lag = 0.0      # worst seconds the producer ran behind real time
@@ -356,10 +356,12 @@ class Sim(NativeDevice):
             else:
                 time.sleep(0)  # let the consumer thread run
 
-    def _open(self, serial_number=None, index=None, air=None, transmit=None, **signal):
-        """air, transmit: as the constructor's (None: as it was given). signal: as `configure`'s (anything else raises
-        TypeError). serial_number and index pick a unit on a radio: a sim is any unit asked for"""
+    def _open(self, serial_number=None, index=None, realtime=None, air=None, transmit=None, **signal):
+        """realtime, air, transmit: as the constructor's (None: as it was given). signal: as `configure`'s (anything else
+        raises TypeError). serial_number and index pick a unit on a radio: a sim is any unit asked for"""
         self.configure(**signal)
+        if realtime is not None:
+            self.realtime = bool(realtime)
         if air is not None:
             self.air = self._air(air)
         if transmit is not None:

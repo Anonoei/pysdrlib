@@ -499,7 +499,13 @@ class Device:
                 raise err.InvalidValue(f"set_{d}_gain takes a fraction of the gain range, 0 to 1, not {fraction}: "
                                        f"for decibels use set_{d}_gain_db({fraction})")
             gain = lo + fraction * (hi - lo)
-        self._set_gain_db(d, gain, stage, channel, flush)
+        # A fraction lands between a stage's steps nearly always: rounding it to one is the call working, not a bad value
+        quiet = getattr(self, "_quiet_gain_rounding", False)
+        self._quiet_gain_rounding = True
+        try:
+            self._set_gain_db(d, gain, stage, channel, flush)
+        finally:
+            self._quiet_gain_rounding = quiet
         return self._get_gain(d, stage, channel)
 
     def _set_gain_db(self, d, gain, stage, channel, flush):

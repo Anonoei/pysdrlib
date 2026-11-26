@@ -41,8 +41,9 @@ clock) hears it to its end even after its transmitter is closed or its process g
 all; one that never saw it doesn't. Each stream's ring holds `capacity` samples (default: a second); a receiver further
 behind than that misses the oldest.
 
-`airs()` lists the airs in use on this machine; `pysdrlib.find(virtual=True)` lists a simulated radio in each. Each
-transmit channel is also a `shm` stream that `pysdrlib.open("shm@air-<name>.<pid>-<n>")` receives raw (hidden from
+`airs()` lists the airs in use on this machine: those with a transmit channel open, which a transmitting `Sim` makes at
+its first `write` (until then, and with only receivers, an air isn't listed). `pysdrlib.find(virtual=True)` lists a
+simulated radio in each. Each transmit channel is also a `shm` stream that `pysdrlib.open("shm@air-<name>.<pid>-<n>")` receives raw (hidden from
 `find()` unless `virtual=True`).
 
 It is a simulator: resampling is linear (exact when the rates are equal: the nearest sample, on the time grid) and

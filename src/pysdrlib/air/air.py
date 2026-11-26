@@ -48,7 +48,8 @@ class Air:
 
 
 def airs(directory=None) -> dict:
-    """{name: [manifests of its transmit channels]} of the airs in use on this machine"""
+    """{name: [manifests of its transmit channels]} of the airs on this machine with a transmit channel open (receivers
+    alone leave no trace)"""
     from ..shm.stream import streams
     found = {}
     for m in streams(directory, prefix=PREFIX):

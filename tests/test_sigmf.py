@@ -216,6 +216,17 @@ class TestRxContext:
             line = next(l for l in describe(f, 1e6) if "received" in l)
         assert "C-band LNB (LO 5.15 GHz, inverted)" in line and "port RX2" in line and "+14.8 ppm" in line
 
+    def test_numpy_numbers_in_the_context_are_written(self, tmp_path):
+        # (a gain split across stages, or a frequency given as numpy, is a numpy scalar)
+        ctx = pysdrlib.RxContext(freq=np.float32(1e9), rate=np.float64(1e6), ppm=np.float32(1.5),
+                                 ppm_accuracy=np.float32(0.25), gains={"LNA": np.float32(10.0), "VGA": np.int64(20)})
+        with FileSink(tmp_path / "rec.sigmf", "cf32", context=ctx) as s:
+            s.write(tone(10))
+        c = sigmf.read(tmp_path / "rec.sigmf").context
+        assert c.freq == 1e9 and c.gains == {"LNA": 10.0, "VGA": 20.0} and c.ppm_accuracy == 0.25
+        sigmf.write(tmp_path / "x.sigmf", "cf32", np.float32(1e6), extra={"core:hw": "x", "y:n": np.int32(3)})
+        assert meta_of(tmp_path / "x.sigmf")["global"]["y:n"] == 3
+
     def test_the_extension_is_declared_once(self, tmp_path):
         ext = {"name": "pysdrlib", "version": "0.9.0", "optional": True}
         sigmf.write(tmp_path / "x.sigmf", "cf32", 1e6, extra={"core:extensions": [ext, {"name": "other", "version": "1"}]},

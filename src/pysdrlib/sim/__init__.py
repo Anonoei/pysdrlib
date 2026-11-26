@@ -11,7 +11,8 @@ from .sim import Sim
 Device = Sim
 
 def find():
-    """The simulated device, and one in each air in use (`pysdrlib.air`), listed by pysdrlib.find(virtual=True)"""
+    """The simulated device, and one in each air with a transmit channel open (`pysdrlib.air.airs`: a transmitting sim
+    opens its channel at its first `write`), listed by pysdrlib.find(virtual=True)"""
     from ..air import airs
     from ..devices import DeviceInfo
     found = [DeviceInfo("sim", "Simulated", None, 0, {}, {"virtual": True})]

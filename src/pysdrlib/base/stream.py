@@ -49,8 +49,11 @@ class RxContext:
         return bool(self.chain is not None and self.chain.invert and not self.undone)
 
     def json(self):
-        return {"freq": self.freq, "rate": self.rate, "chain": None if self.chain is None else self.chain.json(),
-                "inverted": self.inverted, "ppm": self.ppm, "ppm_accuracy": self.ppm_accuracy, "clock_source": self.clock_source, "gains": dict(self.gains),
+        """Plain types only (numbers as float: a gain or frequency may arrive as a numpy scalar)"""
+        num = lambda v: None if v is None else float(v)
+        return {"freq": num(self.freq), "rate": num(self.rate), "chain": None if self.chain is None else self.chain.json(),
+                "inverted": self.inverted, "ppm": float(self.ppm), "ppm_accuracy": num(self.ppm_accuracy),
+                "clock_source": self.clock_source, "gains": {str(k): num(v) for k, v in self.gains.items()},
                 "port": self.port, "hw": self.hw, "undone": self.undone}
 
     @classmethod
